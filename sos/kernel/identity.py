@@ -239,6 +239,18 @@ class AgentDNA:
     beliefs: list[dict] = field(default_factory=list) # Claims, source, confidence
     tools: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize AgentDNA to dictionary."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "physics": vars(self.physics),
+            "economics": vars(self.economics),
+            "learning_strategy": self.learning_strategy,
+            "beliefs": self.beliefs,
+            "tools": self.tools,
+        }
+
 @dataclass
 class AgentIdentity(Identity):
     """

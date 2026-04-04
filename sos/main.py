@@ -22,6 +22,7 @@ def main():
     
     # Modes
     parser.add_argument("--telegram", action="store_true", help="Start the Telegram Adapter")
+    parser.add_argument("--discord", action="store_true", help="Start the Discord Adapter")
     parser.add_argument("--engine", action="store_true", help="Start the Engine Service")
     parser.add_argument("--deck", action="store_true", help="Open the Command Deck (Local)")
     parser.add_argument("--doctor", action="store_true", help="Run SOS doctor checks")
@@ -31,6 +32,10 @@ def main():
     if args.telegram:
         from sos.adapters.telegram import start_telegram_adapter
         asyncio.run(start_telegram_adapter())
+    
+    elif args.discord:
+        from sos.adapters.discord import start_discord_adapter
+        asyncio.run(start_discord_adapter())
     
     elif args.engine:
         # This would start the FastAPI service

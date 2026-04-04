@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+import asyncio
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from sos.observability.tracing import TraceContext, TRACE_ID_HEADER, SPAN_ID_HEA
 from sos.services.content.strategy import ContentStrategy, MUMEGA_STRATEGY
 from sos.services.content.calendar import ContentCalendar, ScheduledPost, PostStatus
 from sos.services.content.publisher import ContentPublisher, get_publisher
+from sos.services.content.orchestrator import ContentOrchestrator
 
 SERVICE_NAME = "content"
 _START_TIME = time.time()
@@ -43,6 +45,9 @@ app = FastAPI(title="SOS Content Service", version=__version__)
 _calendar = ContentCalendar()
 _publisher = get_publisher()
 _strategy_path = Path.home() / ".sos" / "content" / "mumega_strategy.yaml"
+
+# Global orchestrator instance
+_orchestrator: Optional[ContentOrchestrator] = None
 
 
 # --- Pydantic Models ---
@@ -88,6 +93,55 @@ class ApprovalRequest(BaseModel):
     reason: Optional[str] = None
 
 
+# --- Lifecycle ---
+
+@app.on_event("startup")
+async def startup_event():
+    global _orchestrator
+    
+    log.info("🚀 Starting Content Service Subconscious...")
+    
+    # 1. Initialize Clients
+    from sos.services.engine.core import SOSEngine
+    from sos.services.engine.council import create_council
+    
+    engine = SOSEngine()
+    council = create_council(squad_id="marketing")
+    
+    # 2. Start Orchestrator
+    _orchestrator = ContentOrchestrator(engine, council)
+    asyncio.create_task(_orchestrator.start())
+    
+    # 3. Start Council Listener in a background task
+    # We iterate over the async generator from bus.subscribe
+    asyncio.create_task(run_council_listener(_orchestrator))
+    
+    log.info("✅ Content Orchestrator & Witness Loop active.")
+
+async def run_council_listener(orchestrator: ContentOrchestrator):
+    """Background task to listen for Council results."""
+    from sos.services.bus.core import get_bus
+    bus = get_bus()
+    await bus.connect()
+    
+    log.info("🎧 Listening for Swarm Council events on squad:marketing...")
+    
+    try:
+        # Iterate over the async generator
+        async for msg in bus.subscribe("content_service", squads=["marketing"]):
+            # Note: agent_id 'content_service' is used for the subscription
+            payload = msg.payload
+            event = payload.get("event")
+            
+            if event == "PROPOSAL_RESULT":
+                proposal_id = payload.get("proposal_id", "")
+                if proposal_id.startswith("CONTENT_WITNESS"):
+                    passed = payload.get("status") == "PASSED"
+                    await orchestrator.handle_council_result(proposal_id, passed, payload)
+    except Exception as e:
+        log.error(f"Council listener error: {e}", exc_info=True)
+
+
 # --- Middleware ---
 
 @app.middleware("http")
@@ -127,6 +181,7 @@ async def health() -> Dict[str, Any]:
         "uptime_seconds": time.time() - _START_TIME,
         "calendar_posts": len(_calendar.posts),
         "strategy_loaded": _strategy_path.exists(),
+        "orchestrator_active": _orchestrator.running if _orchestrator else False
     }
 
 

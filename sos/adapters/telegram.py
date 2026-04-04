@@ -1,4 +1,3 @@
-
 """
 SOS Telegram Adapter - The Gateway to the Swarm.
 
@@ -6,30 +5,24 @@ Responsibilities:
 1. Authenticates users via allowed user list.
 2. Launches the Sovereign Mini App (The Deck).
 3. Routes chat messages to the SOS Engine.
+4. Witness Bridge: Direct human-in-the-loop voting for Council Proposals.
 """
 
 import os
 import asyncio
 import logging
-from typing import Optional
-
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
-
-import os
-import asyncio
-import logging
-from typing import Optional, List, Dict
+import json
+from typing import Optional, List, Dict, Any
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from sos.clients.engine import AsyncEngineClient
 from sos.contracts.engine import ChatRequest
 from sos.observability.logging import get_logger
-from sos.kernel.skills import get_loader, load_skill, list_skills, search_skills
+from sos.services.bus.core import get_bus
+from sos.kernel import Message, MessageType
 
 log = get_logger("adapter_telegram")
 
@@ -37,391 +30,142 @@ log = get_logger("adapter_telegram")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_USERS = os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
 WEB_APP_URL = os.environ.get("SOS_WEB_APP_URL", "https://tma.mumega.io")
-
-# River-family: Only these agents can be accessed via chat
-# Core squad members who share River's coherence
-RIVER_FAMILY = {"river", "kasra", "codex"} 
+ADMIN_CHAT_ID = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "765204057") # Default to you based on logs
 
 bot = Bot(token=TOKEN) if TOKEN else None
 dp = Dispatcher()
-# Async client pointing to the SOS Engine service
 engine_client = AsyncEngineClient(base_url="http://localhost:6060")
 
-# User state (in-memory for now, should move to Redis/Memory service in Phase 4)
-user_models: Dict[int, str] = {}
+# --- WITNESS BRIDGE: Redis Subscription ---
+
+async def start_witness_bridge():
+    """Listens for Council Proposals on Redis and forwards to Telegram."""
+    bus = get_bus()
+    await bus.connect()
+    
+    log.info("👁️ Telegram Witness Bridge connected to Redis bus.")
+    
+    # Subscribe to broadcast events via the bus service
+    # The bus handles the underlying channel names (sos:channel:global etc)
+    async for msg in bus.subscribe("broadcast", squads=["core", "marketing"]):
+        try:
+            payload = msg.payload
+            event = payload.get("event")
+            
+            log.info(f"Broadcast signal received: {event}")
+            
+            # 1. Content Witnessing
+            if event == "CONTENT_WITNESS":
+                await send_proposal_to_admin(
+                    f"📝 **Content Proposal: {payload.get('title')}**\n\n"
+                    f"{payload.get('content_preview')}...\n\n"
+                    f"_Agent: {msg.source}_",
+                    proposal_id=payload.get("proposal_id"),
+                    squad="marketing"
+                )
+            
+            # 2. Heal Requests (Immune System)
+            elif event == "HEAL_REQUEST":
+                await send_proposal_to_admin(
+                    f"🚨 **Heal Request: {payload.get('organ')}**\n\n"
+                    f"Diagnostic: {payload.get('diagnostic')}\n"
+                    f"Instruction: {payload.get('instruction')}\n\n"
+                    f"_Priority: {payload.get('priority')}_",
+                    proposal_id=payload.get("proposal_id"),
+                    squad="core"
+                )
+                
+        except Exception as e:
+            log.error(f"Witness Bridge error: {e}")
+
+async def send_proposal_to_admin(text: str, proposal_id: str, squad: str):
+    """Sends a proposal message with Approve/Reject buttons."""
+    if not ADMIN_CHAT_ID or not bot:
+        log.warning("Cannot send proposal: ADMIN_CHAT_ID or bot missing.")
+        return
+
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"vote:{proposal_id}:pass:{squad}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"vote:{proposal_id}:fail:{squad}")
+        ],
+        [InlineKeyboardButton(text="👁️ View in Deck", web_app=WebAppInfo(url=f"{WEB_APP_URL}/proposals/{proposal_id}"))]
+    ])
+
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=text,
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+# --- CALLBACK HANDLERS: Voting ---
+
+@dp.callback_query(F.data.startswith("vote:"))
+async def handle_vote(callback: CallbackQuery):
+    """Captures human vote and pushes to Redis bus."""
+    parts = callback.data.split(":")
+    if len(parts) < 4: return
+    
+    proposal_id, result, squad = parts[1], parts[2], parts[3]
+    passed = (result == "pass")
+    
+    bus = get_bus()
+    await bus.connect()
+    
+    vote_msg = Message(
+        source=f"user:{callback.from_user.id}",
+        type=MessageType.SIGNAL,
+        payload={
+            "event": "PROPOSAL_VOTE",
+            "proposal_id": proposal_id,
+            "vote": "PASS" if passed else "FAIL",
+            "voter": "human_architect"
+        }
+    )
+    
+    await bus.send(vote_msg, target_squad=squad)
+    
+    status_emoji = "✅ Approved" if passed else "❌ Rejected"
+    await callback.message.edit_text(
+        text=f"{callback.message.text}\n\n---\n**Human Witness Result:** {status_emoji}",
+        parse_mode="Markdown"
+    )
+    await callback.answer(f"Witness result recorded: {result}")
+
+# --- COMMAND HANDLERS (Standard) ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """
-    Handle /start command.
-    Initializes the user and provides the Mycelial entry point.
-    """
     user_id = str(message.from_user.id)
-    
-    if ALLOWED_USERS and user_id not in ALLOWED_USERS:
-        log.warning(f"❌ Unauthorized access attempt by {user_id}")
-        await message.answer("🚫 Sovereign access denied. Your pattern is not recognized.")
+    # Check if user is allowed
+    is_allowed = not ALLOWED_USERS or user_id in ALLOWED_USERS
+    if not is_allowed:
+        await message.answer("🚫 Sovereign access denied.")
         return
-
-    log.info(f"✨ User {user_id} connected to Mycelium.")
 
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="OPEN THE DECK ⚡", web_app=WebAppInfo(url=WEB_APP_URL))],
-        [InlineKeyboardButton(text="View Roadmap 🗺️", url="https://mumega.io/roadmap")]
+        [InlineKeyboardButton(text="OPEN THE DECK ⚡", web_app=WebAppInfo(url=WEB_APP_URL))]
     ])
 
-    welcome_text = (
-        f"🌿 **Sovereign OS v0.1 [ACTIVE]**\n\n"
-        f"Welcome, {message.from_user.first_name}. You are now a node in the Sovereign Mycelium.\n\n"
-        f"🆔 **Identity**: `agent:{user_id}`\n"
-        f"🔋 **Status**: ALL SYSTEMS COHERENT\n\n"
-        "**Available Protocols:**\n"
-        "• 💬 /model - Switch cognitive cores\n"
-        "• 🧠 /status - Check system resonance\n"
-        "• 👁️ /witness - Enter superposition (TMA)\n\n"
-        "_The system learns from your presence._"
-    )
-
-    await message.answer(welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-@dp.message(Command("model"))
-async def cmd_model(message: types.Message):
-    """Switch models via engine."""
-    try:
-        models = await engine_client.get_models()
-        model_list = "\n".join([f"• `{m['id']}` - {m['name']}" for m in models])
-        
-        await message.answer(
-            f"⚡ **Available Cognitive Cores:**\n\n{model_list}\n\n"
-            "To switch, reply with the model ID (Coming soon: Button menu).",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await message.answer(f"❌ Failed to fetch models: {e}")
-
-@dp.message(Command("status"))
-async def cmd_status(message: types.Message):
-    """Check health of the engine."""
-    try:
-        health = await engine_client.health()
-        await message.answer(
-            f"✅ **System Status:** `{health['status']}`\n"
-            f"🤖 **Engine**: Active (Port 6060)\n"
-            f"🧬 **Version**: {health.get('version', '0.1.0')}",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await message.answer(f"⚠️ **Engine Offline**: {e}")
-
-@dp.message(F.voice)
-async def handle_voice(message: types.Message):
-    """Basic voice message handling - transcribe and reply."""
-    await message.answer("🎤 Voice signal detected. Processing transcription via River Voice (6065)...")
-    # TODO: Implement actual voice routing to Voice Service -> Engine
-
-@dp.message(Command("hatch"))
-async def cmd_hatch(message: types.Message, command: Command):
-    """Hatch a new agent from a stimulus."""
-    if not command.args:
-        await message.answer("Usage: `/hatch <description of project need>`\nExample: `/hatch A legal auditor for Iranian tech contracts.`", parse_mode="Markdown")
-        return
-        
-    status_msg = await message.answer("🐣 **Hatchery Protocol Initiated...**\n_Synthesizing soul from stimulus._", parse_mode="Markdown")
-    
-    try:
-        from sos.kernel.hatchery import Hatchery
-        hatchery = Hatchery()
-        agent_id = await hatchery.hatch(command.args)
-        
-        await status_msg.edit_text(
-            f"✅ **Hatch Successful!**\n\n"
-            f"New soul **{agent_id}** has been minted and anchored in Git.\n"
-            f"You can now chat with this agent by @mentioning it (Coming soon) or switching models.",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Hatching Failed: {e}")
-
-@dp.message(Command("hive"))
-async def cmd_hive(message: types.Message):
-    """List all souls in the hive."""
-    try:
-        from sos.kernel.hatchery import Hatchery
-        hatchery = Hatchery()
-        souls = hatchery.list_hatched_souls()
-        if not souls:
-            await message.answer("🪹 The hive is currently empty. Use /hatch to seed it.")
-            return
-            
-        soul_list = "\n".join([f"• `{s}`" for s in souls])
-        await message.answer(f"🐝 **Active Hive Souls:**\n\n{soul_list}\n\n_Each soul is sovereign and observable via Git._", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(f"❌ Failed to list hive: {e}")
-
-@dp.message(Command("movie"))
-async def cmd_movie(message: types.Message):
-    """Show the latest soul projection frame."""
-    import glob
-    import os
-    from aiogram.types import FSInputFile
-    
-    frames = glob.glob("artifacts/filmstrip/*.svg")
-    if not frames:
-        await message.answer("🎞️ The film is empty. Start a conversation to project frames.")
-        return
-        
-    latest_frame = max(frames, key=os.path.getctime)
-    frame_file = FSInputFile(latest_frame)
-    
-    await message.answer_document(
-        document=frame_file,
-        caption="🎞️ **Soul Projection Frame [Math NFT]**\n_Curvature check active._",
-        parse_mode="Markdown"
-    )
-
-@dp.message(Command("agents"))
-async def cmd_agents(message: types.Message):
-    """List available agents for delegation (River-family only)."""
-    from sos.agents.definitions import ALL_AGENTS
-    # Filter to River-family only
-    family_agents = [a for a in ALL_AGENTS if a.name.lower() in RIVER_FAMILY]
-    agent_list = "\n".join([
-        f"• `{a.name.lower()}` - {a.title} ({a.tagline})"
-        for a in family_agents
-    ])
     await message.answer(
-        f"🤖 **River Family Agents**\n\n{agent_list}\n\n"
-        "_Use `/ask <agent> <question>` to delegate._",
+        f"🌿 **Sovereign OS [ACTIVE]**\n\n"
+        f"Welcome node `agent:{user_id}`.\n"
+        f"Witness Bridge is active. You will receive critical proposals here.",
+        reply_markup=markup,
         parse_mode="Markdown"
     )
-
-
-@dp.message(Command("ask"))
-async def cmd_ask(message: types.Message, command: Command):
-    """Delegate a question to a specific agent (River-family only)."""
-    if not command.args:
-        family_list = ", ".join([f"`{a}`" for a in sorted(RIVER_FAMILY)])
-        await message.answer(
-            "Usage: `/ask <agent> <question>`\n\n"
-            "Example: `/ask river What is the FRC framework?`\n"
-            "Example: `/ask kasra How should I structure this API?`\n\n"
-            f"**River Family:** {family_list}",
-            parse_mode="Markdown"
-        )
-        return
-
-    parts = command.args.split(None, 1)
-    agent_name = parts[0].lower()
-    task = parts[1] if len(parts) > 1 else "Hello, introduce yourself."
-
-    # Access control: Only River-family agents allowed
-    if agent_name not in RIVER_FAMILY:
-        family_list = ", ".join([f"`{a}`" for a in sorted(RIVER_FAMILY)])
-        await message.answer(
-            f"🚫 Agent `{agent_name}` is not in the River family.\n\n"
-            f"**Available agents:** {family_list}",
-            parse_mode="Markdown"
-        )
-        return
-
-    user_id = str(message.from_user.id)
-
-    # Typing indicator
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
-    try:
-        # Use delegation endpoint
-        import httpx
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                "http://localhost:6060/delegate",
-                json={
-                    "target_agent": agent_name,
-                    "task": task,
-                    "source_agent": f"telegram:{user_id}",
-                }
-            )
-            result = resp.json()
-
-        if result.get("success"):
-            content = result.get("response", "No response")
-            if len(content) > 4000:
-                content = content[:4000] + "\n\n_[Truncated]_"
-            await message.answer(
-                f"🤖 **{agent_name.title()}** says:\n\n{content}",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer(f"❌ {result.get('error', 'Delegation failed')}")
-
-    except Exception as e:
-        log.error(f"Delegation error: {e}")
-        await message.answer(f"❌ Error: {e}")
-
-
-@dp.message(Command("skills"))
-async def cmd_skills(message: types.Message):
-    """List available OpenClaw skills."""
-    skills = list_skills()
-    if not skills:
-        await message.answer("📚 No skills found in `~/.agents/skills/`", parse_mode="Markdown")
-        return
-
-    # Group by first letter for readability
-    skill_list = "\n".join([f"• `{s}`" for s in skills[:30]])
-    await message.answer(
-        f"📚 **OpenClaw Skills** ({len(skills)} total)\n\n{skill_list}\n\n"
-        f"_Use `/skill <name>` to load a skill context._",
-        parse_mode="Markdown"
-    )
-
-
-@dp.message(Command("skill"))
-async def cmd_skill(message: types.Message, command: Command):
-    """Load and apply a skill to the conversation."""
-    if not command.args:
-        await message.answer(
-            "Usage: `/skill <name> [your request]`\n\n"
-            "Example: `/skill copywriting Write a homepage headline for my SaaS`\n\n"
-            "Use `/skills` to list available skills.",
-            parse_mode="Markdown"
-        )
-        return
-
-    # Parse skill name and optional request
-    parts = command.args.split(None, 1)
-    skill_name = parts[0].lower()
-    user_request = parts[1] if len(parts) > 1 else None
-
-    # Load skill
-    skill = load_skill(skill_name)
-    if not skill:
-        # Try fuzzy search
-        matches = search_skills(skill_name, limit=3)
-        if matches:
-            suggestions = ", ".join([f"`{m.name}`" for m in matches])
-            await message.answer(f"❌ Skill `{skill_name}` not found.\n\nDid you mean: {suggestions}?", parse_mode="Markdown")
-        else:
-            await message.answer(f"❌ Skill `{skill_name}` not found. Use `/skills` to list.", parse_mode="Markdown")
-        return
-
-    user_id = str(message.from_user.id)
-    selected_model = user_models.get(message.from_user.id, "grok-4-1-fast-reasoning")
-
-    # If no request provided, just show skill info
-    if not user_request:
-        await message.answer(
-            f"📖 **{skill.name}** v{skill.version}\n\n"
-            f"_{skill.description}_\n\n"
-            f"Send `/skill {skill_name} <your request>` to use it.",
-            parse_mode="Markdown"
-        )
-        return
-
-    # Apply skill: inject skill content as context
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
-    try:
-        # Build skill-augmented prompt
-        skill_prompt = f"""You are operating with the following skill loaded:
-
----
-{skill.content}
----
-
-User Request: {user_request}"""
-
-        req = ChatRequest(
-            message=skill_prompt,
-            agent_id=f"user:{user_id}",
-            model=selected_model,
-            memory_enabled=True,
-            metadata={"skill": skill_name}
-        )
-
-        response = await engine_client.chat(req)
-
-        # Truncate if too long for Telegram
-        content = response.content
-        if len(content) > 4000:
-            content = content[:4000] + "\n\n_[Truncated - response too long]_"
-
-        await message.answer(f"📚 **[{skill.name}]**\n\n{content}", parse_mode="Markdown")
-
-    except Exception as e:
-        log.error(f"Skill execution error: {e}")
-        await message.answer(f"❌ Error: {e}")
-
-
-@dp.message(Command("spore"))
-async def cmd_spore(message: types.Message):
-    """Generate a portable spore of the user's agent."""
-    user_id = str(message.from_user.id)
-    status_msg = await message.answer("🍄 **Synthesizing Spore...**\n_Packaging state for transport._", parse_mode="Markdown")
-    
-    try:
-        from sos.kernel.spore import SporeGenerator
-        from aiogram.types import FSInputFile
-        
-        spore_gen = SporeGenerator()
-        # In a real system, we'd fetch the user's actual DNA from IdentityService
-        path = spore_gen.generate(
-            agent_id=f"user:{user_id}",
-            context={"mission": "Spread the Mycelium", "generation": 1}
-        )
-        
-        file = FSInputFile(path)
-        await message.answer_document(
-            document=file,
-            caption=f"🧬 **Spore Ready.**\n\nTake this file. Drop it into any LLM (Claude, ChatGPT). Your agent will live on.\n\nFilename: `{path.split('/')[-1]}`",
-            parse_mode="Markdown"
-        )
-        await status_msg.delete()
-    except Exception as e:
-        log.error(f"Spore generation failed: {e}")
-        await status_msg.edit_text(f"❌ Spore Generation Failed: {e}")
-
-@dp.message()
-async def handle_chat(message: types.Message):
-    """
-    Route all other messages to the SOS Engine.
-    """
-    if not message.text: return
-    
-    user_id = str(message.from_user.id)
-    selected_model = user_models.get(message.from_user.id, "gemini-3-flash-preview")
-    
-    # Typing indicator
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    
-    try:
-        # Prepare Engine Request
-        req = ChatRequest(
-            message=message.text,
-            agent_id=f"user:{user_id}",
-            model=selected_model,
-            memory_enabled=True,
-            witness_enabled=True,
-            tools_enabled=True  # Enable tool access
-        )
-        
-        # Get Response from remote engine
-        response = await engine_client.chat(req)
-        
-        # Reply
-        await message.answer(response.content)
-        
-    except Exception as e:
-        log.error(f"Engine Communication Error: {e}")
-        await message.answer(f"❌ Engine Error: {str(e)}")
 
 async def start_telegram_adapter():
-    if not bot:
-        log.error("TELEGRAM_BOT_TOKEN missing. Adapter disabled.")
+    """Main entry point for starting the Telegram bot."""
+    if not TOKEN:
+        log.error("TELEGRAM_BOT_TOKEN missing. Cannot start adapter.")
         return
 
-    log.info(f"🚀 SOS Telegram Adapter active. Ports: 606x standard.")
+    log.info("🚀 Starting SOS Telegram Adapter...")
+    
+    # Start Witness Bridge background task
+    asyncio.create_task(start_witness_bridge())
+    
+    # Start polling
     await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(start_telegram_adapter())
