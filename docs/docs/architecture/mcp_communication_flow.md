@@ -127,7 +127,7 @@ Agent query → Notion MCP searches pages → Returns context → River uses for
     },
     "notion": {
       "command": "python",
-      "args": ["-m", "mumega.core.mcp.notion_server"],
+      "args": ["/opt/sos-mcp/notion_server.py"],
       "env": {
         "NOTION_API_KEY": "${NOTION_API_KEY}"
       }
@@ -141,7 +141,7 @@ Agent query → Notion MCP searches pages → Returns context → River uses for
     },
     "github": {
       "command": "python",
-      "args": ["-m", "mumega.core.mcp.github_server"]
+      "args": ["/opt/sos-mcp/github_server.py"]
     }
   }
 }

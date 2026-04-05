@@ -35,6 +35,10 @@ class MessageType(Enum):
     SLASH = "slash"
 
     # System messages
+    SIGNAL = "signal"
+    BROADCAST = "broadcast"
+    ANNOUNCE = "announce"
+    HOOK_EVENT = "hook_event"
     HEALTH_CHECK = "health_check"
     CAPABILITY_REQUEST = "capability_request"
     CAPABILITY_GRANT = "capability_grant"
@@ -111,17 +115,26 @@ class Message:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Message:
         """Deserialize message from dictionary."""
+        raw_type = data["type"]
+        try:
+            msg_type = MessageType(raw_type)
+        except ValueError:
+            msg_type = MessageType.SIGNAL
+            metadata = dict(data.get("metadata", {}))
+            metadata["original_type"] = raw_type
+        else:
+            metadata = data.get("metadata", {})
         return cls(
-            id=data["id"],
-            type=MessageType(data["type"]),
-            source=data["source"],
-            target=data["target"],
-            payload=data["payload"],
+            id=data.get("id", str(uuid.uuid4())),
+            type=msg_type,
+            source=data.get("source", "unknown"),
+            target=data.get("target", "broadcast"),
+            payload=data.get("payload", {}),
             trace_id=data.get("trace_id"),
             capability_id=data.get("capability_id"),
             version=data.get("version", "1.0"),
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-            metadata=data.get("metadata", {}),
+            timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else datetime.now(timezone.utc),
+            metadata=metadata,
         )
 
     @classmethod

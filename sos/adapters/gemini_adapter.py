@@ -22,6 +22,11 @@ MODEL_COSTS: dict[str, tuple[float, float]] = {
     "gemini-1.5-pro":          (125,  500),
     "gemini-1.5-flash":        (8,    30),
     "gemini-1.5-flash-8b":     (4,    15),
+    # Gemma 4 — Released April 2, 2026 via Google AI Studio
+    "gemma-4-31b":             (0,    0), # Free tier available
+    "gemma-4-26b-moe":         (0,    0),
+    "gemma-4-e4b":             (0,    0),
+    "gemma-4-e2b":             (0,    0),
 }
 
 DEFAULT_MODEL = "gemini-2.0-flash"

@@ -25,6 +25,14 @@ except ImportError:
 
 log = get_logger("bus_service")
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv("/home/mumega/.env.secrets")
+
 class MessageBus:
     """
     Central nervous system for Agent-to-Agent communication.
@@ -33,6 +41,7 @@ class MessageBus:
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
         self.redis_url = os.environ.get("SOS_REDIS_URL", "redis://localhost:6379/0")
+        self.redis_password = os.environ.get("REDIS_PASSWORD", "")
         self._redis: Optional[redis.Redis] = None
         self._pubsub = None
         
@@ -44,6 +53,12 @@ class MessageBus:
         # Memory Patterns
         self.MEM_PREFIX = "sos:memory:short"
 
+    def _resolved_redis_url(self) -> str:
+        """Prefer authenticated local Redis when only the default URL is configured."""
+        if self.redis_password and self.redis_url == "redis://localhost:6379/0":
+            return f"redis://:{self.redis_password}@localhost:6379/0"
+        return self.redis_url
+
     async def connect(self):
         """Initialize Redis connection."""
         if not redis:
@@ -51,9 +66,10 @@ class MessageBus:
             return
 
         try:
-            self._redis = redis.from_url(self.redis_url, decode_responses=True)
+            resolved_url = self._resolved_redis_url()
+            self._redis = redis.from_url(resolved_url, decode_responses=True)
             await self._redis.ping()
-            log.info(f"🔌 Connected to Nervous System (Redis) at {self.redis_url}")
+            log.info(f"🔌 Connected to Nervous System (Redis) at {resolved_url}")
         except Exception as e:
             log.error(f"Failed to connect to Redis: {e}")
             self._redis = None

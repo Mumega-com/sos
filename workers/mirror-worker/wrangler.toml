@@ -1,0 +1,27 @@
+name = "sos-mirror"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+[[routes]]
+pattern = "api.mumega.com/mirror/*"
+zone_id = "6be08912cb8df272ae145c29f94be71a"
+
+# Vectorize for embeddings (replaces Gemini API — no quota limits)
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "sos-engrams"
+
+# D1 for metadata (fast edge queries)
+[[d1_databases]]
+binding = "DB"
+database_name = "sos-mirror"
+database_id = "22dd92e3-b965-4c97-b1e9-f961ff0aa76d"
+
+# KV for token auth (fast lookup)
+[kv_namespaces]
+binding = "MIRROR_TOKENS"
+id = "placeholder"
+
+[vars]
+SUPABASE_URL = "https://nnolqgvuvoxkofbitunb.supabase.co"

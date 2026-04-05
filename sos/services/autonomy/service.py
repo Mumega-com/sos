@@ -7,9 +7,6 @@ Provides the autonomous heartbeat for SOS agents:
 - Dream synthesis on alpha drift
 - Avatar generation on significant events
 - Social automation for sharing insights
-
-Source: /home/mumega/cli/mumega/core/sovereign/engine.py
-        /home/mumega/SOS/sos/kernel/metabolism.py
 """
 
 import os

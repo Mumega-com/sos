@@ -4,8 +4,6 @@ Autonomy Coordinator
 
 Manages autonomy services for multiple agents.
 Provides centralized control and monitoring.
-
-Source: /home/mumega/cli/mumega/core/daemon/heartbeat.py
 """
 
 import asyncio

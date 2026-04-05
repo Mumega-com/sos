@@ -1,0 +1,25 @@
+name = "sos-bus"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+account_id = "e39eaf94f33092c4efd029d94ae1e9dd"
+
+[[routes]]
+pattern = "bus.mumega.com/*"
+zone_id = "6be08912cb8df272ae145c29f94be71a"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sos-bus"
+database_id = "7ff8d398-0e6e-4b35-bdeb-686fc176dc17"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "05b010acf24f45ee96c2351dfb5a6dab"
+
+[[r2_buckets]]
+binding = "SDK"
+bucket_name = "sos-sdk"
+
+[vars]
+ORIGIN_URL = "http://5.161.216.149:6380"

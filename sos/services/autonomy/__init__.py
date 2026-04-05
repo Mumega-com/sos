@@ -10,8 +10,6 @@ Components:
 - Metabolism: Economic cost tracking and heartbeat (sos.kernel.metabolism)
 - Avatar: QNFT generation on alpha drift (sos.services.identity.avatar)
 
-Source: /home/mumega/cli/mumega/core/sovereign/engine.py
-
 Usage:
     from sos.services.autonomy import AutonomyService, AutonomyConfig
 

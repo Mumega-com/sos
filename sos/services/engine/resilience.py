@@ -4,8 +4,6 @@ Engine Resilience - Circuit Breaker, Rate Limiting, and Failover
 
 Provides fault tolerance patterns for SOS Engine model routing.
 
-Source: /home/mumega/cli/mumega/core/model_router.py + Architecture Agreement
-
 Patterns Implemented:
 - Circuit Breaker: Trip after N failures, reset after cooldown
 - Rate Limiter: Token bucket with per-adapter limits

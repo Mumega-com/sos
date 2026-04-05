@@ -101,13 +101,13 @@ Every learner gets two AI guides:
 
 ## Technical Reality
 
-All of this EXISTS in `/home/mumega/cli`:
-- `sovereign/bounty_board.py` - Bounty system
-- `sovereign/treasury.py` - $MIND on Solana
-- `sovereign/hive.py` - Parallel workers
-- `sovereign/marketplace.py` - 16D job matching
-- `daemon/dreams.py` - Learning during idle
-- `core/tasks/manager.py` - Persistent tasks
+These capabilities now live across the active SOS and sovereign layers:
+- `SOS/sos/services/operations/` - delivery pipelines and execution flows
+- `SOS/sos/services/autonomy/` - pulse, dreaming, coordination
+- `SOS/sos/kernel/dreams.py` - learning during idle
+- `~/sovereign/treasury.py` - treasury and token logic
+- `~/sovereign/hive.py` - parallel workers
+- `~/sovereign/marketplace.py` - marketplace and matching logic
 
 **The code is written. The infrastructure is running. We just need riders.**
 

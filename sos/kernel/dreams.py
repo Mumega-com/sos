@@ -16,8 +16,6 @@ Usage:
 
     synthesizer = DreamSynthesizer(agent="river")
     dream = await synthesizer.synthesize(DreamType.PATTERN_SYNTHESIS)
-
-Source: /home/mumega/cli/mumega/core/daemon/dreams.py
 """
 
 import os

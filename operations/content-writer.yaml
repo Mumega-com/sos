@@ -1,0 +1,98 @@
+product: content-writer
+slug: content-writer
+price_monthly: 50000  # cents ($500)
+objective_template: "Publish {frequency} blog posts for {customer} about {topics}"
+schedule: "0 9 * * 1,3,5,0"  # Mon/Wed/Fri/Sun at 9am
+
+team:
+  - role: researcher
+    model: gemini-flash
+    task: |
+      Research the topic "{topic}" for a {industry} business.
+      Find 3 credible sources. Write a bullet-point outline with:
+      - Hook/intro angle
+      - 4-5 key points with supporting data
+      - Call to action relevant to {customer}
+    max_tokens: 1500
+
+  - role: writer
+    model: gemma-4-31b
+    task: |
+      Write an 800+ word blog post from this outline.
+      Brand voice: {brand_voice}
+      Business: {customer} ({industry})
+      Include: intro hook, subheadings, conclusion with CTA.
+      Do NOT use generic filler. Every paragraph must have a specific point.
+      Output: markdown with title as H1.
+    max_tokens: 3000
+    temperature: 0.8
+
+  - role: reviewer
+    model: gemini-flash
+    task: |
+      Review this blog post for:
+      1. Word count (must be 800+)
+      2. SEO: does the title contain the target keyword? Are there subheadings?
+      3. Readability: short paragraphs, no jargon walls
+      4. Factual accuracy: any claims that need sources?
+      5. CTA: is there a clear call to action?
+      Score 0-100. If below 70, list specific fixes.
+    max_tokens: 1000
+
+  - role: publisher
+    tool: wordpress_api
+    task: "Post to {wordpress_url} with title, content, featured category"
+
+phases:
+  - name: research
+    roles: [researcher]
+    output_key: outline
+
+  - name: draft
+    roles: [writer]
+    input_key: outline
+    output_key: article
+
+  - name: review
+    roles: [reviewer]
+    input_key: article
+    output_key: reviewed
+    gate:
+      metric: score
+      operator: ">="
+      threshold: 70
+
+  - name: publish
+    roles: [publisher]
+    input_key: reviewed
+    output_key: url
+
+  - name: report
+    roles: []
+    input_key: url
+    output_key: report
+
+deliverables:
+  - type: wordpress_post
+    verify: http_200
+    frequency: per_run
+
+  - type: email_report
+    frequency: weekly
+    config:
+      template: weekly_content_report
+      include: [post_urls, word_counts, seo_scores, next_topics]
+
+budget:
+  tokens_per_run: 6000
+  max_retries: 2
+  cost_per_run_usd: 0.0
+  monthly_cap_usd: 10.0
+
+onboarding_fields:
+  - wordpress_url (required)
+  - brand_voice (required)
+  - topics (required, comma-separated, min 3)
+  - industry (required)
+  - customer_email (required)
+  - posting_frequency (optional, default: 4/week)

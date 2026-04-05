@@ -1,0 +1,66 @@
+# What we need to learn about a business to run their marketing
+# The intake conversation should extract all of this
+
+business:
+  name: ""                    # "StemMinds Education"
+  industry: ""                # "education", "dental", "legal", etc.
+  description: ""             # One sentence: what they do
+  target_audience: ""         # Who they sell to
+  location: ""                # City/region (for local SEO)
+  competitors: []             # 2-3 competitor URLs
+
+voice:
+  tone: ""                    # "professional", "casual", "authoritative", "friendly"
+  personality: ""             # "innovative", "trustworthy", "fun", "expert"
+  avoid: []                   # Words/topics to avoid
+  examples: ""                # "Like how Apple writes" or a sample paragraph
+
+goals:
+  primary: ""                 # "Get more leads", "Build brand awareness", "Drive sales"
+  secondary: ""               # "Establish thought leadership"
+  timeline: ""                # "This quarter", "Next 6 months"
+  budget_range: ""            # "Under $1k/mo", "$1-3k/mo", "$3k+"
+
+current_presence:
+  website:
+    url: ""                   # Their website URL
+    platform: ""              # "WordPress", "Shopify", "Wix", "Custom"
+    has_blog: false
+    has_analytics: false       # Google Analytics connected?
+
+  social:
+    - platform: ""            # "instagram", "facebook", "linkedin", "twitter", "tiktok"
+      handle: ""
+      followers: 0
+      posting_frequency: ""   # "daily", "weekly", "rarely", "never"
+
+  email:
+    platform: ""              # "Mailchimp", "ConvertKit", "HubSpot", "none"
+    list_size: 0
+    sending_frequency: ""
+
+  crm: ""                    # "HubSpot", "GoHighLevel", "Salesforce", "none"
+
+  google_business: false      # Do they have a Google Business Profile?
+  reviews_platform: ""        # "Google", "Yelp", "none"
+
+integrations:
+  # What we connect to deliver work
+  wordpress:
+    url: ""                      # Their WordPress site URL
+    sitepilot_key: ""            # SitePilot AI plugin API key (spai_xxx)
+    # Customer installs our free WP plugin → generates key → we get full control
+    # Posts, pages, SEO, Elementor, Gutenberg, media, menus — all via MCP
+  social_api_keys: {}
+  email_api_key: ""
+  google_search_console: false
+  google_analytics_id: ""
+
+# What operations to run based on discovery
+recommended_operations:
+  # Auto-populated based on answers:
+  # - Has WordPress + wants content → content-writer
+  # - Has social accounts + wants awareness → social-media-manager
+  # - Has website + wants traffic → seo-analyst
+  # - Has email list + wants conversions → email-specialist
+  # - Wants everything → full-marketing-team
