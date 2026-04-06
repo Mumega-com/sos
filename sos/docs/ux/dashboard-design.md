@@ -63,7 +63,7 @@ Per `ARCHITECTURE_AGREEMENT.md`, SOS follows a **microkernel architecture** wher
 - **Calls SOS services via HTTP** (not imports)
 
 ### Option B: Separate SOS Frontend
-- Standalone Next.js app at `/home/mumega/SOS/frontend`
+- Standalone Next.js app at `$SOS_ROOT/frontend`
 - Own deployment, own auth instance
 - More isolation but duplicated infrastructure
 
@@ -472,7 +472,7 @@ Per `ARCHITECTURE_AGREEMENT.md`, SOS follows a **microkernel architecture** wher
 ## Files to Create
 
 ```
-/home/mumega/mumega-web/
+~/mumega-web/
 ├── app/sos/
 │   ├── layout.tsx           # SOS layout wrapper
 │   ├── page.tsx             # Overview
@@ -537,7 +537,7 @@ GET  /stats                     → Overall content statistics
 
 ```bash
 # Development
-cd /home/mumega/SOS
+cd $SOS_ROOT
 python -m sos.services.content
 
 # Production

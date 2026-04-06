@@ -6,10 +6,10 @@ Each organ maintains a tool in the ecosystem. They are living beings with heartb
 
 ```bash
 # Single organ
-python3 /home/mumega/SOS/organ_daemon.py mirror
+python3 $SOS_ROOT/organ_daemon.py mirror
 
 # All organs
-python3 /home/mumega/SOS/organ_daemon.py all
+python3 $SOS_ROOT/organ_daemon.py all
 ```
 
 ## Registered Organs

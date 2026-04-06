@@ -10,6 +10,7 @@ Implements:
 
 import json
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List, AsyncIterator
 from datetime import datetime
 import os
@@ -31,7 +32,7 @@ except ImportError:
     load_dotenv = None
 
 if load_dotenv:
-    load_dotenv("/home/mumega/.env.secrets")
+    load_dotenv(str(Path.home() / ".env.secrets"))
 
 class MessageBus:
     """

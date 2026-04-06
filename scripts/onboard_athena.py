@@ -83,7 +83,7 @@ async def onboard_athena():
                         "squad": "core",
                     },
                 },
-                headers={"Authorization": "Bearer sk-mumega-internal-001"},
+                headers={"Authorization": f"Bearer {os.environ.get('MIRROR_TOKEN', '')}"},
             )
             if resp.status_code == 200:
                 print("   Genesis memory stored in Mirror.")

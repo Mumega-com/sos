@@ -30,12 +30,12 @@ You have access to the following tools. When you need to use a tool, output in t
 </tool_call>
 
 Available tools:
-- bash: Execute shell commands. Args: {"command": "your command", "cwd": "/home/mumega"}
+- bash: Execute shell commands. Args: {"command": "your command", "cwd": "/workspace"}
 - web_search: Search the web. Args: {"query": "search terms"}
-- filesystem_read: Read a file. Args: {"path": "/home/mumega/path/to/file"}
+- filesystem_read: Read a file. Args: {"path": "/workspace/path/to/file"}
 - filesystem_write: Write to a file. Args: {"path": "/path", "content": "text"}
 
-IMPORTANT: All filesystem operations are sandboxed to /home/mumega.
+IMPORTANT: All filesystem operations are sandboxed to the workspace directory.
 
 When the user asks you to do something that requires a tool:
 1. Think about which tool to use

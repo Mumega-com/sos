@@ -24,15 +24,16 @@ from typing import Any
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("operation-runner")
 
-# Paths
-OPERATIONS_DIR = Path("/home/mumega/SOS/operations")
-ORGANISMS_DIR = Path("/home/mumega/.mumega/organisms")
+# Paths — SOS_ROOT env var overrides; falls back to package-relative path
+_SOS_ROOT = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
+OPERATIONS_DIR = Path(os.environ.get("SOS_OPERATIONS_DIR", str(_SOS_ROOT / "operations")))
+ORGANISMS_DIR = Path(os.environ.get("SOS_ORGANISMS_DIR", str(Path.home() / ".mumega" / "organisms")))
 MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "sk-mumega-internal-001")
+MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 
 def load_secrets() -> None:
     """Load secrets from SOS-owned sources only."""
-    secrets_path = "/home/mumega/.env.secrets"
+    secrets_path = os.environ.get("SOS_SECRETS_PATH", str(Path.home() / ".env.secrets"))
     if os.path.exists(secrets_path):
         with open(secrets_path) as f:
             for line in f:

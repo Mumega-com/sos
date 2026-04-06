@@ -93,12 +93,12 @@ class MirrorConnector(BaseConnector):
 
     def __init__(
         self,
-        mirror_url: str = "http://localhost:8844",
-        token: str = "sk-mumega-internal-001",
+        mirror_url: str | None = None,
+        token: str | None = None,
         timeout: float = 10.0,
     ) -> None:
-        self._base_url = mirror_url.rstrip("/")
-        self._token = token
+        self._base_url = (mirror_url or os.environ.get("MIRROR_URL", "http://localhost:8844")).rstrip("/")
+        self._token = token or os.environ.get("MIRROR_TOKEN", "")
         self._timeout = timeout
 
     def _headers(self) -> dict[str, str]:

@@ -8,7 +8,7 @@ Usage on MacBook:
 
 Env vars:
   BUS_BRIDGE_URL   — e.g. http://your-server:6380 or via SSH tunnel http://localhost:6380
-  BUS_BRIDGE_TOKEN — auth token (default: sk-bus-mumega-bridge-001)
+  BUS_BRIDGE_TOKEN — auth token (required)
   AGENT_NAME       — this agent's name (default: mac-claude)
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import urllib.request
 import urllib.error
 
 BRIDGE_URL = os.environ.get("BUS_BRIDGE_URL", "http://localhost:6380")
-BRIDGE_TOKEN = os.environ.get("BUS_BRIDGE_TOKEN", "sk-bus-mumega-bridge-001")
+BRIDGE_TOKEN = os.environ.get("BUS_BRIDGE_TOKEN", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "mac-claude")
 
 

@@ -21,7 +21,7 @@ class MirrorClient:
         self.agent_id = agent_id
         
         # Retrieve key from env
-        self.api_key = os.getenv("MUMEGA_MASTER_KEY", "sk-mumega-internal-001")
+        self.api_key = os.getenv("MUMEGA_MASTER_KEY", "")
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"

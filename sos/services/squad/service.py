@@ -20,7 +20,7 @@ except ImportError:
     load_dotenv = None
 
 if load_dotenv:
-    load_dotenv("/home/mumega/.env.secrets")
+    load_dotenv(str(Path.home() / ".env.secrets"))
 
 
 log = get_logger("squad_service")

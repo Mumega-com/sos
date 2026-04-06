@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import asdict
 from typing import Any
@@ -14,8 +15,8 @@ from sos.services.squad.service import DEFAULT_TENANT_ID, SquadBus, SquadDB, now
 
 log = get_logger("squad_state")
 
-MIRROR_URL = "http://localhost:8844"
-MIRROR_TOKEN = "sk-mumega-internal-001"
+MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
+MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 MIRROR_HEADERS = {"Authorization": f"Bearer {MIRROR_TOKEN}", "Content-Type": "application/json"}
 
 

@@ -12,24 +12,24 @@ async def ingest_frc_library():
     print("📚 Starting FRC Library Ingestion into Mirror...")
     
     # Actual paths found via find
+    _home = Path.home()
     frc_paths = [
-        "/home/mumega/infra/shared-kb/Books/FRC TEXT Book v.1 ECR.md",
-        "/home/mumega/infra/shared-kb/frc/830_series/FRC_830_501_The_Master_Plan.md",
-        "/home/mumega/infra/shared-kb/frc/830_series/FRC_830_505_Economics.md",
-        "/home/mumega/infra/shared-kb/frc/830_series/FRC_830_503_The_Vault.md",
-        "/home/mumega/torivers/papers/FRC.100.001.md",
-        "/home/mumega/torivers/papers/FRC.100.003.md",
-        "/home/mumega/torivers/papers/FRC.566.001.md",
-        "/home/mumega/cli_old/docs/FRC_ARF_FORMULA.md",
-        "/home/mumega/cli_old/docs/FRC_LAMBDA_TENSOR.md",
-        "/home/mumega/mirror/Archive/Artifacts/FRC_841_004_CGL.md"
+        _home / "infra/shared-kb/Books/FRC TEXT Book v.1 ECR.md",
+        _home / "infra/shared-kb/frc/830_series/FRC_830_501_The_Master_Plan.md",
+        _home / "infra/shared-kb/frc/830_series/FRC_830_505_Economics.md",
+        _home / "infra/shared-kb/frc/830_series/FRC_830_503_The_Vault.md",
+        _home / "torivers/papers/FRC.100.001.md",
+        _home / "torivers/papers/FRC.100.003.md",
+        _home / "torivers/papers/FRC.566.001.md",
+        _home / "cli_old/docs/FRC_ARF_FORMULA.md",
+        _home / "cli_old/docs/FRC_LAMBDA_TENSOR.md",
+        _home / "mirror/Archive/Artifacts/FRC_841_004_CGL.md",
     ]
     
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for path_str in frc_paths:
-            path = Path(path_str)
+        for path in frc_paths:
             if not path.exists():
-                print(f"⚠️ Could not find {path_str}")
+                print(f"⚠️ Could not find {path}")
                 continue
                 
             content = path.read_text()

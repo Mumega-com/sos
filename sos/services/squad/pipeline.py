@@ -21,10 +21,16 @@ SOS_DATA_DIR = Path.home() / ".sos" / "data"
 DB_PATH = SOS_DATA_DIR / "squads.db"
 
 # Locations to probe when resolving a repo slug → local path
-_LOCAL_ROOTS: list[Path] = [
-    Path("/mnt/HC_Volume_104325311"),
-    Path.home(),
-]
+# Override SOS_WORKSPACE_ROOT env var to add a custom root (e.g. a mounted volume)
+_LOCAL_ROOTS: list[Path] = list(
+    filter(
+        None,
+        [
+            Path(os.environ["SOS_WORKSPACE_ROOT"]) if os.environ.get("SOS_WORKSPACE_ROOT") else None,
+            Path.home(),
+        ],
+    )
+)
 
 STEP_TIMEOUT = 120  # seconds per subprocess step
 
@@ -46,7 +52,7 @@ def _loads(value: str | None, fallback: Any) -> Any:
 def _resolve_local_path(repo: str) -> Path | None:
     """
     Given "owner/project" or just "project", find the local directory.
-    Checks /mnt/HC_Volume_104325311/<project> then ~/<project>.
+    Checks SOS_WORKSPACE_ROOT/<project> (if set) then ~/<project>.
     """
     project = repo.split("/")[-1]
     for root in _LOCAL_ROOTS:
@@ -297,7 +303,7 @@ class PipelineService:
         if not local:
             raise FileNotFoundError(
                 f"Cannot resolve local path for repo '{spec.repo}'. "
-                "Clone it first or check /mnt/HC_Volume_104325311 and ~/."
+                "Clone it first or check SOS_WORKSPACE_ROOT and ~/."
             )
         cwd = local / spec.workdir
         if not cwd.exists():

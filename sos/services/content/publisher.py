@@ -274,7 +274,7 @@ class ContentPublisher:
             )
 
         if "file" in destinations:
-            output_dir = Path("/home/mumega/mumega-web/content/blog")
+            output_dir = Path(os.environ.get("MUMEGA_WEB_BLOG_DIR", str(Path.home() / "mumega-web" / "content" / "blog")))
             results["file"] = self.publish_to_file(
                 slug=slug.split("/")[-1],  # Just the filename
                 title=title,

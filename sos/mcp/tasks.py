@@ -4,14 +4,19 @@ Thin MCP stdio server wrapping Mirror's Sovereign Task System.
 All tasks live in Mirror API (Supabase) — single source of truth.
 
 Usage:
-  claude mcp add tasks python3 /home/mumega/SOS/sos/mcp/tasks.py
+  claude mcp add tasks python3 /path/to/SOS/sos/mcp/tasks.py
+
+Environment:
+  MIRROR_URL    — Mirror API URL (default: http://localhost:8844)
+  MIRROR_TOKEN  — Mirror API auth token (required)
 """
+import os
 import sys
 import json
 import requests
 
-MIRROR_URL = "http://localhost:8844"
-MIRROR_TOKEN = "sk-mumega-internal-001"
+MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
+MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 HEADERS = {
     "Authorization": f"Bearer {MIRROR_TOKEN}",
     "Content-Type": "application/json",

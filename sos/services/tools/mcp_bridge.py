@@ -14,7 +14,7 @@ class MCPBridge:
     """
     Bridges SOS to optional MCP-style server classes.
 
-    Server loading is explicit. SOS no longer hardwires /home/mumega/cli into
+    Server loading is explicit. SOS no longer hardwires the legacy CLI path into
     sys.path; if legacy servers are still needed, point to them intentionally
     via config or environment.
     """

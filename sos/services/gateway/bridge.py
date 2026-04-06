@@ -153,8 +153,9 @@ async def require_tenant(
     if not api_key:
         raise HTTPException(status_code=401, detail="API key required")
 
-    # Internal key bypass
-    if api_key == "sk-mumega-internal-001":
+    # Internal key bypass — set MUMEGA_INTERNAL_KEY env var to enable
+    internal_key = os.environ.get("MUMEGA_INTERNAL_KEY", "")
+    if internal_key and api_key == internal_key:
         return "mumega"
 
     tenant = get_tenant_by_key(api_key)

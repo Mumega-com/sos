@@ -26,10 +26,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [FIRST-WORDS] %(mess
 log = logging.getLogger("first-words")
 
 MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "sk-mumega-internal-001")
+MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 
 # Load secrets
-for p in ["/home/mumega/.env.secrets"]:
+for p in [str(Path.home() / ".env.secrets")]:
     if os.path.exists(p):
         with open(p) as f:
             for line in f:
@@ -62,7 +62,7 @@ def load_birth_payload(agent_slug: str) -> dict | None:
         log.warning(f"Mirror lookup failed: {e}")
 
     # Try local workspace
-    workspace = Path(f"/home/mumega/clawd-{agent_slug}")
+    workspace = Path.home() / f"clawd-{agent_slug}"
     birth_file = workspace / "birth_payload.json"
     if birth_file.exists():
         return json.loads(birth_file.read_text())
@@ -181,7 +181,7 @@ def deliver(agent_slug: str, message: str, birth: dict) -> dict:
     try:
         import subprocess
         subprocess.run(
-            ["bash", "/home/mumega/scripts/discord-reply.sh", agent_slug, "control",
+            ["bash", str(Path.home() / "scripts" / "discord-reply.sh"), agent_slug, "control",
              f"**{agent_slug.title()} — First Words**\n\n{message}"],
             capture_output=True, timeout=10,
         )

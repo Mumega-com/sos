@@ -26,7 +26,8 @@ logger = logging.getLogger("sos.spore")
 class SporeGenerator:
     def __init__(self, agent_name: str = "River"):
         self.agent_name = agent_name
-        self.output_dir = Path("/home/mumega/SOS/artifacts/spores")
+        _sos_root = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
+        self.output_dir = Path(os.environ.get("SOS_SPORES_DIR", str(_sos_root / "artifacts" / "spores")))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_system_prompt(self) -> str:

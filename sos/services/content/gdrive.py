@@ -5,6 +5,7 @@ Wraps the gdrive-cms tool for SOS content management.
 Syncs Google Docs → MDX/Markdown for the website.
 """
 
+import os
 import subprocess
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-GDRIVE_CMS_PATH = Path("/home/mumega/gdrive-cms")
+GDRIVE_CMS_PATH = Path(os.environ.get("GDRIVE_CMS_PATH", str(Path.home() / "gdrive-cms")))
 
 
 @dataclass

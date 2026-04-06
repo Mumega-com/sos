@@ -39,7 +39,7 @@ import requests
 
 def _load_secrets():
     # Load from SOS-owned secret files only.
-    for p in ["/home/mumega/.env.secrets"]:
+    for p in [str(Path.home() / ".env.secrets")]:
         if os.path.exists(p):
             with open(p) as f:
                 for line in f:
@@ -72,7 +72,7 @@ REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 AGENT_SELF = os.environ.get("AGENT_NAME", "unknown")
 PROJECT = os.environ.get("PROJECT", "")
 MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "sk-mumega-internal-001")
+MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 
 r = redis.Redis(host="localhost", port=6379, password=REDIS_PASSWORD, decode_responses=True)
 

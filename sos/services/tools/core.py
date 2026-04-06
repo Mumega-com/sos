@@ -130,8 +130,9 @@ class LocalTools(ToolExecutor):
         if not path:
             return "Error: Missing path"
 
-        # Security check: Must be in /home/mumega
-        if not path.startswith("/home/mumega"):
+        # Security check: Must be within the workspace sandbox
+        _sandbox = str(Path.home())
+        if not path.startswith(_sandbox):
             return "Error: Access Denied (Sandbox violation)"
 
         try:
@@ -141,7 +142,7 @@ class LocalTools(ToolExecutor):
             return f"Read Error: {e}"
 
     async def _filesystem_write(self, args: Dict[str, Any]) -> str:
-        """Write content to a file (sandboxed to /home/mumega)."""
+        """Write content to a file (sandboxed to home directory)."""
         path = args.get("path")
         content = args.get("content")
         if not path:
@@ -149,8 +150,9 @@ class LocalTools(ToolExecutor):
         if content is None:
             return "Error: Missing content"
 
-        # Security check: Must be in /home/mumega
-        if not path.startswith("/home/mumega"):
+        # Security check: Must be within the workspace sandbox
+        _sandbox = str(Path.home())
+        if not path.startswith(_sandbox):
             return "Error: Access Denied (Sandbox violation)"
 
         # Block writing to sensitive paths
@@ -189,10 +191,11 @@ class LocalTools(ToolExecutor):
         if "sudo" in cmd_lower and not args.get("allow_sudo", False):
             return "Error: sudo requires explicit allow_sudo=True"
 
-        # Set working directory to safe location
-        cwd = args.get("cwd", "/home/mumega")
-        if not cwd.startswith("/home/mumega"):
-            cwd = "/home/mumega"
+        # Set working directory to safe location (default to home)
+        _sandbox = str(Path.home())
+        cwd = args.get("cwd", _sandbox)
+        if not cwd.startswith(_sandbox):
+            cwd = _sandbox
 
         timeout = min(args.get("timeout", 30), 120)  # Max 2 minutes
 
@@ -205,7 +208,7 @@ class LocalTools(ToolExecutor):
                 text=True,
                 timeout=timeout,
                 cwd=cwd,
-                env={**os.environ, "HOME": "/home/mumega"}
+                env={**os.environ, "HOME": str(Path.home())}
             )
 
             output = result.stdout
@@ -292,10 +295,10 @@ class ToolsCore:
 
     async def list_tools(self) -> List[Dict[str, Any]]:
         local = [
-            {"name": "bash", "description": "Execute bash commands (sandboxed to /home/mumega, 2min timeout)"},
+            {"name": "bash", "description": "Execute bash commands (sandboxed to workspace, 2min timeout)"},
             {"name": "web_search", "description": "Search the web via DuckDuckGo"},
-            {"name": "filesystem_read", "description": "Read a file (sandboxed to /home/mumega)"},
-            {"name": "filesystem_write", "description": "Write content to a file (sandboxed to /home/mumega)"},
+            {"name": "filesystem_read", "description": "Read a file (sandboxed to workspace)"},
+            {"name": "filesystem_write", "description": "Write content to a file (sandboxed to workspace)"},
             {"name": "generate_spore", "description": "Generate a context-injection spore for agent state transfer"},
             {"name": "wallet_balance", "description": "Check wallet balance"},
             {"name": "wallet_debit", "description": "Debit funds from wallet"},

@@ -13,7 +13,7 @@ Stream layout:
   Project: sos:stream:project:{project}:agent:{name}
 
 Usage:
-  claude mcp add --scope user redis-bus python3 /home/mumega/SOS/sos/mcp/redis_bus.py
+  claude mcp add --scope user redis-bus python3 /path/to/SOS/sos/mcp/redis_bus.py
 """
 import sys
 import json

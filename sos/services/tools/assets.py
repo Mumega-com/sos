@@ -28,7 +28,8 @@ class GeminiAssetGenerator:
         self.api_key = os.environ.get("GOOGLE_API_KEY")
         self.model_name = "gemini-2.5-flash-image" # Nano Banana
         
-        self.output_dir = Path("/home/mumega/SOS/web/dashboard/public/assets/generated")
+        _sos_root = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
+        self.output_dir = Path(os.environ.get("SOS_ASSETS_DIR", str(_sos_root / "web" / "dashboard" / "public" / "assets" / "generated")))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     async def generate_ui_asset(self, prompt: str, asset_type: str = "card") -> Dict[str, Any]:

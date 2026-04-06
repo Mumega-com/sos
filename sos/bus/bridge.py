@@ -348,7 +348,7 @@ class BusHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    secrets_path = "/home/mumega/.env.secrets"
+    secrets_path = str(Path.home() / ".env.secrets")
     if os.path.exists(secrets_path):
         with open(secrets_path) as f:
             for line in f:

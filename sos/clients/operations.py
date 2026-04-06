@@ -19,8 +19,10 @@ class OperationsClient:
 
     def list_templates(self) -> list[str]:
         """List available operation templates."""
+        import os
         from pathlib import Path
-        ops_dir = Path("/home/mumega/SOS/operations")
+        _sos_root = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent))
+        ops_dir = Path(os.environ.get("SOS_OPERATIONS_DIR", str(_sos_root / "operations")))
         return [f.stem for f in ops_dir.glob("*.yaml")]
 
     def get_template(self, product: str) -> dict:

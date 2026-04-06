@@ -47,7 +47,7 @@ log = logging.getLogger("sos_mcp_sse")
 
 
 def _load_secrets() -> None:
-    for p in ["/home/mumega/.env.secrets"]:
+    for p in [str(Path.home() / ".env.secrets")]:
         if os.path.exists(p):
             with open(p) as f:
                 for line in f:
@@ -78,7 +78,7 @@ _load_secrets()
 
 REDIS_PASSWORD: str = os.environ.get("REDIS_PASSWORD", "")
 MIRROR_URL: str = os.environ.get("MIRROR_URL", "http://localhost:8844")
-MIRROR_TOKEN: str = os.environ.get("MIRROR_TOKEN", "sk-mumega-internal-001")
+MIRROR_TOKEN: str = os.environ.get("MIRROR_TOKEN", "")
 PORT: int = int(os.environ.get("SOS_MCP_PORT", "6070"))
 
 MIRROR_HEADERS = {
@@ -553,7 +553,7 @@ async def options_handler(path: str):
 
 
 def _valid_tokens() -> set[str]:
-    tokens = os.environ.get("MCP_ACCESS_TOKENS", "sk-mumega-public-2026").split(",")
+    tokens = os.environ.get("MCP_ACCESS_TOKENS", "").split(",")
     return {token.strip() for token in tokens if token.strip()}
 
 

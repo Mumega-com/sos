@@ -11,9 +11,9 @@ import httpx
 import logging
 from datetime import datetime
 
-# Configuration
-MIRROR_URL = "http://localhost:8844"
-ADMIN_TOKEN = "sk-mumega-internal-001"
+# Configuration — set MIRROR_TOKEN env var before running
+MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
+ADMIN_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("mirror_refresh")
@@ -78,9 +78,9 @@ def run_refresh():
     # 4. Workspace Topology Truth
     store_truth(
         "workspace_paths_current",
-        "Primary workspace is /home/mumega/SOS. The root /home/mumega/resident-cms is now a symlink "
-        "to the external volume /mnt/HC_Volume_104325311/resident-cms. "
-        "Credentials are unified in /home/mumega/.env.secrets.",
+        "Primary workspace is the SOS repo root. The resident-cms directory is a symlink "
+        "to an external volume mount. "
+        "Credentials are unified in the server secrets file.",
         ["Workspace Topology", "Symlinks", "Path Logic", "Secrets"]
     )
 

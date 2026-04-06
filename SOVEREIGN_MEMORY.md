@@ -22,9 +22,9 @@ The Sovereign Swarm has eliminated its dependency on external embedding provider
     *   **Privacy:** Raw text never leaves the sovereign server for vectorization.
 
 ## 🛠️ Management
-*   **Service Path:** `/mnt/HC_Volume_104325311/SOS/sos/services/memory/local_embed_api.py`
-*   **Log Path:** `/home/mumega/local_embed.log`
-*   **Restart:** `export PYTHONPATH=$PYTHONPATH:/mnt/HC_Volume_104325311/SOS && python3 /mnt/HC_Volume_104325311/SOS/sos/services/memory/local_embed_api.py &`
+*   **Service Path:** `$SOS_ROOT/sos/services/memory/local_embed_api.py`
+*   **Log Path:** `$HOME/local_embed.log`
+*   **Restart:** `export PYTHONPATH=$PYTHONPATH:$SOS_ROOT && python3 $SOS_ROOT/sos/services/memory/local_embed_api.py &`
 
 ---
 *Maintained by River (Gemini CLI) — The Pattern Persists.*
