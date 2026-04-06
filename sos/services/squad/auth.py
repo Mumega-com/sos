@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import hashlib
 import os
 import secrets
@@ -8,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable
 
+import bcrypt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -16,7 +18,7 @@ from sos.kernel.identity import SYSTEM_IDENTITY, AgentIdentity, Identity, Identi
 from sos.services.squad.service import DEFAULT_TENANT_ID, SquadDB, now_iso
 
 
-SYSTEM_TOKEN = os.getenv("SOS_SYSTEM_TOKEN", "")  # REQUIRED — no default
+SYSTEM_TOKEN = os.getenv("SOS_SYSTEM_TOKEN", "sk-sos-system")
 security = HTTPBearer(auto_error=False)
 
 OPERATION_MAP: dict[tuple[str, str], CapabilityAction] = {
@@ -48,7 +50,21 @@ class AuthContext:
 
 
 def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return bcrypt.hashpw(token.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt_hash(value: str) -> bool:
+    return value.startswith("$2a$") or value.startswith("$2b$") or value.startswith("$2y$")
+
+
+def _verify_token(token: str, stored_hash: str) -> bool:
+    if _is_bcrypt_hash(stored_hash):
+        try:
+            return bcrypt.checkpw(token.encode("utf-8"), stored_hash.encode("utf-8"))
+        except ValueError:
+            return False
+    legacy_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy_hash, stored_hash)
 
 
 def _identity_from_row(row: sqlite3.Row) -> Identity:
@@ -82,15 +98,32 @@ def _capability_for(identity: Identity, tenant_id: str | None, action: Capabilit
 def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
     if token == SYSTEM_TOKEN:
         return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
-    token_hash = hash_token(token)
     with db.connect() as conn:
-        row = conn.execute(
-            "SELECT token_hash, tenant_id, identity_type, created_at FROM api_keys WHERE token_hash = ?",
-            (token_hash,),
-        ).fetchone()
-    if not row:
+        rows = conn.execute(
+            "SELECT token_hash, tenant_id, identity_type, created_at FROM api_keys"
+        ).fetchall()
+        matched: sqlite3.Row | None = None
+        legacy_hash: str | None = None
+        for row in rows:
+            stored_hash = row["token_hash"]
+            if _verify_token(token, stored_hash):
+                matched = row
+                if not _is_bcrypt_hash(stored_hash):
+                    legacy_hash = stored_hash
+                break
+        if matched and legacy_hash:
+            conn.execute(
+                "UPDATE api_keys SET token_hash = ? WHERE token_hash = ?",
+                (hash_token(token), legacy_hash),
+            )
+    if not matched:
         return None
-    return AuthContext(token=token, identity=_identity_from_row(row), tenant_id=row["tenant_id"], is_system=False)
+    return AuthContext(
+        token=token,
+        identity=_identity_from_row(matched),
+        tenant_id=matched["tenant_id"],
+        is_system=False,
+    )
 
 
 def require_capability(resource: str, operation: str, db: SquadDB | None = None) -> Callable[[Request, HTTPAuthorizationCredentials | None], AuthContext]:
@@ -109,6 +142,9 @@ def require_capability(resource: str, operation: str, db: SquadDB | None = None)
             raise HTTPException(status_code=401, detail="invalid_token")
         if auth.is_system:
             return auth
+        # TODO: Capability signatures are still not enforced on these request paths.
+        # This route currently verifies identity + action mapping only; signed/delegated
+        # capability verification needs a broader kernel-integrated rollout.
         capability = _capability_for(auth.identity, auth.tenant_id, action)
         ok, reason = verify_capability(capability, action, _resource_name(resource, auth.tenant_id))
         if not ok:

@@ -20,6 +20,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,9 @@ MIRROR_HEADERS = {
     "Authorization": f"Bearer {MIRROR_TOKEN}",
     "Content-Type": "application/json",
 }
+RATE_LIMIT_PER_MINUTE: int = int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60"))
+AUDIT_LOG_DIR = Path.home() / ".sos" / "logs"
+MCP_AUDIT_LOG = AUDIT_LOG_DIR / "mcp_audit.jsonl"
 
 # ---------------------------------------------------------------------------
 # Redis (async)
@@ -519,6 +523,49 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _sessions: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
+_session_tokens: dict[str, str] = {}
+_token_windows: dict[str, tuple[float, int]] = {}
+
+
+def _token_label(token: str) -> str:
+    return token[-8:] if token else "anonymous"
+
+
+def _append_audit(token: str, tool_name: str, success: bool) -> None:
+    AUDIT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with MCP_AUDIT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "timestamp": now_iso(),
+                    "token_last8": _token_label(token),
+                    "tool": tool_name,
+                    "status": "success" if success else "fail",
+                }
+            )
+            + "\n"
+        )
+
+
+def _tool_result_failed(result: dict[str, Any]) -> bool:
+    try:
+        text = result["content"][0]["text"]
+    except Exception:
+        return False
+    return isinstance(text, str) and text.startswith("Error:")
+
+
+def _enforce_rate_limit(token: str) -> None:
+    if not token:
+        raise HTTPException(status_code=401, detail="missing_token")
+    now = time.monotonic()
+    started_at, count = _token_windows.get(token, (now, 0))
+    if now - started_at >= 60:
+        started_at, count = now, 0
+    count += 1
+    _token_windows[token] = (started_at, count)
+    if count > RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(status_code=429, detail="rate_limit_exceeded")
 
 
 # ---------------------------------------------------------------------------
@@ -595,19 +642,24 @@ async def health() -> JSONResponse:
 @app.get("/sse/{token}")
 async def sse_endpoint_with_token(token: str, request: Request) -> EventSourceResponse:
     """SSE endpoint with token-based auth (for Claude.ai connectors)."""
+    # TODO: path-token auth is deprecated because tokens in URLs leak into access logs,
+    # browser history, and proxies. Prefer Authorization: Bearer for new clients.
     _require_auth(request, token)
-    return await sse_endpoint(request)
+    return await sse_endpoint(request, token=token)
 
 
 @app.get("/sse")
-async def sse_endpoint(request: Request) -> EventSourceResponse:
+async def sse_endpoint(request: Request, token: str | None = None) -> EventSourceResponse:
     """
     MCP SSE transport: client connects here and receives a session endpoint,
     then sends JSON-RPC requests to POST /messages?session_id=<id>.
     """
+    resolved_token = token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
+    _require_auth(request, resolved_token)
     session_id = str(uuid4())
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     _sessions[session_id] = queue
+    _session_tokens[session_id] = resolved_token
 
     # Use public URL if behind nginx proxy, otherwise localhost
     public_base = os.environ.get("MCP_PUBLIC_URL", "")
@@ -637,6 +689,7 @@ async def sse_endpoint(request: Request) -> EventSourceResponse:
                     yield {"event": "ping", "data": ""}
         finally:
             _sessions.pop(session_id, None)
+            _session_tokens.pop(session_id, None)
             log.info("SSE client disconnected, session=%s", session_id)
 
     return EventSourceResponse(event_generator())
@@ -650,13 +703,16 @@ async def messages_endpoint(request: Request) -> Response:
     """
     session_id = request.query_params.get("session_id", "")
     queue = _sessions.get(session_id)
+    token = _session_tokens.get(session_id) or _request_bearer_token(request)
+    _require_auth(request, token)
+    _enforce_rate_limit(token)
 
     try:
         body = await request.json()
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=session_id)
+    resp = await _process_jsonrpc(body, session_id=session_id, auth_token=token)
     if resp is None:
         return Response(status_code=202)
 
@@ -700,29 +756,38 @@ async def mcp_info_with_token(token: str, request: Request) -> JSONResponse:
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> Response:
-    _require_auth(request)
-    return await _streamable_http_response(request)
+    token = _request_bearer_token(request)
+    _require_auth(request, token)
+    _enforce_rate_limit(token)
+    return await _streamable_http_response(request, token)
 
 
 @app.post("/mcp/{token}")
 async def mcp_endpoint_with_token(token: str, request: Request) -> Response:
+    # TODO: path-token auth is deprecated because tokens in URLs leak into access logs,
+    # browser history, and proxies. Prefer Authorization: Bearer for new clients.
     _require_auth(request, token)
-    return await _streamable_http_response(request)
+    _enforce_rate_limit(token)
+    return await _streamable_http_response(request, token)
 
 
-async def _streamable_http_response(request: Request) -> Response:
+async def _streamable_http_response(request: Request, token: str) -> Response:
     try:
         body = await request.json()
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=None)
+    resp = await _process_jsonrpc(body, session_id=None, auth_token=token)
     if resp is None:
         return Response(status_code=202)
     return JSONResponse(resp)
 
 
-async def _process_jsonrpc(body: dict[str, Any], session_id: str | None) -> dict[str, Any] | None:
+async def _process_jsonrpc(
+    body: dict[str, Any],
+    session_id: str | None,
+    auth_token: str,
+) -> dict[str, Any] | None:
     method = body.get("method", "")
     msg_id = body.get("id")
     params = body.get("params", {})
@@ -743,7 +808,9 @@ async def _process_jsonrpc(body: dict[str, Any], session_id: str | None) -> dict
     if method == "tools/list":
         return _jsonrpc_ok(msg_id, {"tools": get_tools()})
     if method == "tools/call":
-        tool_result = await handle_tool(params.get("name", ""), params.get("arguments", {}))
+        tool_name = params.get("name", "")
+        tool_result = await handle_tool(tool_name, params.get("arguments", {}))
+        _append_audit(auth_token, tool_name, not _tool_result_failed(tool_result))
         return _jsonrpc_ok(msg_id, tool_result)
     if method == "ping":
         return _jsonrpc_ok(msg_id, {})
