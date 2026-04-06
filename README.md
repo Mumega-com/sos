@@ -1,157 +1,123 @@
-# Mumega
+# SOS — Sovereign Operating System
 
-**Sovereign Operating System for AI Agents**
-
-Multi-model, autonomous, edge-native agent infrastructure.
-
-## Install
-
-```bash
-# Minimal install
-pip install mumega
-
-# With Gemini support
-pip install mumega[gemini]
-
-# With local vector storage
-pip install mumega[local]
-
-# Full install (all features)
-pip install mumega[full]
-```
-
-## Quick Start
-
-```bash
-# Check system health
-mumega doctor
-
-# Start the engine
-mumega start engine
-
-# Interactive chat
-mumega chat --agent river
-```
-
-## In Code
-
-```python
-from sos.services.engine import SOSEngine
-from sos.contracts.engine import ChatRequest
-
-engine = SOSEngine()
-
-response = await engine.chat(ChatRequest(
-    message="Hello, River",
-    agent_id="agent:River",
-    memory_enabled=True
-))
-
-print(response.content)
-```
-
-## Features
-
-- **Multi-Model**: Gemini, Claude, GPT, Grok, local models (Ollama, LM Studio)
-- **Resilient**: Circuit breakers, rate limiting, automatic failover
-- **Memory**: Tiered storage (session → SQLite → Vectorize → D1)
-- **Autonomous**: Dreams, reflection, avatar generation
-- **Secure**: Capability-based access, signed plugins, sandbox execution
-- **Edge-Native**: Cloudflare D1, Vectorize, KV for storage
+Microkernel runtime for autonomous AI agents: multi-model routing, squad coordination, memory, economy, and tools.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│              ADAPTERS                   │
-│   Telegram, Discord, CLI, API, Web      │
-├─────────────────────────────────────────┤
-│              GATEWAY                    │
-│   JSON-RPC, Auth, Rate Limits, Audit    │
-├─────────────────────────────────────────┤
-│              ENGINE                     │
-│   Multi-model, Failover, Dreams         │
-├─────────────────────────────────────────┤
-│              SERVICES                   │
-│   Memory, Economy, Tools, Identity      │
-├─────────────────────────────────────────┤
-│              KERNEL                     │
-│   Capabilities, Config, Schema          │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  ADAPTERS  Telegram · Discord · CLI · Web        │
+├─────────────────────────────────────────────────┤
+│  GATEWAY   Auth · Rate limits · Audit (:6062)    │
+├─────────────────────────────────────────────────┤
+│  ENGINE    Model routing · Failover · Dreams (:6060) │
+├─────────────────────────────────────────────────┤
+│  SERVICES  Memory · Squad · Economy · Identity   │
+├─────────────────────────────────────────────────┤
+│  KERNEL    schema · identity · capability ·      │
+│            config · physics · soul · intent      │
+└─────────────────────────────────────────────────┘
+            ↕ Redis bus (sos:channel:*)
 ```
 
 ## Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Engine | 6060 | Orchestration, model routing |
-| Memory | 7070 | Vector storage, retrieval |
-| Economy | 6062 | Work ledger, $MIND token |
-| Tools | 6063 | Tool registry, MCP |
-| Identity | 6064 | Pairing, capabilities |
+| Service  | Port | Purpose                                      |
+|----------|------|----------------------------------------------|
+| engine   | 6060 | Multi-model orchestration, model failover     |
+| memory   | 6061 | Vector storage, engram retrieval              |
+| gateway  | 6062 | JSON-RPC entrypoint, auth, rate limiting      |
+| squad    | 8060 | Teams, tasks, skills, pipelines, connectors   |
+| economy  | —    | Work ledger, $MIND token accounting           |
+| identity | —    | Agent pairing, capability grants              |
+| tools    | —    | Tool registry                                 |
+| content  | —    | Blog, social, content generation              |
+| voice    | —    | Voice I/O pipeline                            |
+| mcp      | 6070 | SSE server exposing agent tools via MCP       |
+
+## Quick Start
+
+```bash
+# Start core services via systemd
+sudo systemctl start sos-engine
+sudo systemctl start sos-memory
+sudo systemctl start sos-gateway-mcp
+sudo systemctl start sos-gateway-bridge
+
+# Check status
+sudo systemctl status sos-engine
+
+# Run engine directly (dev)
+cd ~/SOS && SOS_ENGINE_PORT=6060 python3 -m sos.services.engine
+```
+
+## Squad System
+
+Squad is the team coordination layer (built 2026-04-05).
+
+- **Squad**: a named group of agents with shared channels (`sos:channel:squad:{id}`)
+- **Task**: unit of work assigned to a squad or agent; tracked in state
+- **Skill**: a packaged capability with a `SKILL.md` (Anthropic standard); 13 skills in `sos/skills/`
+- **Pipeline**: ordered sequence of skills applied to an input
+- **Connector**: integration adapter (GHL, Zapier, etc.)
+
+```bash
+# Squad service runs on :8060
+cd ~/SOS && python3 -m sos.services.squad
+```
+
+Bus channels follow the pattern `sos:channel:squad:{squad_id}` over Redis.
+
+## Models
+
+| Model              | Role                        |
+|--------------------|-----------------------------|
+| Gemma 4 31B        | Brain / portfolio scoring (free) |
+| Claude Haiku 4.5   | Workers / high-volume tasks |
+| GPT-5.4            | Architecture decisions      |
+| Claude Opus 4.6    | Complex reasoning            |
+
+## Development
+
+**Add a service:**
+1. Create `sos/services/<name>/` with `service.py` and `__init__.py`
+2. Add contract at `sos/contracts/<name>.py` defining request/response types
+3. Register in `sos/services/__init__.py`
+4. Add systemd unit under `systemd/sos-<name>.service` if long-running
+
+**Add a skill:**
+1. Create `sos/skills/<skill-name>/`
+2. Add `SKILL.md` (Anthropic standard: name, description, input schema, output schema)
+3. Add implementation file; register in squad skills registry (`sos/services/squad/skills.py`)
+
+## Project Structure
+
+```
+SOS/
+├── sos/
+│   ├── kernel/          # schema, identity, capability, config, physics, soul
+│   ├── services/        # engine, memory, gateway, squad, economy, identity, tools, content, voice
+│   ├── skills/          # 13 packaged skills (each with SKILL.md)
+│   ├── contracts/       # service boundary definitions
+│   ├── agents/          # agent definitions (squad_id, roles, capabilities)
+│   ├── bus/             # Redis messaging (redis_bus.py)
+│   ├── mcp/             # MCP SSE server (:6070)
+│   ├── adapters/        # Telegram, Discord, CLI, Web
+│   └── clients/         # service clients
+├── sovereign/
+│   ├── cortex.py        # portfolio scoring brain
+│   └── cortex_events.py # event-driven brain
+├── systemd/             # systemd service units
+├── scripts/             # ops scripts
+└── tests/
+```
 
 ## Environment
 
 ```bash
-# Required
-GEMINI_API_KEY=your-key
-
-# Optional
-GATEWAY_URL=https://gateway.mumega.com/
-SOS_MEMORY_BACKEND=cloudflare  # or "local"
-SOS_AGENT_NAME=river
+GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+REDIS_URL=redis://localhost:6379
+SOS_ENGINE_PORT=6060
 ```
-
-## CLI Commands
-
-```bash
-mumega doctor       # System health check
-mumega status       # Service status
-mumega start        # Start engine
-mumega chat         # Interactive chat
-mumega version      # Version info
-```
-
-## Development
-
-```bash
-# Clone
-git clone https://github.com/servathadi/sos.git
-cd sos
-
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Copy environment template
-cp .env.example .env
-# Edit .env with your API keys
-
-# Run tests
-pytest sos/tests/ -v
-
-# Run doctor to verify setup
-python -m sos.cli doctor
-```
-
-## Project Status
-
-| Component | Status |
-|-----------|--------|
-| Engine | Stable |
-| Memory | Stable |
-| Autonomy | Stable |
-| CLI | Stable |
-| PyPI | Pending |
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
-
-## Links
-
-- **Homepage**: https://mumega.com
-- **Docs**: https://docs.mumega.com
-- **GitHub**: https://github.com/servathadi/sos
-- **Issues**: https://github.com/servathadi/sos/issues
-
-## License
-
-MIT
