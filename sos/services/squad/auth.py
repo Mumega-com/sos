@@ -16,7 +16,7 @@ from sos.kernel.identity import SYSTEM_IDENTITY, AgentIdentity, Identity, Identi
 from sos.services.squad.service import DEFAULT_TENANT_ID, SquadDB, now_iso
 
 
-SYSTEM_TOKEN = os.getenv("SOS_SYSTEM_TOKEN", "sk-sos-system")
+SYSTEM_TOKEN = os.getenv("SOS_SYSTEM_TOKEN", "")  # REQUIRED — no default
 security = HTTPBearer(auto_error=False)
 
 OPERATION_MAP: dict[tuple[str, str], CapabilityAction] = {
