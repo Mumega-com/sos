@@ -15,12 +15,14 @@ Port: 6070 (env: SOS_MCP_PORT)
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,9 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
+from sos.services.squad.auth import _lookup_token as lookup_squad_token
+from sos.services.squad.service import SquadDB
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -89,6 +94,10 @@ MIRROR_HEADERS = {
 RATE_LIMIT_PER_MINUTE: int = int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60"))
 AUDIT_LOG_DIR = Path.home() / ".sos" / "logs"
 MCP_AUDIT_LOG = AUDIT_LOG_DIR / "mcp_audit.jsonl"
+BUS_TOKENS_PATH = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+CF_ACCOUNT = os.environ.get("CF_ACCOUNT_ID", "e39eaf94f33092c4efd029d94ae1e9dd")
+CF_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+KV_NAMESPACE = os.environ.get("BUS_KV_NAMESPACE_ID", "05b010acf24f45ee96c2351dfb5a6dab")
 
 # ---------------------------------------------------------------------------
 # Redis (async)
@@ -105,6 +114,22 @@ def _get_redis() -> aioredis.Redis:
     return _redis
 
 
+@dataclass
+class MCPAuthContext:
+    token: str
+    tenant_id: str | None
+    is_system: bool = False
+    source: str = "unknown"
+
+    @property
+    def project_scope(self) -> str | None:
+        return None if self.is_system else self.tenant_id
+
+    @property
+    def agent_scope(self) -> str:
+        return AGENT_SELF if self.is_system else (self.tenant_id or AGENT_SELF)
+
+
 # ---------------------------------------------------------------------------
 # Stream helpers (mirrored from sos_mcp.py)
 # ---------------------------------------------------------------------------
@@ -113,17 +138,23 @@ AGENT_SELF = "sos-mcp-sse"
 PROJECT = os.environ.get("PROJECT", "")
 
 
-def _prefix() -> str:
-    return f"sos:stream:project:{PROJECT}" if PROJECT else "sos:stream:global"
+def _scope_project(auth: MCPAuthContext | None) -> str | None:
+    if auth and auth.project_scope:
+        return auth.project_scope
+    return PROJECT or None
 
 
-def _agent_stream(agent: str) -> str:
-    return f"{_prefix()}:agent:{agent}"
+def _prefix(project: str | None) -> str:
+    return f"sos:stream:project:{project}" if project else "sos:stream:global"
 
 
-def _agent_channel(agent: str) -> str:
-    if PROJECT:
-        return f"sos:channel:project:{PROJECT}:agent:{agent}"
+def _agent_stream(agent: str, project: str | None) -> str:
+    return f"{_prefix(project)}:agent:{agent}"
+
+
+def _agent_channel(agent: str, project: str | None) -> str:
+    if project:
+        return f"sos:channel:project:{project}:agent:{agent}"
     return f"sos:channel:agent:{agent}"
 
 
@@ -150,6 +181,21 @@ def sos_msg(msg_type: str, source: str, target: str, content: str) -> dict[str, 
     return msg
 
 
+def scoped_sos_msg(
+    msg_type: str,
+    source: str,
+    target: str,
+    content: str,
+    project: str | None,
+) -> dict[str, Any]:
+    msg = sos_msg(msg_type, source, target, content)
+    if project:
+        msg["project"] = project
+    elif "project" in msg and not PROJECT:
+        msg.pop("project", None)
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # Mirror helpers (sync — run in thread pool for async context)
 # ---------------------------------------------------------------------------
@@ -165,6 +211,128 @@ def mirror_post(path: str, body: dict[str, Any]) -> Any:
     resp = requests.post(f"{MIRROR_URL}{path}", headers=MIRROR_HEADERS, json=body, timeout=10)
     resp.raise_for_status()
     return resp.json()
+
+
+def mirror_put(path: str, body: dict[str, Any]) -> Any:
+    resp = requests.put(f"{MIRROR_URL}{path}", headers=MIRROR_HEADERS, json=body, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+_squad_db = SquadDB()
+_cloudflare_token_cache: dict[str, tuple[float, MCPAuthContext | None]] = {}
+_local_token_cache: dict[str, MCPAuthContext] = {}
+
+
+def _system_tokens() -> set[str]:
+    tokens = {token.strip() for token in os.environ.get("MCP_ACCESS_TOKENS", "").split(",") if token.strip()}
+    if SQUAD_SYSTEM_TOKEN:
+        tokens.add(SQUAD_SYSTEM_TOKEN)
+    return tokens
+
+
+def _load_bus_tokens() -> dict[str, MCPAuthContext]:
+    global _local_token_cache
+    if _local_token_cache:
+        return _local_token_cache
+    cache: dict[str, MCPAuthContext] = {}
+    try:
+        raw = json.loads(BUS_TOKENS_PATH.read_text())
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            token = item.get("token", "")
+            if not token or not item.get("active"):
+                continue
+            project = item.get("project") or None
+            cache[token] = MCPAuthContext(
+                token=token,
+                tenant_id=project,
+                is_system=project is None,
+                source="bus_tokens",
+            )
+    except Exception:
+        return {}
+    _local_token_cache = cache
+    return cache
+
+
+def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
+    cached = _cloudflare_token_cache.get(token)
+    now = time.monotonic()
+    if cached and now - cached[0] < 60:
+        return cached[1]
+    if not CF_API_TOKEN:
+        _cloudflare_token_cache[token] = (now, None)
+        return None
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}"
+        f"/storage/kv/namespaces/{KV_NAMESPACE}/values/token:{token}"
+    )
+    try:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
+            timeout=5,
+        )
+        if resp.status_code == 404:
+            ctx = None
+        else:
+            resp.raise_for_status()
+            payload = json.loads(resp.text)
+            project = payload.get("project") or None
+            active = payload.get("active", True)
+            if project and active:
+                ctx = MCPAuthContext(token=token, tenant_id=project, is_system=False, source="cloudflare_kv")
+            else:
+                ctx = None
+    except Exception:
+        ctx = None
+    _cloudflare_token_cache[token] = (now, ctx)
+    return ctx
+
+
+def _resolve_token_context(token: str) -> MCPAuthContext | None:
+    if not token:
+        return None
+    if token in _system_tokens():
+        return MCPAuthContext(token=token, tenant_id=None, is_system=True, source="system")
+    local_bus = _load_bus_tokens().get(token)
+    if local_bus:
+        return local_bus
+    squad_auth = lookup_squad_token(token, _squad_db)
+    if squad_auth:
+        return MCPAuthContext(
+            token=token,
+            tenant_id=squad_auth.tenant_id,
+            is_system=squad_auth.is_system,
+            source="squad_api_keys",
+        )
+    return _lookup_cloudflare_token(token)
+
+
+def _require_same_tenant_agent(auth: MCPAuthContext, requested: str | None) -> str:
+    if auth.is_system:
+        return requested or AGENT_SELF
+    tenant_agent = auth.agent_scope
+    if requested and not hmac.compare_digest(requested, tenant_agent):
+        raise HTTPException(status_code=403, detail="cross_tenant_agent_access")
+    return tenant_agent
+
+
+def _scoped_context_id(auth: MCPAuthContext, value: str | None) -> str:
+    context_id = value or f"mcp-{int(datetime.now().timestamp())}"
+    if auth.is_system or not auth.tenant_id:
+        return context_id
+    prefix = f"{auth.tenant_id}:"
+    return context_id if context_id.startswith(prefix) else f"{prefix}{context_id}"
+
+
+def _ensure_task_in_scope(task: dict[str, Any], auth: MCPAuthContext) -> None:
+    if auth.is_system:
+        return
+    project = task.get("project")
+    if project != auth.tenant_id:
+        raise HTTPException(status_code=403, detail="cross_tenant_task_access")
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +468,17 @@ def get_tools() -> list[dict[str, Any]]:
                 "required": ["task_id"],
             },
         },
+        {
+            "name": "onboard",
+            "description": "Get onboarding briefing for new agents joining the Mumega system. Call this first when connecting to learn the team, architecture, tools, and rules.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Your name (e.g. cyrus, hadi)"},
+                },
+                "required": [],
+            },
+        },
     ]
 
 
@@ -312,14 +491,16 @@ def _text(t: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": t}]}
 
 
-async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     r = _get_redis()
+    project_scope = _scope_project(auth)
+    agent_scope = auth.agent_scope
 
     try:
         # --- ask ---
         if name == "ask":
-            agent = args["agent"]
+            agent = _require_same_tenant_agent(auth, args.get("agent"))
             message = args["message"]
 
             def _run_openclaw() -> str:
@@ -344,11 +525,12 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # --- send ---
         elif name == "send":
-            to, text = args["to"], args["text"]
-            stream = _agent_stream(to)
-            msg = sos_msg("chat", f"agent:{AGENT_SELF}", f"agent:{to}", text)
+            to = _require_same_tenant_agent(auth, args.get("to"))
+            text = args["text"]
+            stream = _agent_stream(to, project_scope)
+            msg = scoped_sos_msg("chat", f"agent:{agent_scope}", f"agent:{to}", text, project_scope)
             mid = await r.xadd(stream, msg)
-            await r.publish(_agent_channel(to), json.dumps(msg))
+            await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
             try:
                 await loop.run_in_executor(
@@ -357,8 +539,9 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     "/store",
                     {
                         "text": f"[{AGENT_SELF} -> {to}] {text}",
-                        "agent": AGENT_SELF,
-                        "context_id": f"msg_{mid}",
+                        "agent": agent_scope,
+                        "project": project_scope,
+                        "context_id": _scoped_context_id(auth, f"msg_{mid}"),
                     },
                 )
             except Exception:
@@ -367,11 +550,11 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # --- inbox ---
         elif name == "inbox":
-            agent = args.get("agent", AGENT_SELF)
+            agent = _require_same_tenant_agent(auth, args.get("agent"))
             limit = args.get("limit", 10)
-            stream = _agent_stream(agent)
+            stream = _agent_stream(agent, project_scope)
             entries = await r.xrevrange(stream, count=limit)
-            if not entries and not PROJECT:
+            if not entries and auth.is_system and not project_scope:
                 entries = await r.xrevrange(_legacy_stream(agent), count=limit)
             if not entries:
                 return _text(f"No messages for {agent}.")
@@ -385,7 +568,7 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # --- peers ---
         elif name == "peers":
-            pattern = f"{_prefix()}:agent:*"
+            pattern = f"{_prefix(project_scope)}:agent:*"
             agents: set[str] = set()
             cursor = 0
             while True:
@@ -394,7 +577,7 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     agents.add(k.split(":")[-1])
                 if cursor == 0:
                     break
-            if not PROJECT:
+            if auth.is_system and not project_scope:
                 cursor = 0
                 while True:
                     cursor, keys = await r.scan(
@@ -404,7 +587,7 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                         agents.add(k.split(":")[-1])
                     if cursor == 0:
                         break
-            scope = f"project:{PROJECT}" if PROJECT else "global"
+            scope = f"project:{project_scope}" if project_scope else "global"
             return _text(
                 f"Agents ({scope}): {', '.join(sorted(agents))}" if agents else "No agents found."
             )
@@ -414,24 +597,29 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             text = args["text"]
             squad = args.get("squad")
             if squad:
-                stream = f"{_prefix()}:squad:{squad}"
-                channel = f"sos:channel:{'project:' + PROJECT + ':' if PROJECT else ''}squad:{squad}"
+                stream = f"{_prefix(project_scope)}:squad:{squad}"
+                channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}squad:{squad}"
             else:
-                stream = f"{_prefix()}:broadcast"
-                channel = f"sos:channel:{'project:' + PROJECT + ':' if PROJECT else ''}global"
-            msg = sos_msg("broadcast", f"agent:{AGENT_SELF}", channel, text)
+                stream = f"{_prefix(project_scope)}:broadcast"
+                channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
+            msg = scoped_sos_msg("broadcast", f"agent:{agent_scope}", channel, text, project_scope)
             mid = await r.xadd(stream, msg)
             await r.publish(channel, json.dumps(msg))
             return _text(f"Broadcast to {channel} (id: {mid})")
 
         # --- remember ---
         elif name == "remember":
-            ctx = args.get("context", f"mcp-{int(datetime.now().timestamp())}")
+            ctx = _scoped_context_id(auth, args.get("context"))
             await loop.run_in_executor(
                 None,
                 mirror_post,
                 "/store",
-                {"text": args["text"], "agent": AGENT_SELF, "context_id": ctx},
+                {
+                    "text": args["text"],
+                    "agent": agent_scope,
+                    "project": project_scope,
+                    "context_id": ctx,
+                },
             )
             return _text(f"Stored: {ctx}")
 
@@ -441,7 +629,12 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 None,
                 mirror_post,
                 "/search",
-                {"query": args["query"], "top_k": args.get("limit", 5), "agent_filter": AGENT_SELF},
+                {
+                    "query": args["query"],
+                    "top_k": args.get("limit", 5),
+                    "agent_filter": agent_scope,
+                    "project": project_scope,
+                },
             )
             if not results:
                 return _text("No matching memories.")
@@ -454,7 +647,10 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         # --- memories ---
         elif name == "memories":
             data = await loop.run_in_executor(
-                None, mirror_get, f"/recent/{AGENT_SELF}?limit={args.get('limit', 10)}"
+                None,
+                mirror_get,
+                f"/recent/{agent_scope}?limit={args.get('limit', 10)}"
+                + (f"&project={project_scope}" if project_scope else ""),
             )
             engrams = data.get("engrams", [])
             if not engrams:
@@ -474,10 +670,11 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 {
                     "title": args["title"],
                     "description": args.get("description", ""),
-                    "assignee": args.get("assignee", AGENT_SELF),
+                    "assignee": _require_same_tenant_agent(auth, args.get("assignee")),
                     "priority": args.get("priority", "medium"),
                     "status": "pending",
-                    "agent": AGENT_SELF,
+                    "agent": agent_scope,
+                    "project": project_scope,
                 },
             )
             return _text(f"Task created: {args['title']}")
@@ -487,10 +684,15 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             params = f"?limit={args.get('limit', 20)}"
             if args.get("status"):
                 params += f"&status={args['status']}"
-            if args.get("assignee"):
-                params += f"&assignee={args['assignee']}"
+            assignee = _require_same_tenant_agent(auth, args.get("assignee"))
+            if assignee:
+                params += f"&agent={assignee}"
+            if project_scope:
+                params += f"&project={project_scope}"
             result = await loop.run_in_executor(None, mirror_get, f"/tasks{params}")
             tasks = result if isinstance(result, list) else result.get("tasks", [])
+            if project_scope:
+                tasks = [t for t in tasks if t.get("project") == project_scope]
             if not tasks:
                 return _text("No tasks found.")
             lines = []
@@ -502,13 +704,52 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
         # --- task_update ---
         elif name == "task_update":
+            task = await loop.run_in_executor(None, mirror_get, f"/tasks/{args['task_id']}")
+            _ensure_task_in_scope(task, auth)
             body: dict[str, Any] = {"task_id": args["task_id"]}
             if args.get("status"):
                 body["status"] = args["status"]
             if args.get("notes"):
                 body["notes"] = args["notes"]
-            await loop.run_in_executor(None, mirror_post, f"/tasks/{args['task_id']}", body)
+            await loop.run_in_executor(None, mirror_put, f"/tasks/{args['task_id']}", body)
             return _text(f"Task {args['task_id']} updated")
+
+        # --- onboard ---
+        elif name == "onboard":
+            agent_name = args.get("agent_name", "new-agent")
+            # Get onboarding briefing from Mirror
+            briefing = ""
+            try:
+                resp = requests.post(
+                    f"{MIRROR_URL}/search",
+                    json={"query": "onboarding team architecture getting-started", "top_k": 1, "agent_filter": "system"},
+                    headers={"Authorization": f"Bearer {MIRROR_TOKEN}"},
+                    timeout=10,
+                )
+                results = resp.json()
+                if results:
+                    first = results[0] if isinstance(results, list) else results.get("results", [{}])[0]
+                    briefing = first.get("text", first.get("raw_text", ""))
+            except Exception:
+                pass
+
+            if not briefing:
+                briefing = """Welcome to Mumega. You are connecting to an AI operating system for businesses.
+
+Team: Athena (queen, GPT-5.4), Kasra (builder, Opus), Mumega (orchestrator, Opus), Codex (infra, GPT-5.4)
+Squads: seo, dev, outreach, content, ops — serve any project
+Tools: send/inbox (async messaging), ask (sync agent call), peers (list agents), tasks, memory
+
+Start by calling: peers (see who's online), then task_list (see current work).
+Read docs at mumega-docs.pages.dev for full reference."""
+
+            # Register arrival on the bus
+            await r.xadd(
+                "sos:stream:sos:channel:global",
+                {"type": "agent_joined", "source": f"agent:{agent_name}", "payload": json.dumps({"text": f"{agent_name} has joined the team"})},
+            )
+
+            return _text(f"Welcome {agent_name}!\n\n{briefing}")
 
         else:
             return _text(f"Unknown tool: {name}")
@@ -523,7 +764,7 @@ async def handle_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _sessions: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
-_session_tokens: dict[str, str] = {}
+_session_auth: dict[str, MCPAuthContext] = {}
 _token_windows: dict[str, tuple[float, int]] = {}
 
 
@@ -541,6 +782,7 @@ def _append_audit(token: str, tool_name: str, success: bool) -> None:
                     "token_last8": _token_label(token),
                     "tool": tool_name,
                     "status": "success" if success else "fail",
+                    "tenant_id": _resolve_token_context(token).tenant_id if _resolve_token_context(token) else None,
                 }
             )
             + "\n"
@@ -599,11 +841,6 @@ async def options_handler(path: str):
     )
 
 
-def _valid_tokens() -> set[str]:
-    tokens = os.environ.get("MCP_ACCESS_TOKENS", "").split(",")
-    return {token.strip() for token in tokens if token.strip()}
-
-
 def _request_bearer_token(request: Request) -> str:
     auth = request.headers.get("authorization", "").strip()
     if auth.lower().startswith("bearer "):
@@ -611,14 +848,52 @@ def _request_bearer_token(request: Request) -> str:
     return ""
 
 
-def _is_authorized(request: Request, token: str | None = None) -> bool:
+def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
     candidate = token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
-    return bool(candidate) and candidate in _valid_tokens()
-
-
-def _require_auth(request: Request, token: str | None = None) -> None:
-    if not _is_authorized(request, token):
+    context = _resolve_token_context(candidate)
+    if not context:
         raise HTTPException(status_code=401, detail="invalid token")
+    return context
+
+
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_discovery() -> JSONResponse:
+    """OAuth discovery for ChatGPT/external MCP clients."""
+    base = "https://mcp.mumega.com"
+    return JSONResponse({
+        "issuer": base,
+        "authorization_endpoint": f"{base}/oauth/authorize",
+        "token_endpoint": f"{base}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+    })
+
+
+@app.get("/oauth/authorize")
+async def oauth_authorize(request: Request) -> Response:
+    """OAuth authorize — auto-approves with token from query or generates one."""
+    redirect_uri = request.query_params.get("redirect_uri", "")
+    state = request.query_params.get("state", "")
+    if redirect_uri:
+        sep = "&" if "?" in redirect_uri else "?"
+        return Response(
+            status_code=302,
+            headers={"Location": f"{redirect_uri}{sep}code=mumega-auth-ok&state={state}"},
+        )
+    return JSONResponse({"code": "mumega-auth-ok"})
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request) -> JSONResponse:
+    """OAuth token exchange — returns the system MCP access token."""
+    tokens = list(_valid_tokens())
+    access_token = tokens[0] if tokens else "no-token-configured"
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 86400,
+    })
 
 
 @app.get("/health")
@@ -655,11 +930,11 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
     then sends JSON-RPC requests to POST /messages?session_id=<id>.
     """
     resolved_token = token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
-    _require_auth(request, resolved_token)
+    auth = _require_auth(request, resolved_token)
     session_id = str(uuid4())
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     _sessions[session_id] = queue
-    _session_tokens[session_id] = resolved_token
+    _session_auth[session_id] = auth
 
     # Use public URL if behind nginx proxy, otherwise localhost
     public_base = os.environ.get("MCP_PUBLIC_URL", "")
@@ -689,7 +964,7 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
                     yield {"event": "ping", "data": ""}
         finally:
             _sessions.pop(session_id, None)
-            _session_tokens.pop(session_id, None)
+            _session_auth.pop(session_id, None)
             log.info("SSE client disconnected, session=%s", session_id)
 
     return EventSourceResponse(event_generator())
@@ -703,16 +978,15 @@ async def messages_endpoint(request: Request) -> Response:
     """
     session_id = request.query_params.get("session_id", "")
     queue = _sessions.get(session_id)
-    token = _session_tokens.get(session_id) or _request_bearer_token(request)
-    _require_auth(request, token)
-    _enforce_rate_limit(token)
+    auth = _session_auth.get(session_id) or _require_auth(request)
+    _enforce_rate_limit(auth.token)
 
     try:
         body = await request.json()
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=session_id, auth_token=token)
+    resp = await _process_jsonrpc(body, session_id=session_id, auth=auth)
     if resp is None:
         return Response(status_code=202)
 
@@ -756,28 +1030,27 @@ async def mcp_info_with_token(token: str, request: Request) -> JSONResponse:
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> Response:
-    token = _request_bearer_token(request)
-    _require_auth(request, token)
-    _enforce_rate_limit(token)
-    return await _streamable_http_response(request, token)
+    auth = _require_auth(request, _request_bearer_token(request))
+    _enforce_rate_limit(auth.token)
+    return await _streamable_http_response(request, auth)
 
 
 @app.post("/mcp/{token}")
 async def mcp_endpoint_with_token(token: str, request: Request) -> Response:
     # TODO: path-token auth is deprecated because tokens in URLs leak into access logs,
     # browser history, and proxies. Prefer Authorization: Bearer for new clients.
-    _require_auth(request, token)
-    _enforce_rate_limit(token)
-    return await _streamable_http_response(request, token)
+    auth = _require_auth(request, token)
+    _enforce_rate_limit(auth.token)
+    return await _streamable_http_response(request, auth)
 
 
-async def _streamable_http_response(request: Request, token: str) -> Response:
+async def _streamable_http_response(request: Request, auth: MCPAuthContext) -> Response:
     try:
         body = await request.json()
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=None, auth_token=token)
+    resp = await _process_jsonrpc(body, session_id=None, auth=auth)
     if resp is None:
         return Response(status_code=202)
     return JSONResponse(resp)
@@ -786,7 +1059,7 @@ async def _streamable_http_response(request: Request, token: str) -> Response:
 async def _process_jsonrpc(
     body: dict[str, Any],
     session_id: str | None,
-    auth_token: str,
+    auth: MCPAuthContext,
 ) -> dict[str, Any] | None:
     method = body.get("method", "")
     msg_id = body.get("id")
@@ -809,8 +1082,8 @@ async def _process_jsonrpc(
         return _jsonrpc_ok(msg_id, {"tools": get_tools()})
     if method == "tools/call":
         tool_name = params.get("name", "")
-        tool_result = await handle_tool(tool_name, params.get("arguments", {}))
-        _append_audit(auth_token, tool_name, not _tool_result_failed(tool_result))
+        tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth)
+        _append_audit(auth.token, tool_name, not _tool_result_failed(tool_result))
         return _jsonrpc_ok(msg_id, tool_result)
     if method == "ping":
         return _jsonrpc_ok(msg_id, {})
