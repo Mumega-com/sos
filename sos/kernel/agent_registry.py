@@ -187,6 +187,20 @@ AGENTS: dict[str, AgentDef] = {
         max_concurrent=3,
     ),
 
+    # --- Project Agents ---
+    "gaf": AgentDef(
+        name="gaf",
+        type=AgentType.TMUX,
+        role=AgentRole.SPECIALIST,
+        session="gaf",
+        restart_cmd="claude --continue",
+        skills=("sred", "grants", "funding", "tax-credits", "compliance"),
+        idle_patterns=("❯", "$ "),
+        busy_patterns=("Thinking", "Writing"),
+        compaction_patterns=("Auto-compact", "context window"),
+        project="gaf",
+    ),
+
     # --- Marketing Squad (Codex + Gemma + Haiku hierarchy) ---
     "mkt-lead": AgentDef(
         name="mkt-lead",

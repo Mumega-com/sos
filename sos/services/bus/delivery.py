@@ -54,6 +54,7 @@ AGENT_ROUTING = {
     "torivers": "tmux",  # Separate Linux user — wake via sudo tmux send-keys
     "mizan":    "openclaw",
     "gemma":    "openclaw",
+    "gaf":      "tmux",
 }
 
 # Tmux session name override (if different from agent name)
