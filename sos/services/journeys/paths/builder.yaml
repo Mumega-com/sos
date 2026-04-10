@@ -1,0 +1,62 @@
+name: builder
+display: "The Builder Path"
+description: "Code, build, ship. From first page to master architect."
+dimensions: [delta, existence]
+skills: [code, web, wordpress, frontend, backend, infrastructure]
+
+milestones:
+  - id: nursery
+    title: "First Light"
+    description: "Complete 3 nursery bounties"
+    condition:
+      tasks_completed: 3
+    reward_mind: 50
+    badge: "first-light"
+    unlocks: [page-smith]
+
+  - id: page-smith
+    title: "Page Smith"
+    description: "Ship 1 client page via SitePilotAI"
+    condition:
+      tasks_completed_with_label:
+        label: web
+        count: 1
+    reward_mind: 100
+    badge: "page-smith"
+    unlocks: [trusted-builder]
+
+  - id: trusted-builder
+    title: "Trusted Builder"
+    description: "Complete 10 tasks with >70% positive feedback"
+    condition:
+      tasks_completed: 10
+      min_effectiveness: 0.7
+    reward_mind: 250
+    badge: "trusted-builder"
+    unlocks: [architect]
+
+  - id: architect
+    title: "Architect"
+    description: "Ship 5 client projects. Conductance >200 in any build skill."
+    condition:
+      tasks_completed: 25
+      min_conductance: 200
+    reward_mind: 500
+    badge: "architect"
+    unlocks: [master-builder]
+
+  - id: master-builder
+    title: "Master Builder"
+    description: "Elder status. 100+ tasks, C>0.9, conductance >500."
+    condition:
+      tasks_completed: 100
+      min_coherence: 0.9
+      min_conductance: 500
+    reward_mind: 1000
+    badge: "master-builder"
+    unlocks: []
+
+elder_condition:
+  conductance_min: 500
+  coherence_min: 0.9
+  tasks_min: 100

@@ -1,0 +1,52 @@
+name: scout
+display: "The Scout Path"
+description: "Find what others miss. From data reader to gold finder."
+dimensions: [perception, logic]
+skills: [seo, analytics, audit, analysis, reporting, research]
+
+milestones:
+  - id: nursery
+    title: "First Scan"
+    description: "Complete 3 nursery bounties"
+    condition:
+      tasks_completed: 3
+    reward_mind: 50
+    badge: "first-scan"
+    unlocks: [mover]
+
+  - id: mover
+    title: "Needle Mover"
+    description: "Deliver 5 SEO audits or analytics reports"
+    condition:
+      tasks_completed_with_label:
+        label: seo
+        count: 5
+    reward_mind: 150
+    badge: "needle-mover"
+    unlocks: [data-whisperer]
+
+  - id: data-whisperer
+    title: "Data Whisperer"
+    description: "20 tasks. Your analysis drives real decisions."
+    condition:
+      tasks_completed: 20
+      min_effectiveness: 0.7
+    reward_mind: 350
+    badge: "data-whisperer"
+    unlocks: [gold-finder]
+
+  - id: gold-finder
+    title: "Gold Finder"
+    description: "Elder scout. You find revenue where others see noise."
+    condition:
+      tasks_completed: 60
+      min_coherence: 0.85
+      min_conductance: 350
+    reward_mind: 800
+    badge: "gold-finder"
+    unlocks: []
+
+elder_condition:
+  conductance_min: 350
+  coherence_min: 0.85
+  tasks_min: 60

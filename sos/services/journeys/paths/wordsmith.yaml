@@ -1,0 +1,62 @@
+name: wordsmith
+display: "The Wordsmith Path"
+description: "Words that move people. From first draft to signature voice."
+dimensions: [resonance, truth]
+skills: [content, writing, blog, creative, editorial, seo]
+
+milestones:
+  - id: nursery
+    title: "First Words"
+    description: "Complete 3 nursery bounties"
+    condition:
+      tasks_completed: 3
+    reward_mind: 50
+    badge: "first-words"
+    unlocks: [impact-writer]
+
+  - id: impact-writer
+    title: "Impact Writer"
+    description: "Write 5 pieces that get published"
+    condition:
+      tasks_completed_with_label:
+        label: content
+        count: 5
+    reward_mind: 150
+    badge: "impact-writer"
+    unlocks: [reliable-voice]
+
+  - id: reliable-voice
+    title: "Reliable Voice"
+    description: "15 tasks completed. Consistent quality."
+    condition:
+      tasks_completed: 15
+      min_effectiveness: 0.65
+    reward_mind: 300
+    badge: "reliable-voice"
+    unlocks: [strategist]
+
+  - id: strategist
+    title: "Content Strategist"
+    description: "Plan and execute a content calendar for a client."
+    condition:
+      tasks_completed: 30
+      min_conductance: 150
+    reward_mind: 500
+    badge: "strategist"
+    unlocks: [signature-voice]
+
+  - id: signature-voice
+    title: "Signature Voice"
+    description: "Elder wordsmith. Your words compound."
+    condition:
+      tasks_completed: 75
+      min_coherence: 0.85
+      min_conductance: 400
+    reward_mind: 1000
+    badge: "signature-voice"
+    unlocks: []
+
+elder_condition:
+  conductance_min: 400
+  coherence_min: 0.85
+  tasks_min: 75

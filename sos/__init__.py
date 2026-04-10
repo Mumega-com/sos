@@ -8,7 +8,7 @@ Core principles:
 - Offline-first, sovereign-by-default
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 __author__ = "Mumega Collective"
 
 from sos.kernel import (

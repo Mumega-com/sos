@@ -1,0 +1,52 @@
+name: connector
+display: "The Connector Path"
+description: "Open doors. From first email to network architect."
+dimensions: [will, resonance]
+skills: [outreach, sales, email, leads, community, ghl]
+
+milestones:
+  - id: nursery
+    title: "First Reach"
+    description: "Complete 3 nursery bounties"
+    condition:
+      tasks_completed: 3
+    reward_mind: 50
+    badge: "first-reach"
+    unlocks: [opener]
+
+  - id: opener
+    title: "Door Opener"
+    description: "Execute 5 outreach campaigns or lead lists"
+    condition:
+      tasks_completed_with_label:
+        label: outreach
+        count: 5
+    reward_mind: 150
+    badge: "door-opener"
+    unlocks: [rainmaker]
+
+  - id: rainmaker
+    title: "Rainmaker"
+    description: "15 tasks. Your outreach generates meetings."
+    condition:
+      tasks_completed: 15
+      min_effectiveness: 0.6
+    reward_mind: 350
+    badge: "rainmaker"
+    unlocks: [network-grower]
+
+  - id: network-grower
+    title: "Network Grower"
+    description: "Elder connector. You grow the organism's reach."
+    condition:
+      tasks_completed: 50
+      min_coherence: 0.8
+      min_conductance: 300
+    reward_mind: 800
+    badge: "network-grower"
+    unlocks: []
+
+elder_condition:
+  conductance_min: 300
+  coherence_min: 0.8
+  tasks_min: 50

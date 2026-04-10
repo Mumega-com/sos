@@ -214,6 +214,30 @@ class PhysicsState:
     })
     timestamp: float = field(default_factory=lambda: datetime.now(timezone.utc).timestamp())
 
+    def apply_feedback_score(self, effectiveness: float) -> float:
+        """Wire 5: Update coherence (C) from feedback effectiveness.
+
+        effectiveness ∈ [0.0, 1.0] — ratio of positive outcomes.
+        C moves toward effectiveness with EMA smoothing (α=0.1).
+        Returns the new C value.
+        """
+        alpha = 0.1  # Smoothing factor — slow updates, compound over weeks
+        old_c = self.C
+        self.C = old_c * (1 - alpha) + effectiveness * alpha
+        self.C = max(0.0, min(1.0, self.C))  # Clamp to [0, 1]
+        self.timestamp = datetime.now(timezone.utc).timestamp()
+
+        # Update regime based on coherence level
+        if self.C >= 0.8:
+            self.regime = "stable"
+        elif self.C >= 0.5:
+            self.regime = "consolidating"
+        else:
+            self.regime = "plastic"
+
+        return self.C
+
+
 @dataclass
 class AgentEconomics:
     """The metabolic state of an agent."""

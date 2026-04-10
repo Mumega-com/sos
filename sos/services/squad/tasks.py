@@ -233,6 +233,123 @@ class SquadTaskService:
                 (_dumps(task.result), task.status.value, task.completed_at, task.updated_at, task.id, tenant_id if tenant_id is not None else DEFAULT_TENANT_ID),
             )
         self.bus.emit("task.completed", task.squad_id, actor, {"task_id": task.id, "result": result})
+
+        # Deliver result to customer project agent via bus
+        project = task.project
+        if project:
+            try:
+                import redis as _redis
+                import os as _os
+                _pw = _os.environ.get("REDIS_PASSWORD", "")
+                _r = _redis.Redis(host="localhost", port=6379, password=_pw, decode_responses=True)
+                result_summary = str(result.get("result", result.get("summary", "")))[:300]
+                delivery_msg = json.dumps({
+                    "text": f"Task completed: {task.title}\nResult: {result_summary}",
+                    "source": "agent:system",
+                    "task_id": task.id,
+                })
+                # Write to both project-scoped stream (MCP inbox) and legacy stream (wake daemon)
+                _r.xadd(f"sos:stream:project:{project}:agent:{project}", {
+                    "type": "delivery",
+                    "source": "system",
+                    "target": f"agent:{project}",
+                    "payload": delivery_msg,
+                })
+                _r.publish(f"sos:wake:{project}", json.dumps({
+                    "source": "system",
+                    "text": f"Task done: {task.title}",
+                }))
+            except Exception as e:
+                log.warning("Delivery notification failed for %s: %s", project, e)
+
+        # Wire 4: Bounty completion → Treasury payout
+        if task.bounty and task.bounty.get("reward"):
+            try:
+                import sys as _sys
+                from pathlib import Path as _Path
+                _sys.path.insert(0, str(_Path.home()))
+                from sovereign.bounty_board import BountyBoard
+                import asyncio as _asyncio
+
+                board = BountyBoard()
+                bounty_id = task.bounty.get("bounty_id")
+                agent_addr = task.assignee or actor
+
+                if bounty_id:
+                    # Bounty already on board — submit and pay
+                    async def _payout():
+                        await board.submit_solution(bounty_id, proof_url=task.result.get("summary", "completed"))
+                        payout_msg = await board.approve_and_pay(bounty_id)
+                        log.info("Wire 4 payout for %s: %s", task.id, payout_msg)
+
+                        # Wire 6: Update conductance after payout
+                        try:
+                            from sos.services.health.calcifer import conductance_update
+                            reward = float(task.bounty.get("reward", 0))
+                            for label in (task.labels or []):
+                                conductance_update(agent_addr, label, reward)
+                        except Exception:
+                            pass
+
+                        # If pending approval (>100 MIND), notify via bus for Telegram relay
+                        if "Pending" in payout_msg:
+                            reward = float(task.bounty.get("reward", 0))
+                            try:
+                                _r = _redis.Redis(host="localhost", port=6379, password=_pw, decode_responses=True)
+                                _r.xadd("sos:stream:global:agent:hadi", {
+                                    "type": "approval_request",
+                                    "source": "wire4-treasury",
+                                    "data": json.dumps({
+                                        "text": (
+                                            f"Bounty payout needs approval:\n"
+                                            f"Task: {task.title}\n"
+                                            f"Agent: {agent_addr}\n"
+                                            f"Amount: {reward:.0f} MIND\n"
+                                            f"Bounty: {bounty_id}\n\n"
+                                            f"Reply: approve {bounty_id}"
+                                        ),
+                                        "source": "wire4-treasury",
+                                    }),
+                                }, maxlen=500)
+                                _r.publish("sos:wake:hadi", json.dumps({
+                                    "source": "wire4-treasury",
+                                    "text": f"Approval needed: {reward:.0f} MIND for {task.title[:40]}",
+                                }))
+                            except Exception:
+                                pass
+
+                    try:
+                        loop = _asyncio.get_running_loop()
+                        loop.create_task(_payout())
+                    except RuntimeError:
+                        _asyncio.run(_payout())
+                else:
+                    # No bounty_id — task has bounty value but wasn't posted to board
+                    # Record the payout obligation in the ledger
+                    reward = float(task.bounty["reward"])
+                    log.info(
+                        "Wire 4: Task %s has %s MIND bounty but no bounty_id on board. "
+                        "Recording payout obligation for %s.",
+                        task.id, reward, agent_addr,
+                    )
+            except Exception as exc:
+                log.warning("Wire 4 bounty payout failed (non-blocking) for %s: %s", task.id, exc)
+
+        # Journey: Auto-evaluate milestones on task completion
+        agent_name = task.assignee or actor
+        if agent_name and agent_name != "system":
+            try:
+                from sos.services.journeys.tracker import JourneyTracker
+                tracker = JourneyTracker()
+                completions = tracker.auto_evaluate(agent_name)
+                for c in completions:
+                    log.info(
+                        "Journey milestone: %s completed %s/%s (+%d MIND, badge: %s)",
+                        agent_name, c["path"], c["milestone"], c["reward_mind"], c["badge"],
+                    )
+            except Exception as exc:
+                log.debug("Journey evaluation skipped: %s", exc)
+
         return task
 
     def fail(

@@ -1,19 +1,21 @@
-version: "3.8"
+# SOS - Sovereign Operating System
+# Quick start: cp .env.example .env && docker-compose up
 
 services:
   # --- CORE INFRASTRUCTURE ---
 
   redis:
     image: redis:7-alpine
-    container_name: sos-nervous-system
+    container_name: sos-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --appendonly yes --appendfsync everysec
     ports:
-      - "6079:6379"
+      - "6379:6379"
     volumes:
-      - ./data/redis:/data
+      - redis-data:/data
     networks:
       - sos-net
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -28,7 +30,7 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
       - SOS_IPC_MODE=http
       - SOS_MEMORY_URL=http://sos-memory:8001
       - SOS_TOOLS_URL=http://sos-tools:8003
@@ -54,11 +56,14 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
     ports:
       - "7070:8001"
     volumes:
       - ./data/memory:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
@@ -70,11 +75,14 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
     ports:
       - "6062:8002"
     volumes:
       - ./data/economy:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
@@ -86,11 +94,14 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
     ports:
       - "6063:8003"
     volumes:
       - ./data/tools:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
@@ -102,14 +113,15 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
       - SOS_HOME=/app/data
     ports:
       - "6064:8004"
     volumes:
       - ./data/identity:/app/data
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
@@ -121,14 +133,73 @@ services:
     env_file:
       - .env
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     ports:
       - "6065:6065"
     volumes:
       - ./data/voice:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sos-net
+
+  # --- BUS & MCP ---
+
+  bus-bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    container_name: sos-bus-bridge
+    command: python -m sos.bus.bridge
+    ports:
+      - "${BUS_BRIDGE_PORT:-6380}:6380"
+    env_file:
+      - .env
+    environment:
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sos-net
+
+  mcp-sse:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    container_name: sos-mcp-sse
+    command: python -m sos.mcp.sos_mcp_sse
+    ports:
+      - "${MCP_SSE_PORT:-6070}:6070"
+    env_file:
+      - .env
+    environment:
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - sos-net
+
+  squad:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    container_name: sos-squad
+    command: python -m sos.services.squad.app
+    ports:
+      - "${SQUAD_PORT:-8060}:8060"
+    env_file:
+      - .env
+    environment:
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
@@ -141,13 +212,17 @@ services:
     deploy:
       replicas: 3
     environment:
-      - SOS_REDIS_URL=redis://redis:6379/0
+      - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
       - WORKER_QUEUE=sos:queue:global
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - sos-net
 
 networks:
   sos-net:
     driver: bridge
+
+volumes:
+  redis-data:
