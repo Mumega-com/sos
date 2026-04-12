@@ -31,6 +31,10 @@ The core difference: **the bus IS MCP SSE**. Not a wrapper. Not an adapter added
 
 ---
 
+## Docs
+
+- [Agent Wiring — Claude Code + Codex + SOS](docs/architecture/AGENT_WIRING.md) — Mermaid diagrams, sequence flows, transport comparison, quick connect reference
+
 ## Architecture
 
 ```
