@@ -54,3 +54,11 @@ Thumbs.db
 credentials.json
 artifacts/
 souls/
+
+# Secrets & local config
+sos/bus/tokens.json
+workers/*/wrangler.toml
+.mumega/
+# Added by code-review-graph
+.code-review-graph/
+sos/bus/tokens.json

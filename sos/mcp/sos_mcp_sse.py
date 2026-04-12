@@ -438,6 +438,20 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "search_code",
+            "description": "Semantic search across synced code nodes (functions, classes, methods). Returns file paths and line numbers for matching code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language description of the code you're looking for"},
+                    "repo": {"type": "string", "description": "Filter by repo name (e.g. torivers-staging-dev). Omit to search all repos."},
+                    "kind": {"type": "string", "description": "Filter by node kind: function, class, method, etc."},
+                    "top_k": {"type": "integer", "default": 5, "description": "Number of results to return"},
+                },
+                "required": ["query"],
+            },
+        },
+        {
             "name": "memories",
             "description": "List recent memories",
             "inputSchema": {
@@ -675,7 +689,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
     WRITE_TOOLS = {"send", "broadcast", "remember", "task_create", "task_update", "request"}
-    READ_TOOLS = {"inbox", "peers", "recall", "memories", "task_list", "status"}
+    READ_TOOLS = {"inbox", "peers", "recall", "memories", "task_list", "status", "search_code"}
 
     if name in SYSTEM_ONLY_TOOLS and not auth.is_system:
         # onboard tool handles its own mode check, but log the attempt
@@ -839,6 +853,29 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             for i, e in enumerate(results, 1):
                 text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
                 lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(text)[:200]}")
+            return _text("\n".join(lines))
+
+        # --- search_code ---
+        elif name == "search_code":
+            results = await loop.run_in_executor(
+                None,
+                mirror_post,
+                "/code/search",
+                {
+                    "query": args["query"],
+                    "top_k": args.get("top_k", 5),
+                    "repo": args.get("repo"),
+                    "kind": args.get("kind"),
+                },
+            )
+            if not results:
+                return _text("No matching code nodes found.")
+            lines = []
+            for i, r in enumerate(results, 1):
+                loc = f"{r.get('file_path', '?')}:{r.get('line_start', '?')}"
+                sig = r.get("signature") or r.get("name", "?")
+                sim = r.get("similarity", 0)
+                lines.append(f"{i}. [{r.get('kind')}] {sig}\n   {loc} (score: {sim:.2f})")
             return _text("\n".join(lines))
 
         # --- memories ---
