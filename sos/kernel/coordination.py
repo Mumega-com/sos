@@ -40,6 +40,8 @@ from typing import Optional
 import redis as redis_lib
 import requests
 
+from sos.kernel.agent_registry import get_agent, is_coordinator, is_executor
+
 logger = logging.getLogger("coordination")
 
 try:
@@ -82,6 +84,17 @@ class Coordinator:
         self.redis.xadd(stream_key, {"data": json.dumps(message)}, maxlen=500)
         self.redis.publish(f"sos:wake:{to}", json.dumps(message))
 
+    def _validate_delegate_route(self, from_agent: str, to: str) -> None:
+        """Enforce coordinator-only dispatch and ban worker-to-worker routing."""
+        if get_agent(from_agent) is None:
+            raise ValueError(f"Unknown delegator: {from_agent}")
+        if get_agent(to) is None:
+            raise ValueError(f"Unknown delegate target: {to}")
+        if not is_coordinator(from_agent):
+            raise PermissionError(f"{from_agent} is not allowed to dispatch tasks")
+        if is_executor(from_agent) and is_executor(to):
+            raise PermissionError("worker-to-worker routing is forbidden")
+
     def delegate(
         self,
         to: str,
@@ -96,6 +109,7 @@ class Coordinator:
         Creates task in Squad Service, sends DELEGATE bus message.
         Returns task_id.
         """
+        self._validate_delegate_route(from_agent, to)
         task_id = str(uuid.uuid4())[:8] + "-" + str(uuid.uuid4())[:4]
 
         # Create task in Squad Service

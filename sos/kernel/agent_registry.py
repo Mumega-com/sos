@@ -33,6 +33,11 @@ class AgentRole(str, Enum):
     ORACLE = "oracle"            # river — strategy, reflection
 
 
+class WarmPolicy(str, Enum):
+    WARM = "warm"   # keep session alive, restart if it dies
+    COLD = "cold"   # worker/specialist may be intentionally parked when idle
+
+
 @dataclass(frozen=True)
 class AgentDef:
     """Complete definition of an agent in the organism."""
@@ -48,6 +53,7 @@ class AgentDef:
     max_concurrent: int = 1
     project: str = ""                           # primary project/tenant
     workdir: str = str(Path.home())
+    warm_policy: WarmPolicy = WarmPolicy.COLD
 
 
 # ── Agent Definitions ─────────────────────────────────────────────────────────
@@ -64,6 +70,7 @@ AGENTS: dict[str, AgentDef] = {
         idle_patterns=("❯", "$ "),
         busy_patterns=("Transmuting", "Churning", "Baking", "Warping", "Thinking"),
         compaction_patterns=("Auto-compact", "context window", "Compacting"),
+        warm_policy=WarmPolicy.WARM,
     ),
     "mumega": AgentDef(
         name="mumega",
@@ -75,6 +82,7 @@ AGENTS: dict[str, AgentDef] = {
         idle_patterns=("❯", "$ "),
         busy_patterns=("Thinking", "Writing"),
         compaction_patterns=("Auto-compact", "context window"),
+        warm_policy=WarmPolicy.COLD,
     ),
     "athena": AgentDef(
         name="athena",
@@ -82,9 +90,22 @@ AGENTS: dict[str, AgentDef] = {
         role=AgentRole.COORDINATOR,
         skills=("architecture", "design", "planning", "coordination", "review"),
         max_concurrent=2,
+        warm_policy=WarmPolicy.COLD,
     ),
 
-    # --- Oracle ---
+    # --- Navigator ---
+    "gemini": AgentDef(
+        name="gemini",
+        type=AgentType.TMUX,
+        role=AgentRole.COORDINATOR,
+        session="river",
+        restart_cmd="gemini",
+        skills=("research", "synthesis", "navigation", "frc", "content"),
+        idle_patterns=("◆", "> ", "❯", "Type your message", "● YOLO"),
+        busy_patterns=("Thinking", "Writing", "Generating", "◒", "Running"),
+        warm_policy=WarmPolicy.WARM,
+    ),
+    # Legacy alias — routes to gemini
     "river": AgentDef(
         name="river",
         type=AgentType.TMUX,
@@ -94,6 +115,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("strategy", "content", "oracle", "memory", "distillation", "creative"),
         idle_patterns=("◆", "> ", "❯", "Type your message", "● YOLO"),
         busy_patterns=("Thinking", "Writing", "Generating", "◒", "Running"),
+        warm_policy=WarmPolicy.WARM,
     ),
 
     # --- Specialists ---
@@ -107,6 +129,7 @@ AGENTS: dict[str, AgentDef] = {
         idle_patterns=("❯", "$ "),
         busy_patterns=("Thinking", "Writing"),
         compaction_patterns=("Auto-compact", "context window"),
+        warm_policy=WarmPolicy.COLD,
     ),
     "codex": AgentDef(
         name="codex",
@@ -117,6 +140,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("infrastructure", "security", "debugging", "devops"),
         idle_patterns=("›", "❯", "$ ", "Use /skills"),
         busy_patterns=("Thinking", "Writing", "Generating", "Running"),
+        warm_policy=WarmPolicy.WARM,
     ),
     "webdev": AgentDef(
         name="webdev",
@@ -128,6 +152,7 @@ AGENTS: dict[str, AgentDef] = {
         idle_patterns=("❯", "$ "),
         busy_patterns=("Thinking", "Writing"),
         compaction_patterns=("Auto-compact", "context window"),
+        warm_policy=WarmPolicy.COLD,
     ),
     "mumega-web": AgentDef(
         name="mumega-web",
@@ -140,12 +165,14 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing"),
         compaction_patterns=("Auto-compact", "context window"),
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
     "dara": AgentDef(
         name="dara",
         type=AgentType.REMOTE,
         role=AgentRole.SPECIALIST,
         skills=("frontend", "mac", "design", "testing"),
+        warm_policy=WarmPolicy.COLD,
     ),
 
     # --- Executors (receive auto-delivered tasks) ---
@@ -155,6 +182,7 @@ AGENTS: dict[str, AgentDef] = {
         role=AgentRole.EXECUTOR,
         skills=("seo", "content", "audit", "analysis", "reporting", "squad_tasks"),
         max_concurrent=3,
+        warm_policy=WarmPolicy.COLD,
     ),
     "dandan": AgentDef(
         name="dandan",
@@ -163,6 +191,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("dental", "outreach", "leads", "google_maps"),
         max_concurrent=2,
         project="dentalnearyou",
+        warm_policy=WarmPolicy.COLD,
     ),
     "sol": AgentDef(
         name="sol",
@@ -171,6 +200,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("content", "creative", "writing", "editorial", "blog"),
         max_concurrent=1,
         project="therealmofpatterns",
+        warm_policy=WarmPolicy.COLD,
     ),
     "mizan": AgentDef(
         name="mizan",
@@ -178,6 +208,7 @@ AGENTS: dict[str, AgentDef] = {
         role=AgentRole.EXECUTOR,
         skills=("business", "sales", "outreach", "community", "ghl"),
         max_concurrent=1,
+        warm_policy=WarmPolicy.COLD,
     ),
     "gemma": AgentDef(
         name="gemma",
@@ -185,6 +216,7 @@ AGENTS: dict[str, AgentDef] = {
         role=AgentRole.EXECUTOR,
         skills=("bulk", "data_processing", "formatting", "categorization"),
         max_concurrent=3,
+        warm_policy=WarmPolicy.COLD,
     ),
 
     # --- Project Agents ---
@@ -199,6 +231,7 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing"),
         compaction_patterns=("Auto-compact", "context window"),
         project="gaf",
+        warm_policy=WarmPolicy.COLD,
     ),
 
     # --- Marketing Squad (Codex + Gemma + Haiku hierarchy) ---
@@ -209,6 +242,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("marketing-strategy", "content-planning", "campaign-management", "analytics-review"),
         max_concurrent=1,
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
     "mkt-content": AgentDef(
         name="mkt-content",
@@ -221,6 +255,7 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Running"),
         max_concurrent=2,
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
     "mkt-analytics": AgentDef(
         name="mkt-analytics",
@@ -233,6 +268,7 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Running"),
         max_concurrent=1,
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
     "mkt-outreach": AgentDef(
         name="mkt-outreach",
@@ -245,6 +281,7 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Running"),
         max_concurrent=1,
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
     "mkt-gemma": AgentDef(
         name="mkt-gemma",
@@ -253,6 +290,7 @@ AGENTS: dict[str, AgentDef] = {
         skills=("bulk-content", "variations", "translation", "reformatting", "social-captions"),
         max_concurrent=5,
         project="mumega",
+        warm_policy=WarmPolicy.COLD,
     ),
 }
 
@@ -294,10 +332,26 @@ def get_capture_agents() -> dict[str, str]:
     return {k: v.session for k, v in AGENTS.items() if v.type == AgentType.TMUX and v.session}
 
 
+def get_warm_agents() -> dict[str, AgentDef]:
+    """Agents expected to stay alive and be auto-restarted by lifecycle."""
+    return {k: v for k, v in AGENTS.items() if v.warm_policy == WarmPolicy.WARM}
+
+
+def get_cold_agents() -> dict[str, AgentDef]:
+    """Agents allowed to be intentionally parked when idle."""
+    return {k: v for k, v in AGENTS.items() if v.warm_policy == WarmPolicy.COLD}
+
+
 def is_coordinator(name: str) -> bool:
     """Check if an agent is a coordinator (should not receive auto tasks)."""
     agent = AGENTS.get(name)
     return agent is not None and agent.role in (AgentRole.COORDINATOR, AgentRole.ORACLE)
+
+
+def is_executor(name: str) -> bool:
+    """Check if an agent is an executor worker."""
+    agent = AGENTS.get(name)
+    return agent is not None and agent.role == AgentRole.EXECUTOR
 
 
 def get_wake_routing() -> dict[str, str]:

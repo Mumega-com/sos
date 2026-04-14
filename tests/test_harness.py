@@ -83,6 +83,86 @@ class TestAgentRegistry:
         assert check_skill_match("dandan", "seo audit") is False
 
 
+class TestProjectRegistry:
+    def test_import(self):
+        from sos.kernel.project_registry import get_all_projects
+        projects = get_all_projects()
+        assert "workspace" in projects
+        assert "sos" in projects
+
+    def test_bootstraps_default_registry(self, tmp_path, monkeypatch):
+        from sos.kernel import project_registry
+
+        registry_file = tmp_path / "projects.json"
+        monkeypatch.setattr(project_registry, "PROJECTS_FILE", registry_file)
+
+        projects = project_registry.get_all_projects()
+        assert registry_file.exists()
+        assert "workspace" in projects
+        assert projects["workspace"].warm_policy == "warm"
+
+    def test_resolves_best_project_for_path(self, tmp_path, monkeypatch):
+        from sos.kernel import project_registry
+
+        registry_file = tmp_path / "projects.json"
+        payload = {
+            "_version": 1,
+            "projects": {
+                "workspace": {
+                    "repo_path": str(tmp_path),
+                    "preferred_agent": "codex",
+                    "preferred_model": "gpt-5.4",
+                    "warm_policy": "warm",
+                    "context_files": [],
+                },
+                "nested": {
+                    "repo_path": str(tmp_path / "projects" / "nested"),
+                    "preferred_agent": "claude-code",
+                    "preferred_model": "claude-sonnet",
+                    "warm_policy": "cold",
+                    "context_files": ["README.md"],
+                },
+            },
+        }
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
+        registry_file.write_text(json.dumps(payload))
+        monkeypatch.setattr(project_registry, "PROJECTS_FILE", registry_file)
+
+        resolved = project_registry.resolve_project_for_path(
+            str(tmp_path / "projects" / "nested" / "src" / "app.py")
+        )
+        assert resolved is not None
+        assert resolved.name == "nested"
+        assert resolved.preferred_agent == "claude-code"
+
+    def test_context_files_resolve_relative_to_repo(self, tmp_path, monkeypatch):
+        from sos.kernel import project_registry
+
+        registry_file = tmp_path / "projects.json"
+        repo_dir = tmp_path / "repo"
+        payload = {
+            "_version": 1,
+            "projects": {
+                "demo": {
+                    "repo_path": str(repo_dir),
+                    "preferred_agent": "codex",
+                    "preferred_model": "gpt-5.4",
+                    "warm_policy": "cold",
+                    "context_files": ["README.md", "docs/start.md"],
+                }
+            },
+        }
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
+        registry_file.write_text(json.dumps(payload))
+        monkeypatch.setattr(project_registry, "PROJECTS_FILE", registry_file)
+
+        files = project_registry.get_context_files("demo")
+        assert files == (
+            str(repo_dir / "README.md"),
+            str(repo_dir / "docs/start.md"),
+        )
+
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 class TestLifecycle:

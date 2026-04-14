@@ -40,7 +40,8 @@ REDIS_URL = os.getenv("REDIS_URL", f"redis://:{REDIS_PASSWORD}@localhost:6379" i
 AGENT_ROUTING = {
     "athena":   "openclaw",
     "kasra":    "tmux",
-    "river":    "tmux",
+    "gemini":   "tmux",
+    "river":    "tmux",  # legacy alias — routes to gemini session
     "codex":    "tmux",
     "sol":      "openclaw",
     "mumega":   "tmux",
@@ -60,7 +61,8 @@ AGENT_ROUTING = {
 # Tmux session name override (if different from agent name)
 # Current sessions: athena, kasra, kasra-dnu, kasra-gaf, kasra-trop, river
 TMUX_SESSION_MAP = {
-    "river": "river",
+    "gemini": "river",   # gemini agent uses tmux session named "river"
+    "river": "river",    # legacy alias
     "athena": "athena",
     "mumega-web": "mumega-com-web",  # tmux session kept old name after rename
     "webdev": "mumega-web",          # tmux session kept old name after rename
@@ -193,8 +195,8 @@ def wake_tmux(agent: str, message: str) -> bool:
         last_text = " ".join(last_lines).lower()
 
         # Only send if agent appears to be at a prompt (waiting for input)
-        # Claude Code shows "> " or "❯", Gemini shows "❯"
-        at_prompt = any(c in last_text for c in ["> ", "❯", "›", "$ ", "waiting", "you:"])
+        # Claude Code shows "> " or "❯", Gemini CLI shows "* " or "type your"
+        at_prompt = any(c in last_text for c in ["> ", "❯", "›", "$ ", "waiting", "you:", "* ", "type your"])
 
         if not at_prompt:
             logger.info(f"tmux:{session} busy (not at prompt) — queuing message for {agent}")
@@ -215,11 +217,13 @@ def wake_tmux(agent: str, message: str) -> bool:
             ["tmux"] + sock_args + ["send-keys", "-t", session, "-l", cmd],
             timeout=5,
         )
-        # Small delay then Enter — ensures text is in the input buffer first
+        # Small delay then submit — ensures text is in the input buffer first
+        # Gemini CLI TUI requires C-m (carriage return) not Enter (newline)
         import time
         time.sleep(0.2)
+        submit_key = "C-m" if agent in ("river", "gemini") else "Enter"
         subprocess.run(
-            ["tmux"] + sock_args + ["send-keys", "-t", session, "Enter"],
+            ["tmux"] + sock_args + ["send-keys", "-t", session, submit_key],
             timeout=5,
         )
         logger.info(f"Woke tmux:{session} for {agent} (sent to prompt)")

@@ -169,6 +169,8 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 def fetch_assigned_tasks(agent_id: str) -> list[dict]:
     """Fetch tasks assigned to an agent that are fresh and actionable."""
+    if is_coordinator(agent_id):
+        return []
     tasks: list[dict] = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_TASK_AGE_HOURS)
 
@@ -195,6 +197,14 @@ def fetch_assigned_tasks(agent_id: str) -> list[dict]:
         task_id = t.get("id", "")
         if task_id in _delivered_tasks:
             continue
+        labels = t.get("labels", [])
+        if not _task_is_coordinator_routed(labels):
+            logger.info(
+                "Skipping task %s for %s: no coordinator routing label",
+                task_id[:8],
+                agent_id,
+            )
+            continue
         created = _parse_iso(t.get("created_at") or t.get("updated_at"))
         if created and created < cutoff:
             continue
@@ -210,6 +220,19 @@ def fetch_assigned_tasks(agent_id: str) -> list[dict]:
 # ── Task Delivery ─────────────────────────────────────────────────────────────
 def deliver_task(agent_id: str, task: dict) -> bool:
     """Deliver a task to an agent's tmux session or OpenClaw."""
+    if is_coordinator(agent_id):
+        logger.warning(f"Refusing to auto-deliver task to coordinator {agent_id}")
+        return False
+
+    labels = task.get("labels", [])
+    if not _task_is_coordinator_routed(labels):
+        logger.warning(
+            "Refusing to auto-deliver unrouted task %s to %s",
+            task.get("id", "unknown")[:8],
+            agent_id,
+        )
+        return False
+
     routing = AGENT_ROUTING.get(agent_id)
     if not routing:
         logger.warning(f"No routing for agent {agent_id}")
@@ -309,6 +332,15 @@ def deliver_task(agent_id: str, task: dict) -> bool:
         f.write(json.dumps(log_entry) + "\n")
 
     return True
+
+
+def _task_is_coordinator_routed(labels: object) -> bool:
+    if not isinstance(labels, list):
+        return False
+    return any(
+        isinstance(label, str) and (label.startswith("from:") or label.startswith("delegated-by:"))
+        for label in labels
+    )
 
 
 # ── Event Listener (real-time) ────────────────────────────────────────────────
