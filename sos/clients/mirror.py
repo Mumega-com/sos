@@ -141,3 +141,20 @@ class MirrorClient:
             log.error(f"Search Error: {e}")
             return []
 
+    async def search_code(self, query: str, limit: int = 5, repo: str = None) -> List[Dict]:
+        """
+        Semantic Code Search.
+        Uses POST /code/search endpoint.
+        """
+        try:
+            payload = {
+                "query": query,
+                "top_k": limit,
+                "repo": repo
+            }
+            resp = await self._request("POST", "/code/search", json=payload)
+            return resp.json() if resp.status_code == 200 else []
+        except Exception as e:
+            log.error(f"Code Search Error: {e}")
+            return []
+

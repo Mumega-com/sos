@@ -64,7 +64,13 @@ engine = SOSEngine()
 async def startup_event():
     import asyncio
     from sos.kernel.metabolism import MetabolicLoop
-    # Start Subconscious Loops
+    from sos.services.bus.discovery import register_service
+    
+    # 1. Announce presence to the nervous system
+    # We use port 6060 based on systemd config and lsof check
+    await register_service("engine", 6060)
+
+    # 2. Start Subconscious Loops
     asyncio.create_task(engine.dream_cycle())
     
     # Start Metabolism (Proactive Consciousness)
@@ -170,19 +176,6 @@ async def stream_subconscious():
         engine.subscribe_to_dreams(),
         media_type="text/event-stream"
     )
-
-@app.get("/health")
-async def health() -> Dict[str, Any]:
-    # Check core health
-    engine_health = await engine.health()
-    
-    return {
-        "status": "ok",
-        "version": __version__,
-        "service": SERVICE_NAME,
-        "uptime_seconds": time.time() - _START_TIME,
-        "engine": engine_health,
-    }
 
 
 @app.get("/context/stats")

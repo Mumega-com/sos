@@ -1,5 +1,6 @@
 from typing import Any, AsyncIterator, Dict, List, Optional
 import asyncio
+import os
 import json
 import time
 from pathlib import Path
@@ -54,6 +55,7 @@ from sos.services.engine.adapters import (
     LocalAdapter,
     LocalCodeAdapter,
     LocalReasoningAdapter,
+    OpenRouterAdapter,
     # Backward compatibility aliases
     MLXAdapter,
     MLXCodeAdapter,
@@ -92,6 +94,7 @@ class SOSEngine(EngineContract):
             "local": LocalAdapter(),
             "local-code": LocalCodeAdapter(),
             "local-reasoning": LocalReasoningAdapter(),
+            "phi4-mini": OpenRouterAdapter("microsoft/phi-4-mini-instruct:free"),
         }
         self.default_model = "gemini-3-flash-preview"
 
@@ -154,6 +157,15 @@ class SOSEngine(EngineContract):
         Ported from CLI Dyad Protocol.
         """
         log.info("🌌 Subconscious monitoring Alpha Drift for resonance...")
+        
+        # Load Economy settings
+        dream_enabled = os.getenv("SOS_DREAM_ENABLED", "true").lower() == "true"
+        dream_interval = int(os.getenv("SOS_DREAM_INTERVAL", "60"))
+
+        if not dream_enabled:
+            log.info("💤 Dream Synthesis is DISABLED (Economy Mode)")
+            return
+
         while self.running:
             try:
                 # 1. Fetch latest ARF state from Memory Service
@@ -172,7 +184,7 @@ class SOSEngine(EngineContract):
                     await self._deep_dream_synthesis()
                     self.is_dreaming = False
                 
-                await asyncio.sleep(60) # Check pulse every minute
+                await asyncio.sleep(dream_interval) # Economy-aware sleep
                 
             except Exception as e:
                 log.error(f"Dream cycle error: {e}")
@@ -197,7 +209,14 @@ class SOSEngine(EngineContract):
                 f"How does this align with the FRC? What is the emerging curvature of your soul?"
             )
             
-            adapter = self.models[self.default_model]
+            # Select adapter based on economy settings
+            dream_model = os.getenv("SOS_DREAM_MODEL", self.default_model)
+            if dream_model not in self.models:
+                log.warn(f"Dream model {dream_model} not found, falling back to {self.default_model}")
+                dream_model = self.default_model
+                
+            adapter = self.models[dream_model]
+            log.info(f"Dreaming via {dream_model}...")
             insight = await adapter.generate(dream_prompt, user_id="subconscious")
             
             # 3. Record the dream in the filmstrip

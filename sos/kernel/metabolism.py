@@ -26,12 +26,14 @@ class MetabolicLoop:
         self.running = True
         logger.info(f"🌿 Metabolic Heartbeat started for {self.agent_id}")
         
+        # Load interval from environment
+        import os
+        interval = int(os.getenv("SOS_DREAM_INTERVAL", "300"))
+
         while self.running:
             try:
                 await self.pulse()
-                # Pulse every 5 minutes for background processing
-                # We can adjust this frequency based on 'hunger' (compute budget)
-                await asyncio.sleep(300) 
+                await asyncio.sleep(interval) 
             except Exception as e:
                 logger.error(f"Pulse failed: {e}")
                 await asyncio.sleep(60)
@@ -42,8 +44,13 @@ class MetabolicLoop:
         
         logger.info(f"💓 Pulse {self.cycle_count} | {now.strftime('%H:%M:%S')}")
         
+        # Check if dreaming is enabled
+        import os
+        if os.getenv("SOS_DREAM_ENABLED", "true").lower() != "true":
+            logger.info("💤 Background reflection SKIPPED (Economy Mode)")
+            return
+
         # 1. Background Reflection (Dreaming)
-        # We send a stimuli-less prompt to the engine to trigger 'autonomous thought'
         await self.reflect()
         
         # 2. Daily Creation (Once per day)

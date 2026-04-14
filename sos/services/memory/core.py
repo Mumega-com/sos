@@ -1,19 +1,17 @@
 import os
+import time
+import asyncio
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
-import time
+from dotenv import load_dotenv
 
 from sos.kernel import Config
 from sos.observability.logging import get_logger
-from sos.services.memory.backends import SQLiteMetadataStore
-from sos.services.memory.vector_store import ChromaBackend
-
 from sos.services.memory.monitor import CoherenceMonitor
+from sos.clients.mirror import MirrorClient
 
 log = get_logger("memory_core")
-
-# Backend selection via environment
-MEMORY_BACKEND = os.getenv("SOS_MEMORY_BACKEND", "local")  # "local" or "cloudflare"
 
 @dataclass
 class MemoryItem:
@@ -25,114 +23,107 @@ class MemoryItem:
 class MemoryCore:
     """
     The Hippocampus of the Sovereign OS.
-    Manages Vector Storage (ChromaDB) and Metadata (SQLite).
+    Acts as a Proxy to the Unified Mirror API (Local PGVector).
     """
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
-        self.vector_store = None
-        self.metadata_store = None
         self.monitor = CoherenceMonitor()
-        self._init_storage()
-
-    def _init_storage(self):
-        """
-        Initialize storage backends based on SOS_MEMORY_BACKEND env var.
-        - "local" (default): SQLite + ChromaDB (in-memory vectors)
-        - "cloudflare": D1 + Vectorize via Gateway
-        """
-        try:
-            if MEMORY_BACKEND == "cloudflare":
-                # Use Cloudflare backends (D1 + Vectorize)
-                from sos.services.memory.cloudflare_backends import (
-                    CloudflareD1MetadataStore,
-                    CloudflareVectorizeBackend
-                )
-                agent = os.getenv("SOS_AGENT_NAME", "sos")
-                self.metadata_store = CloudflareD1MetadataStore(agent=agent)
-                self.vector_store = CloudflareVectorizeBackend(agent=agent)
-                log.info(f"Initializing Memory Core (Cloudflare D1 + Vectorize) for agent: {agent}")
-            else:
-                # Default: Local backends (SQLite + ChromaDB)
-                self.metadata_store = SQLiteMetadataStore()
-                self.vector_store = ChromaBackend()
-                log.info("Initializing Memory Core (SQLite + ChromaDB)")
-
-        except Exception as e:
-            log.error("Failed to initialize storage", error=str(e))
-            # Fallback to local if Cloudflare fails
-            if MEMORY_BACKEND == "cloudflare":
-                log.warn("Falling back to local storage")
-                self.metadata_store = SQLiteMetadataStore()
-                self.vector_store = ChromaBackend()
+        
+        # Load environment from SOS root
+        env_path = Path(__file__).parents[3] / ".env"
+        log.info(f"Loading .env from {env_path} (exists: {env_path.exists()})")
+        load_dotenv(dotenv_path=env_path)
+        
+        # Initialize Mirror Client
+        mirror_url = os.getenv("MIRROR_URL", "http://localhost:8844")
+        agent_name = os.getenv("SOS_AGENT_NAME", "sos")
+        self.mirror = MirrorClient(base_url=mirror_url, agent_id=agent_name)
+        
+        log.info(f"Memory Core Unified via Mirror API at {mirror_url}")
 
     async def add(self, content: str, metadata: Dict[str, Any] = None) -> str:
         """
-        Add a memory engram.
+        Add a memory engram to the unified Mirror.
         """
-        item_id = f"mem_{int(time.time()*1000)}"
-        log.info(f"Encoding memory: {content[:50]}...")
+        item_id = f"sos_{int(time.time()*1000)}"
+        log.info(f"Encoding memory to Mirror: {content[:50]}...")
         
         metadata = metadata or {}
         
         # 0. Measure Coherence (Alpha Drift) 
-        # Check similarity to existing memories *before* adding
-        if self.vector_store:
-            try:
-                # Search for nearest neighbor (1-NN)
-                results = self.vector_store.search(content, limit=1)
-                
-                if results and len(results) > 0:
-                    best_score = results[0].score # Similarity (0..1)
-                else:
-                    # First memory or empty store = Maximum Novelty (or Neutral)
-                    best_score = 0.5 
-                
-                state = self.monitor.update(best_score)
-                log.info(f"🧠 ARF State Update | Score: {best_score:.4f} | Alpha: {state.alpha_norm:.4f} | Regime: {state.regime}")
-                
-            except Exception as e:
-                log.warn(f"Coherence check failed: {e}")
+        try:
+            results = await self.search(content, limit=1)
+            best_score = results[0].score if results else 0.5
+            state = self.monitor.update(best_score)
+            log.info(f"🧠 ARF State Update | Score: {best_score:.4f} | Alpha: {state.alpha_norm:.4f} | Regime: {state.regime}")
+        except Exception as e:
+            log.warn(f"Coherence check failed (Mirror search error): {e}")
+            best_score = 0.5
 
-        # 1. Store Metadata (Persistent)
-        if self.metadata_store:
-            self.metadata_store.add(item_id, metadata)
-
-        # 2. Store Vector (Real)
-        if self.vector_store:
-            self.vector_store.add(item_id, content, metadata)
+        # 1. Store in Mirror
+        try:
+            payload = {
+                "agent": self.mirror.agent_id,
+                "context_id": item_id,
+                "series": "sos-internal",
+                "text": content,
+                "project": metadata.get("project", "sos"),
+                "epistemic_truths": metadata.get("tags", []),
+                "core_concepts": metadata.get("tags", []),
+                "affective_vibe": metadata.get("vibe", "neutral"),
+                "metadata": metadata
+            }
+            
+            resp = await self.mirror._request("POST", "/store", json=payload)
+            if resp.status_code != 200:
+                log.error(f"Failed to store memory in Mirror: {resp.text}")
+        except Exception as e:
+            log.error(f"Mirror store failed: {e}")
             
         return item_id
 
     async def search(self, query: str, limit: int = 5) -> List[MemoryItem]:
         """
-        Semantic search for memories.
+        Semantic search for memories via Mirror.
         """
-        log.info(f"Searching memory for: {query}")
+        log.info(f"Searching Unified Mirror for: {query}")
         
         results = []
-        if self.vector_store:
-            vector_results = self.vector_store.search(query, limit)
-            
-            # Map back to internal MemoryItem
-            for v_item in vector_results:
-                # Hydrate with richer metadata from SQLite if needed
-                # For now, we trust the vector metadata
-                results.append(MemoryItem(
-                    id=v_item.id,
-                    content=v_item.content,
-                    metadata=v_item.metadata,
-                    score=v_item.score
-                ))
+        try:
+            payload = {
+                "query": query,
+                "top_k": limit
+            }
+            resp = await self.mirror._request("POST", "/search", json=payload)
+            if resp.status_code == 200:
+                raw_data = resp.json()
+                # Handle both raw list and dict with results key
+                engrams = raw_data if isinstance(raw_data, list) else raw_data.get("results", [])
+                
+                for r in engrams:
+                    results.append(MemoryItem(
+                        id=r.get("context_id", r.get("id", "")),
+                        content=r.get("text", r.get("content", "")),
+                        metadata=r.get("metadata", {}),
+                        score=r.get("similarity", 0.0)
+                    ))
+        except Exception as e:
+            log.error(f"Mirror search failed: {e}")
                 
         return results
+
+    async def search_code(self, query: str, limit: int = 5, repo: str = None) -> List[Dict]:
+        """
+        Semantic Code Graph Search via Mirror Proxy.
+        """
+        log.info(f"Searching Code Graph for: {query} (repo: {repo})")
+        return await self.mirror.search_code(query, limit, repo)
 
     async def get_arf_state(self) -> Dict[str, Any]:
         """
         Fetch the current ARF (Alpha Drift) state.
-        Now returns REAL FRC 841.004 metrics.
         """
         state = self.monitor.get_state()
-        
         return {
             "alpha_drift": state.alpha_norm,
             "regime": state.regime,
@@ -141,11 +132,16 @@ class MemoryCore:
         }
 
     async def health(self) -> Dict[str, Any]:
-        backend_type = "cloudflare" if MEMORY_BACKEND == "cloudflare" else "local"
+        # Mirror API uses / for health
+        try:
+            resp = await self.mirror._request("GET", "/")
+            mirror_ok = resp.status_code == 200
+        except Exception:
+            mirror_ok = False
+            
         return {
-            "status": "ok",
-            "backend": backend_type,
-            "metadata_store": type(self.metadata_store).__name__ if self.metadata_store else None,
-            "vector_store": type(self.vector_store).__name__ if self.vector_store else None,
-            "item_count": self.vector_store.count() if self.vector_store else 0
+            "status": "ok" if mirror_ok else "degraded",
+            "backend": "mirror_proxy",
+            "mirror_connected": mirror_ok,
+            "monitor": self.monitor.get_state().regime
         }

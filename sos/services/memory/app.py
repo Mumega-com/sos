@@ -31,6 +31,12 @@ app.add_middleware(
 
 memory = MemoryCore()
 
+@app.on_event("startup")
+async def startup_event():
+    from sos.services.bus.discovery import register_service
+    # Port 6061 based on system check
+    await register_service("memory", 6061)
+
 class AddMemoryRequest(BaseModel):
     content: str
     metadata: Dict[str, Any] = {}
@@ -62,4 +68,10 @@ async def add_memory(request: AddMemoryRequest):
 @app.post("/search")
 async def search_memory(request: SearchRequest):
     results = await memory.search(request.query, request.limit)
+    return {"results": results}
+
+@app.post("/code/search")
+async def search_code(request: SearchRequest, repo: Optional[str] = None):
+    """Semantic search over the code graph."""
+    results = await memory.search_code(request.query, request.limit, repo)
     return {"results": results}

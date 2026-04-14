@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-SOS Organ Daemon — The Sovereign Immune System
+SOS Organ Daemon — The Sovereign Immune System (Dynamic Discovery Version)
 
 Maintains tool health. Emits HEARTBEAT signals to the Redis Bus.
-If healing fails, it requests a REPAIR task from the Squad (Athena/Kasra).
+Uses Dynamic Discovery to find service ports.
 """
 
 import os
@@ -21,20 +21,22 @@ from typing import Optional, Dict, List, Any
 import httpx
 from sos.kernel import Message, MessageType
 from sos.services.bus.core import get_bus
+from sos.services.bus.discovery import get_service_info
 
 # Configure logging
 log = logging.getLogger("organ_daemon")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
-ORGAN_CONFIG_DIR = Path.home() / ".sos" / "organs"
 DISCORD_WEBHOOKS_PATH = Path.home() / ".mumega" / "discord_webhooks.json"
 
 
 def _load_discord_webhooks() -> dict:
     try:
-        return json.loads(DISCORD_WEBHOOKS_PATH.read_text())
+        if DISCORD_WEBHOOKS_PATH.exists():
+            return json.loads(DISCORD_WEBHOOKS_PATH.read_text())
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 def discord_notify(channel_key: str, text: str):
@@ -54,39 +56,43 @@ class OrganConfig:
     name: str
     display_name: str
     purpose: str
-    health_check: str
-    health_url: Optional[str] = None
+    default_port: int
+    health_path: str = "/health"
     restart_cmd: Optional[str] = None
     service_name: Optional[str] = None
-    heartbeat_interval: int = 300
+    heartbeat_interval: int = 60
     critical_threshold: int = 3
 
-# Registry of core organs
+# Registry of core organs (Discovery fallbacks)
 ORGAN_REGISTRY: Dict[str, OrganConfig] = {
     "mirror": OrganConfig(
         name="mirror",
         display_name="Mirror Memory",
         purpose="Persistent engram storage",
-        health_check="curl -sf http://localhost:8844/",
-        health_url="http://localhost:8844/",
-        restart_cmd="sudo systemctl restart mirror-api",
+        default_port=8844,
+        health_path="/", # Mirror uses root for health
         service_name="mirror-api"
     ),
     "engine": OrganConfig(
         name="engine",
         display_name="SOS Engine",
         purpose="The primary cognitive router",
-        health_check="curl -sf http://localhost:8000/health",
-        health_url="http://localhost:8000/health",
-        restart_cmd="pm2 restart sos-engine"
+        default_port=6060,
+        service_name="sos-engine"
+    ),
+    "memory": OrganConfig(
+        name="memory",
+        display_name="SOS Memory Proxy",
+        purpose="Hippocampus interface",
+        default_port=6061,
+        service_name="sos-memory"
     ),
     "content": OrganConfig(
         name="content",
         display_name="Content Service",
         purpose="Autonomous content orchestrator",
-        health_check="curl -sf http://localhost:8005/health",
-        health_url="http://localhost:8005/health",
-        restart_cmd="pm2 restart sos-content"
+        default_port=6066,
+        service_name="sos-content"
     )
 }
 
@@ -97,6 +103,7 @@ class OrganDaemon:
         self.running = False
         self.consecutive_failures = 0
         self.heal_count = 0
+        self.current_port = config.default_port
 
     async def start(self):
         self.running = True
@@ -116,6 +123,14 @@ class OrganDaemon:
             await asyncio.sleep(self.config.heartbeat_interval)
 
     async def _heartbeat(self):
+        # 1. Try to discover actual port from Redis
+        info = await get_service_info(self.config.name)
+        if info and info.get("port"):
+            if self.current_port != info["port"]:
+                log.info(f"📍 Service {self.config.name} discovered on port {info['port']}")
+                self.current_port = info["port"]
+
+        # 2. Check Health
         healthy = await self._check_health()
         
         if healthy:
@@ -130,13 +145,13 @@ class OrganDaemon:
             
             self.consecutive_failures = 0
             self.heal_count = 0
-            log.info(f"💓 {self.config.display_name}: OK")
+            log.info(f"💓 {self.config.display_name} (:{self.current_port}): OK")
             
             # Pulse heartbeat to bus
             await self.bus.send(Message(
                 source=f"organ:{self.config.name}",
                 type=MessageType.SIGNAL,
-                payload={"event": "HEARTBEAT", "status": "healthy"}
+                payload={"event": "HEARTBEAT", "status": "healthy", "port": self.current_port}
             ))
         else:
             self.consecutive_failures += 1
@@ -146,65 +161,46 @@ class OrganDaemon:
                 await self._heal_attempt()
 
     async def _check_health(self) -> bool:
-        """Run health check (HTTP or Shell)."""
-        if self.config.health_url:
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(self.config.health_url, timeout=10)
-                    if resp.status_code < 400:
-                        return True
-            except Exception:
-                pass
-
-        if self.config.health_check:
-            try:
-                res = subprocess.run(self.config.health_check, shell=True, capture_output=True, text=True)
-                return res.returncode == 0
-            except Exception:
-                pass
-        
-        return False
+        """Run health check (HTTP)."""
+        url = f"http://localhost:{self.current_port}{self.config.health_path}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=5)
+                return resp.status_code < 400
+        except Exception:
+            return False
 
     async def _heal_attempt(self):
         """Attempt self-healing (Restart -> Repair)."""
         
-        # 1. Attempt Restart (μ1 Recovery)
+        # 1. Attempt Restart
         if self.heal_count == 0:
             log.info(f"🔄 Attempting restart for {self.config.display_name}...")
-            cmd = self.config.restart_cmd or (f"sudo systemctl restart {self.config.service_name}" if self.config.service_name else None)
-            if cmd:
+            service = self.config.service_name
+            if service:
+                cmd = f"sudo systemctl restart {service}"
                 subprocess.run(cmd, shell=True)
                 self.heal_count += 1
                 return
 
-        # 2. If Restart fails multiple times, request Sovereign Repair (μ5 Recovery)
+        # 2. Critical Failure Escalation
         if self.consecutive_failures >= self.config.critical_threshold:
-            log.error(f"🚨 CRITICAL: {self.config.display_name} failed restart. Requesting Sovereign Self-Healing.")
-            discord_notify("organ-daemon", f"🚨 **CRITICAL: {self.config.display_name}** is DOWN after {self.consecutive_failures} failures. Autonomous repair triggered.")
+            log.error(f"🚨 CRITICAL: {self.config.display_name} failed restart.")
+            discord_notify("organ-daemon", f"🚨 **CRITICAL: {self.config.display_name}** is DOWN. Autonomous repair triggered.")
             
-            # Emit REPAIR_REQUEST to the Squad (Athena/Kasra)
-            # This triggers the 'Kasra' agent to use its 'code_write' capability
             repair_msg = Message(
                 source=f"organ:{self.config.name}",
-                target="agent:athena", # Athena as the Architect of Living Systems
+                target="agent:athena",
                 type=MessageType.TASK,
                 payload={
                     "event": "HEAL_REQUEST",
                     "priority": "CRITICAL",
                     "organ": self.config.name,
-                    "diagnostic": f"Health check '{self.config.health_check}' failed after {self.consecutive_failures} attempts.",
-                    "instruction": f"Diagnose and fix the service '{self.config.display_name}' at {self.config.health_url or 'local path'}."
+                    "diagnostic": f"Port {self.current_port} unreachable after restart.",
+                    "instruction": f"Diagnose and fix the service '{self.config.display_name}'."
                 }
             )
-            
             await self.bus.send(repair_msg, target_squad="core")
-            
-            # Alert the human via Telegram (Pulse)
-            await self.bus.send(Message(
-                source=f"organ:{self.config.name}",
-                type=MessageType.SIGNAL,
-                payload={"event": "ALARM", "text": f"🚨 SOS: {self.config.display_name} is DOWN. Autonomous repair triggered."}
-            ))
 
     def stop(self):
         self.running = False
@@ -215,11 +211,14 @@ async def run_all():
     await asyncio.gather(*(d.start() for d in daemons))
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] != "all":
-        name = sys.argv[1]
-        if name in ORGAN_REGISTRY:
-            asyncio.run(OrganDaemon(ORGAN_REGISTRY[name]).start())
+    try:
+        if len(sys.argv) > 1 and sys.argv[1] != "all":
+            name = sys.argv[1]
+            if name in ORGAN_REGISTRY:
+                asyncio.run(OrganDaemon(ORGAN_REGISTRY[name]).start())
+            else:
+                print(f"Unknown organ: {name}")
         else:
-            print(f"Unknown organ: {name}")
-    else:
-        asyncio.run(run_all())
+            asyncio.run(run_all())
+    except KeyboardInterrupt:
+        pass

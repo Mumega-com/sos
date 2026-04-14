@@ -493,6 +493,59 @@ class LocalAdapter(ModelAdapter):
             yield f"[{self.server_type} Error] {str(e)}"
 
 
+class OpenRouterAdapter(OpenAIAdapter):
+    """
+    Adapter for OpenRouter.ai models.
+    Supports free models like Phi-4 Mini.
+    """
+    def __init__(self, model: str = "microsoft/phi-4-mini-instruct:free"):
+        self.model = model
+        self.api_key = os.getenv("OPENROUTER_API_KEY")
+        if not self.api_key:
+            log.warning("OPENROUTER_API_KEY not set. OpenRouter adapter will be limited.")
+
+    def get_model_id(self) -> str:
+        return f"openrouter-{self.model.split('/')[-1]}"
+
+    async def generate(self, prompt: str, system_prompt: str = None, tools: List[Dict] = None, user_id: str = "default", history: List[Dict] = None, **kwargs) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                headers = {
+                    "Authorization": f"Bearer {self.api_key or 'free'}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://sos.mumega.com",
+                    "X-Title": "Sovereign OS"
+                }
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.7
+                    }
+                )
+
+                if resp.status_code != 200:
+                    error_msg = resp.text
+                    log.error(f"OpenRouter error: {resp.status_code} - {error_msg}")
+                    return f"OpenRouter Error: {resp.status_code}"
+
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            log.error(f"OpenRouter generation failed: {e}")
+            return f"OpenRouter Error: {str(e)}"
+
+
 # Backward compatibility alias
 MLXAdapter = LocalAdapter
 
