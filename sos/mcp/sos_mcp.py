@@ -360,7 +360,8 @@ def handle(name, args):
                 return _text("No tasks found.")
             lines = []
             for t in tasks:
-                lines.append(f"[{t.get('status', '?')}] {t.get('title', '?')} → {t.get('assignee', '?')}")
+                tid = t.get('id', '?')
+                lines.append(f"[{t.get('status', '?')}] {t.get('title', '?')} (id: {tid}) → {t.get('agent', t.get('assignee', '?'))}")
             return _text("\n".join(lines))
 
         elif name == "task_update":
