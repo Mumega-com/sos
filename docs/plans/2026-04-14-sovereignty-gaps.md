@@ -59,9 +59,9 @@ Agents — connect via MCP SSE (:6070), use standard Message format
 - No kernel changes needed — workers are ephemeral, not part of identity layer
 - Worktree paths under `~/.sos/` — consistent with existing state management
 
-### Gap 3: Checkpoint on Context Compaction — TODO
+### Gap 3: Checkpoint on Context Compaction — DONE
 
-**Owner:** Kasra
+**Owner:** Kasra (completed 2026-04-14)
 **Files to change:**
 - `sos/services/health/lifecycle.py` — enhance compaction detection handler
 - `sos/services/health/output_capture.py` — detect compaction patterns, trigger snapshot
@@ -123,13 +123,22 @@ Outcome: Claude Code itself triggers the save, not just lifecycle detection
 
 | Post | File | Status |
 |------|------|--------|
-| What Is SOS | `mumega-site/content/en/blog/what-is-sos.md` | Written, build passes |
-| Agent Harness Review | `mumega-site/content/en/blog/which-agent-harness-should-sos-adapt.md` | Written by Codex, build passes |
+| What Is SOS | `mumega-site/content/en/blog/what-is-sos.md` | Deployed |
+| Agent Harness Review | `mumega-site/content/en/blog/which-agent-harness-should-sos-adapt.md` | Deployed |
 
 ## Remaining Work
 
-1. **Gap 3 implementation** — Kasra builds compaction checkpoint (steps 1-4 above)
-2. **Dispatch guardrails** — Codex builds coordinator-only routing, no worker-to-worker
-3. **sos-dev code review** — 8 issues need implementation (separate PR)
-4. **Deploy blog posts** — `cd ~/mumega-site && npm run deploy`
+1. ~~**Gap 3 implementation**~~ — DONE (Kasra, commit 885e8f32)
+2. ~~**Dispatch guardrails**~~ — DONE (Codex, commit 885e8f32)
+3. **sos-dev code review** — 8 issues need implementation (committed with review notes in 751939ae)
+4. ~~**Deploy blog posts**~~ — DONE (deployed to Cloudflare Pages)
 5. **Restart lifecycle service** — pick up STUCK_MINUTES=120 and parked state changes
+6. **Step 4 of Gap 3** — Add PreCompact/PostCompact hook to settings.json for Claude Code native checkpoint
+
+## Additional Completed (not in original plan)
+
+- #95 gemini added to agent_registry (closed)
+- #96 task_list MCP tool fixed — shows task ID, uses `agent` field (commit a050bc0d, closed)
+- Task API 500 error fixed — PostgreSQL array handling in mirror/db.py (commit c37517a)
+- Graphify installed and tested on SOS (6,151 nodes, 14,218 edges)
+- All SOS+Mirror changes committed and pushed to GitHub
