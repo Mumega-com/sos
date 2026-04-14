@@ -378,6 +378,18 @@ def detect_agent_state(agent_id: str, agent_def: dict) -> dict:
     if idle:
         return {"state": "idle", "details": "agent at prompt"}
 
+    # Check heartbeat file — if agent wrote a recent heartbeat, it's busy (not stuck)
+    heartbeat_path = STATE_DIR / f"{agent_id}-heartbeat"
+    if heartbeat_path.exists():
+        try:
+            hb_text = heartbeat_path.read_text().strip()
+            hb_time = datetime.fromisoformat(hb_text)
+            hb_age = (datetime.now(timezone.utc) - hb_time).total_seconds()
+            if hb_age < 120:  # heartbeat within 2 minutes = actively working
+                return {"state": "busy", "details": f"heartbeat {int(hb_age)}s ago"}
+        except (ValueError, OSError):
+            pass
+
     # Check for stuck: compare current pane to last snapshot
     prev_state = load_agent_state(agent_id)
     prev_snapshot = prev_state.get("last_pane_hash")
