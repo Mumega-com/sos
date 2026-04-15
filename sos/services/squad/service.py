@@ -151,6 +151,57 @@ class SquadDB:
                 );
                 """
             )
+            # --- Living Graph: wallet, goals, conductance ---
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS squad_wallets (
+                    squad_id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    balance_cents INTEGER NOT NULL DEFAULT 0,
+                    total_earned_cents INTEGER NOT NULL DEFAULT 0,
+                    total_spent_cents INTEGER NOT NULL DEFAULT 0,
+                    fuel_budget_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS squad_transactions (
+                    id TEXT PRIMARY KEY,
+                    squad_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    type TEXT NOT NULL CHECK (type IN ('earn', 'spend', 'transfer', 'mint')),
+                    amount_cents INTEGER NOT NULL,
+                    counterparty TEXT DEFAULT 'system',
+                    reason TEXT NOT NULL,
+                    task_id TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_squad_transactions_squad
+                    ON squad_transactions (squad_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS squad_goals (
+                    id TEXT PRIMARY KEY,
+                    squad_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    target TEXT NOT NULL,
+                    markers_json TEXT NOT NULL DEFAULT '[]',
+                    coherence_threshold REAL NOT NULL DEFAULT 0.6,
+                    deadline TEXT,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'achieved', 'abandoned')),
+                    progress REAL NOT NULL DEFAULT 0.0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_squad_goals_squad
+                    ON squad_goals (squad_id, status);
+                """
+            )
+            # Squad profile columns (16D DNA + conductance)
+            self._ensure_column(conn, "squads", "dna_vector", "TEXT DEFAULT '[]'")
+            self._ensure_column(conn, "squads", "coherence", "REAL DEFAULT 0.5")
+            self._ensure_column(conn, "squads", "receptivity", "REAL DEFAULT 0.5")
+            self._ensure_column(conn, "squads", "conductance_json", "TEXT DEFAULT '{}'")
+
             self._ensure_column(conn, "squads", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
             self._ensure_column(conn, "squad_tasks", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
             self._ensure_column(conn, "squad_skills", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")

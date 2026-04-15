@@ -296,8 +296,14 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
             payload = json.loads(resp.text)
             project = payload.get("project") or None
             active = payload.get("active", True)
-            if project and active:
-                ctx = MCPAuthContext(token=token, tenant_id=project, is_system=False, source="cloudflare_kv")
+            agent_name = payload.get("agent", "")
+            if active and (project or agent_name):
+                ctx = MCPAuthContext(
+                    token=token, tenant_id=project,
+                    is_system=project is None,
+                    source="cloudflare_kv",
+                    agent_name=agent_name,
+                )
             else:
                 ctx = None
     except Exception:
@@ -749,7 +755,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     mirror_post,
                     "/store",
                     {
-                        "text": f"[{AGENT_SELF} -> {to}] {text}",
+                        "text": f"[{agent_scope} -> {to}] {text}",
                         "agent": agent_scope,
                         "project": project_scope,
                         "context_id": _scoped_context_id(auth, f"msg_{mid}"),
@@ -779,8 +785,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- peers ---
         elif name == "peers":
-            pattern = f"{_prefix(project_scope)}:agent:*"
             agents: set[str] = set()
+            # Project-scoped tokens only see agents in their project
+            pattern = f"{_prefix(project_scope)}:agent:*"
             cursor = 0
             while True:
                 cursor, keys = await r.scan(cursor, match=pattern, count=100)
@@ -788,7 +795,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     agents.add(k.split(":")[-1])
                 if cursor == 0:
                     break
+            # System tokens with no project scope see global agents only
+            # (not every project's agents — that doesn't scale to 1M squads)
             if auth.is_system and not project_scope:
+                # Also check legacy stream pattern
                 cursor = 0
                 while True:
                     cursor, keys = await r.scan(
@@ -798,6 +808,11 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                         agents.add(k.split(":")[-1])
                     if cursor == 0:
                         break
+            # Filter out internal system agents from non-system callers
+            internal_agents = {"sos-mcp-sse", "sos-squad", "sovereign-loop", "calcifer",
+                               "lifecycle", "task-poller", "wake-daemon"}
+            if not auth.is_system:
+                agents -= internal_agents
             scope = f"project:{project_scope}" if project_scope else "global"
             return _text(
                 f"Agents ({scope}): {', '.join(sorted(agents))}" if agents else "No agents found."
