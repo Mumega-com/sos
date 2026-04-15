@@ -507,6 +507,19 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "task_board",
+            "description": "Prioritized task board — unified view across all projects. Returns scored + sorted tasks. Score = priority×10 + blocks×5 + staleness×2 + revenue_bonus.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Filter by project (optional)"},
+                    "agent": {"type": "string", "description": "Filter by assignee (optional)"},
+                    "limit": {"type": "integer", "default": 20},
+                    "status": {"type": "string", "default": "queued", "description": "Filter: queued, claimed, in_progress, blocked, all"},
+                },
+            },
+        },
+        {
             "name": "onboard",
             "description": "Onboard a new agent or customer. For agents: generates tokens, registers in Squad Service, sets up routing, announces on bus — full self-onboarding in one call. For customers (system token only): creates tokens, squad, genesis task.",
             "inputSchema": {
@@ -962,6 +975,83 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 body["notes"] = args["notes"]
             await loop.run_in_executor(None, mirror_put, f"/tasks/{args['task_id']}", body)
             return _text(f"Task {args['task_id']} updated")
+
+        # --- task_board (prioritized unified view) ---
+        elif name == "task_board":
+            REVENUE_PROJECTS = {"dentalnearyou", "dnu", "gaf", "viamar", "stemminds", "pecb", "digid", "torivers"}
+            PRIORITY_W = {"critical": 4, "urgent": 4, "high": 3, "medium": 2, "low": 1}
+
+            # Pull from Squad Service (primary) and Mirror (secondary)
+            all_tasks: list[dict] = []
+            try:
+                squad_resp = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(f"{SQUAD_SERVICE_URL}/tasks", headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"}, timeout=5).json(),
+                )
+                squad_tasks = squad_resp if isinstance(squad_resp, list) else squad_resp.get("tasks", [])
+                for t in squad_tasks:
+                    t["_source"] = "squad"
+                all_tasks.extend(squad_tasks)
+            except Exception:
+                pass
+            try:
+                mirror_resp = await loop.run_in_executor(None, mirror_get, "/tasks?limit=100")
+                mirror_tasks = mirror_resp if isinstance(mirror_resp, list) else mirror_resp.get("tasks", [])
+                squad_ids = {t.get("id") for t in all_tasks}
+                for t in mirror_tasks:
+                    if t.get("id") not in squad_ids:
+                        t["_source"] = "mirror"
+                        all_tasks.append(t)
+            except Exception:
+                pass
+
+            # Filter
+            status_filter = args.get("status", "queued")
+            if status_filter != "all":
+                all_tasks = [t for t in all_tasks if t.get("status") == status_filter]
+            if args.get("project"):
+                all_tasks = [t for t in all_tasks if t.get("project") == args["project"]]
+            if args.get("agent"):
+                all_tasks = [t for t in all_tasks if t.get("assignee") == args["agent"] or t.get("agent") == args["agent"]]
+            if project_scope and not auth.is_system:
+                all_tasks = [t for t in all_tasks if t.get("project") == project_scope]
+
+            # Score
+            def _score(t: dict) -> int:
+                p = str(t.get("priority", "medium")).lower()
+                blocks = len(t.get("blocks") or t.get("blocks_json") or [])
+                updated = t.get("updated_at", "")
+                staleness = 0
+                if updated:
+                    try:
+                        from datetime import datetime as dt
+                        age = (dt.now(timezone.utc) - dt.fromisoformat(updated.replace("Z", "+00:00"))).days
+                        staleness = min(age, 30)
+                    except Exception:
+                        pass
+                project = str(t.get("project", ""))
+                revenue = 20 if project in REVENUE_PROJECTS else 0
+                return PRIORITY_W.get(p, 1) * 10 + blocks * 5 + staleness * 2 + revenue
+
+            for t in all_tasks:
+                t["_score"] = _score(t)
+            all_tasks.sort(key=lambda t: t["_score"], reverse=True)
+
+            limit = args.get("limit", 20)
+            all_tasks = all_tasks[:limit]
+
+            if not all_tasks:
+                return _text(f"No {status_filter} tasks found.")
+
+            lines = [f"### Task Board ({status_filter}) — {len(all_tasks)} tasks\n"]
+            lines.append(f"{'Score':>5} | {'Priority':>8} | {'Project':<14} | {'Agent':<10} | Title")
+            lines.append(f"{'─'*5} | {'─'*8} | {'─'*14} | {'─'*10} | {'─'*30}")
+            for t in all_tasks:
+                agent = t.get("assignee") or t.get("agent") or "—"
+                lines.append(
+                    f"{t['_score']:>5} | {str(t.get('priority') or 'med'):>8} | {str(t.get('project') or '—'):<14} | {str(agent):<10} | {str(t.get('title') or '?')[:50]}"
+                )
+            return _text("\n".join(lines))
 
         # --- onboard ---
         elif name == "onboard":
