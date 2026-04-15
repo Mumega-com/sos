@@ -338,6 +338,43 @@ async def _safe_build(slug: str) -> None:
         log.error("Onboard build crashed for %s: %s", slug, exc)
 
 
+# --- Build queue endpoints ---
+
+from sos.services.saas.build_queue import BuildQueue
+
+build_queue = BuildQueue()
+
+
+@app.post("/builds/enqueue/{slug}")
+def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0):
+    build_queue.enqueue(slug, trigger, priority)
+    return {"queued": True, "queue_length": build_queue.queue_length()}
+
+
+@app.get("/builds/status")
+def build_status():
+    return build_queue.get_status()
+
+
+# --- Custom domain endpoints ---
+
+from sos.services.saas.domains import DomainManager
+
+domain_mgr = DomainManager(registry)
+
+
+@app.post("/tenants/{slug}/domain")
+async def set_custom_domain(slug: str, domain: str):
+    result = await domain_mgr.provision_custom_domain(slug, domain)
+    return result
+
+
+@app.delete("/tenants/{slug}/domain")
+async def remove_custom_domain(slug: str):
+    result = await domain_mgr.remove_custom_domain(slug)
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
 
