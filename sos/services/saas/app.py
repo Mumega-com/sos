@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from sos.services.saas.billing import SaaSBilling
@@ -21,6 +22,14 @@ log = logging.getLogger("sos.saas")
 app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
 registry = TenantRegistry()
 billing = SaaSBilling(registry)
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing():
+    """Self-serve signup page."""
+    from sos.services.saas.signup_page import SIGNUP_HTML
+
+    return SIGNUP_HTML
 
 
 @app.get("/health")
@@ -373,6 +382,110 @@ async def set_custom_domain(slug: str, domain: str):
 async def remove_custom_domain(slug: str):
     result = await domain_mgr.remove_custom_domain(slug)
     return result
+
+
+# --- Self-serve signup ---
+
+
+class SignupRequest(BaseModel):
+    email: str
+    name: str  # business or person name
+    plan: str = "starter"
+
+
+def _register_bus_token(slug: str, token: str) -> None:
+    """Add a new token to the SOS bus tokens.json."""
+    tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+    tokens: list[dict[str, object]] = []
+    if tokens_path.exists():
+        tokens = json.loads(tokens_path.read_text())
+
+    tokens.append({
+        "token": token,
+        "token_hash": "",
+        "project": slug,
+        "label": f"Customer: {slug}",
+        "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "agent": slug,
+    })
+
+    tokens_path.write_text(json.dumps(tokens, indent=2))
+
+
+@app.post("/signup")
+async def signup(req: SignupRequest):
+    """Minimal signup -- get MCP config in 10 seconds."""
+    import secrets
+
+    slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-")[:32]
+
+    existing = registry.get(slug)
+    if existing:
+        raise HTTPException(409, "Name already taken. Try a different name.")
+
+    # 1. Generate bus token
+    token = f"sk-{slug}-{secrets.token_hex(16)}"
+
+    # 2. Register token in tokens.json
+    _register_bus_token(slug, token)
+
+    # 3. Create tenant
+    plan_map = {
+        "starter": TenantPlan.STARTER,
+        "growth": TenantPlan.GROWTH,
+        "scale": TenantPlan.SCALE,
+    }
+    tenant = registry.create(
+        TenantCreate(
+            slug=slug,
+            label=req.name,
+            email=req.email,
+            plan=plan_map.get(req.plan, TenantPlan.STARTER),
+        )
+    )
+    registry.activate(slug, squad_id=slug, bus_token=token)
+
+    # 4. Return MCP connection configs for every platform
+    mcp_url = f"https://mcp.mumega.com/sse/{token}"
+
+    return {
+        "welcome": f"Welcome to Mumega, {req.name}!",
+        "tenant": slug,
+        "site_url": f"https://{slug}.mumega.com",
+        "mcp_url": mcp_url,
+        "connect": {
+            "claude_code": f'claude mcp add mumega --transport sse --url "{mcp_url}"',
+            "claude_desktop": {
+                "mcpServers": {
+                    "mumega": {
+                        "url": mcp_url,
+                    }
+                }
+            },
+            "cursor": {
+                "mcpServers": {
+                    "mumega": {
+                        "url": mcp_url,
+                    }
+                }
+            },
+            "chatgpt": (
+                f"Use Custom GPT with action URL: "
+                f"{mcp_url.replace('/sse/', '/api/')}"
+            ),
+            "generic": {
+                "transport": "sse",
+                "url": mcp_url,
+            },
+        },
+        "next_steps": [
+            "1. Copy the config for your AI tool above",
+            "2. Paste it into your AI tool's MCP settings",
+            "3. Ask your AI: 'What can you do with Mumega?'",
+            "4. Say 'remember that my business does X' to start building memory",
+        ],
+    }
 
 
 if __name__ == "__main__":
