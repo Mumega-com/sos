@@ -17,8 +17,12 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from sos.services.billing.provision import provision_tenant
+from sos.services.saas.models import TenantCreate, TenantPlan, TenantUpdate, TenantStatus
+from sos.services.saas.registry import TenantRegistry
 
 log = logging.getLogger("sos.billing.webhook")
+
+_registry = TenantRegistry()
 
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
@@ -65,7 +69,30 @@ async def handle_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
 
     log.info("Provisioning tenant %s (%s) from Stripe checkout", slug, customer_email)
 
+    # Register in SaaS tenant registry
+    plan_map = {"seo": TenantPlan.STARTER, "seo-ads": TenantPlan.GROWTH, "full": TenantPlan.SCALE}
+    plan = plan_map.get(metadata.get("plan", ""), TenantPlan.STARTER)
+    try:
+        tenant = _registry.create(TenantCreate(
+            slug=slug, label=label, email=customer_email, plan=plan,
+            domain=metadata.get("domain"),
+            industry=metadata.get("industry"),
+            tagline=metadata.get("tagline"),
+        ))
+        log.info("Tenant %s registered in SaaS registry (plan=%s)", slug, plan.value)
+    except Exception as exc:
+        log.error("SaaS registry insert failed for %s (non-blocking): %s", slug, exc)
+
     result = await provision_tenant(slug, label, customer_email)
+
+    # Activate tenant in registry with provisioning results
+    bus_token = result.get("bus_token", "")
+    if bus_token and result.get("status") == "provisioned":
+        try:
+            _registry.activate(slug, squad_id=slug, bus_token=bus_token)
+            log.info("Tenant %s activated in SaaS registry", slug)
+        except Exception as exc:
+            log.error("SaaS registry activation failed for %s: %s", slug, exc)
 
     # Wire 1: Stripe → Bank — convert payment to $MIND treasury deposit
     amount_cents = session.get("amount_total", 0)
@@ -94,6 +121,14 @@ async def handle_subscription_deleted(subscription: dict[str, Any]) -> dict[str,
     slug = metadata.get("slug", "")
 
     log.info("Subscription deleted for customer %s (slug: %s) — marking inactive", customer_id, slug)
+
+    # Suspend in SaaS registry
+    if slug:
+        try:
+            _registry.update(slug, TenantUpdate(status=TenantStatus.CANCELLED))
+            log.info("Tenant %s cancelled in SaaS registry", slug)
+        except Exception as exc:
+            log.error("SaaS registry cancel failed for %s: %s", slug, exc)
 
     # Mark tenant inactive in tokens.json (don't delete)
     if slug:
