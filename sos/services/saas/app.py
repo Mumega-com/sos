@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from sos.services.saas.billing import SaaSBilling
-from sos.services.saas.models import TenantCreate, TenantStatus, TenantUpdate
+from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
 from sos.services.saas.registry import TenantRegistry
 
 log = logging.getLogger("sos.saas")
@@ -115,6 +121,221 @@ def get_invoice(slug: str):
 @app.get("/revenue")
 def platform_revenue(period: Optional[str] = None):
     return billing.get_revenue(period=period)
+
+
+# --- Onboarding endpoint ---
+
+
+class OnboardRequest(BaseModel):
+    """Customer questionnaire answers -> full site provisioning."""
+
+    email: str
+    business_name: str
+    industry: str
+    services: list[str] = []
+    primary_color: Optional[str] = None
+    tagline: Optional[str] = None
+    domain: Optional[str] = None  # custom domain, optional
+    plan: str = "starter"  # starter | growth | scale
+
+
+@app.post("/onboard")
+async def onboard_customer(req: OnboardRequest):
+    """Full onboarding: questionnaire -> tenant -> squad -> build -> live site."""
+    # Generate slug from business name
+    slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
+
+    # Check if tenant already exists
+    existing = registry.get(slug)
+    if existing:
+        raise HTTPException(409, f"Tenant {slug} already exists")
+
+    # 1. Create tenant in registry
+    plan_map = {
+        "starter": TenantPlan.STARTER,
+        "growth": TenantPlan.GROWTH,
+        "scale": TenantPlan.SCALE,
+    }
+    tenant = registry.create(
+        TenantCreate(
+            slug=slug,
+            label=req.business_name,
+            email=req.email,
+            plan=plan_map.get(req.plan, TenantPlan.STARTER),
+            domain=req.domain,
+            industry=req.industry,
+            services=req.services,
+            primary_color=req.primary_color,
+            tagline=req.tagline,
+        )
+    )
+
+    # 2. Create squad for this tenant
+    _create_tenant_squad(slug, req.business_name, req.industry)
+
+    # 3. Generate initial content based on questionnaire
+    initial_pages = _generate_initial_content(slug, req)
+
+    # 4. Trigger build (async, non-blocking)
+    asyncio.create_task(_safe_build(slug))
+
+    # 5. Activate tenant
+    registry.activate(slug, squad_id=slug, bus_token="pending")
+
+    return {
+        "tenant": tenant.model_dump(),
+        "site_url": f"https://{tenant.subdomain}",
+        "pages_generated": len(initial_pages),
+        "status": "provisioning",
+        "message": (
+            f"Your site is being built at {tenant.subdomain}. "
+            "You'll receive a Telegram notification when it's ready."
+        ),
+    }
+
+
+# --- Onboarding helpers ---
+
+
+def _create_tenant_squad(slug: str, business_name: str, industry: str) -> None:
+    """Create a squad with initial roles for the tenant."""
+    import sqlite3 as _sqlite3
+
+    db_path = Path.home() / ".sos" / "data" / "squads.db"
+    conn = _sqlite3.connect(str(db_path))
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO squads (id, tenant_id, name, project, objective, tier, status,
+            roles_json, members_json, kpis_json, budget_cents_monthly, created_at, updated_at,
+            dna_vector, coherence, receptivity, conductance_json)
+        VALUES (?, 'default', ?, ?, ?, 'nomad', 'active',
+            '[]', ?, '[]', 2000, ?, ?,
+            '[]', 0.5, 0.7, '{"content": 0.5, "seo": 0.3, "outreach": 0.2}')
+        """,
+        (
+            slug,
+            f"{business_name} squad",
+            slug,
+            f"Operate {business_name} online presence",
+            json.dumps([{"agent_id": "worker", "role": "operator", "is_human": False}]),
+            now,
+            now,
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO squad_wallets
+        (squad_id, tenant_id, balance_cents, total_earned_cents, total_spent_cents,
+         fuel_budget_json, updated_at)
+        VALUES (?, 'default', 2000, 2000, 0, '{"diesel": 2000}', ?)
+        """,
+        (slug, now),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def _generate_initial_content(slug: str, req: OnboardRequest) -> list[str]:
+    """Generate starter pages from questionnaire answers."""
+    pages: list[tuple[str, str]] = []
+
+    # Home page
+    services_list = (
+        "\n".join(f"- **{s}**" for s in req.services)
+        if req.services
+        else f"We specialize in {req.industry}."
+    )
+    home_content = f"""\
+---
+title: "{req.business_name}"
+description: "{req.tagline or f'{req.business_name} - {req.industry} services'}"
+---
+
+# Welcome to {req.business_name}
+
+{req.tagline or f'Professional {req.industry} services you can trust.'}
+
+## Our Services
+
+{services_list}
+
+## Get Started
+
+Contact us today to learn how we can help your business grow.
+"""
+    pages.append(("index", home_content))
+
+    # About page
+    about_content = f"""\
+---
+title: "About {req.business_name}"
+description: "Learn about {req.business_name} and our {req.industry} expertise"
+---
+
+# About Us
+
+{req.business_name} is a {req.industry} business dedicated to delivering exceptional results for our clients.
+
+## Why Choose Us
+
+- Industry expertise in {req.industry}
+- Personalized service tailored to your needs
+- Results-driven approach
+
+## Contact
+
+Email: {req.email}
+"""
+    pages.append(("about", about_content))
+
+    # Services page (only if services provided)
+    if req.services:
+        services_md = "\n\n".join(
+            f"### {s}\n\nProfessional {s.lower()} services tailored to your business needs."
+            for s in req.services
+        )
+        services_content = f"""\
+---
+title: "Services - {req.business_name}"
+description: "{req.business_name} services: {', '.join(req.services)}"
+---
+
+# Our Services
+
+{services_md}
+
+## Ready to Get Started?
+
+Contact us at {req.email} to discuss your project.
+"""
+        pages.append(("services", services_content))
+
+    # Write pages to content directory for the build orchestrator
+    content_dir = Path.home() / ".sos" / "data" / "tenant-content" / slug
+    content_dir.mkdir(parents=True, exist_ok=True)
+
+    for page_slug, content in pages:
+        (content_dir / f"{page_slug}.md").write_text(content)
+
+    return [p[0] for p in pages]
+
+
+async def _safe_build(slug: str) -> None:
+    """Wrapper for async build with error handling."""
+    try:
+        from sos.services.saas.builder import build_tenant
+
+        result = await build_tenant(slug, trigger="onboard")
+        if result.get("success"):
+            log.info("Onboard build complete for %s", slug)
+        else:
+            log.error("Onboard build failed for %s: %s", slug, result.get("error"))
+    except Exception as exc:
+        log.error("Onboard build crashed for %s: %s", slug, exc)
 
 
 if __name__ == "__main__":
