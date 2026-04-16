@@ -405,6 +405,7 @@ def _register_bus_token(slug: str, token: str) -> None:
         "token_hash": "",
         "project": slug,
         "label": f"Customer: {slug}",
+        "scope": "customer",
         "active": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "agent": slug,
