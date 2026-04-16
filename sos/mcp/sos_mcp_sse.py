@@ -42,6 +42,9 @@ from sos.mcp.customer_tools import (
     get_customer_tools,
     is_customer_tool,
 )
+from sos.services.saas.marketplace import Marketplace
+
+_marketplace = Marketplace()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1323,6 +1326,78 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     lines.append(f"- {status}: {count}")
 
             return _text("\n".join(lines))
+
+        # --- browse_marketplace ---
+        elif name == "browse_marketplace":
+            results = _marketplace.browse(
+                category=args.get("category"),
+                query=args.get("query"),
+            )
+            if not results:
+                text = "No listings found. The marketplace is just getting started!"
+            else:
+                lines = [f"Found {len(results)} listings:\n"]
+                for r in results:
+                    price = f"${r['price_cents'] / 100:.0f}/{r['price_model']}"
+                    lines.append(f"- **{r['title']}** ({r['category']}) — {price}")
+                    lines.append(f"  {r['description'][:100]}")
+                    lines.append(f"  ID: {r['id']} | {r['subscriber_count']} subscribers")
+                    lines.append("")
+                text = "\n".join(lines)
+            return _text(text)
+
+        # --- subscribe ---
+        elif name == "subscribe":
+            result = _marketplace.subscribe(project_scope or agent_scope, args["listing_id"])
+            text = result.get("message") or result.get("error", "Unknown error")
+            return _text(text)
+
+        # --- my_subscriptions ---
+        elif name == "my_subscriptions":
+            subs = _marketplace.my_subscriptions(project_scope or agent_scope)
+            if not subs:
+                text = "No active subscriptions."
+            else:
+                lines = ["Your subscriptions:\n"]
+                for s in subs:
+                    lines.append(
+                        f"- {s['title']} ({s['category']}) — ${s['price_cents'] / 100:.0f}/{s['price_model']}"
+                    )
+                text = "\n".join(lines)
+            return _text(text)
+
+        # --- create_listing ---
+        elif name == "create_listing":
+            result = _marketplace.create_listing(
+                seller_tenant=project_scope or agent_scope,
+                title=args["title"],
+                description=args["description"],
+                category=args["category"],
+                listing_type=args.get("listing_type", "squad"),
+                price_cents=args["price_cents"],
+                tags=args.get("tags", []),
+            )
+            text = (
+                f"Listed: {result['title']} (ID: {result['listing_id']})"
+                if result.get("success")
+                else result.get("error", "Failed")
+            )
+            return _text(text)
+
+        # --- my_earnings ---
+        elif name == "my_earnings":
+            earnings = _marketplace.my_earnings(project_scope or agent_scope)
+            lines = [
+                f"Total MRR: ${earnings['total_mrr_cents'] / 100:.0f}",
+                f"Platform fee (5%): ${earnings['platform_fee_cents'] / 100:.0f}",
+                f"Net earnings: ${earnings['net_earnings_cents'] / 100:.0f}\n",
+            ]
+            for listing in earnings["listings"]:
+                lines.append(
+                    f"- {listing['title']}: {listing['subscriber_count']} subscribers × ${listing['price_cents'] / 100:.0f}"
+                )
+            text = "\n".join(lines)
+            return _text(text)
 
         else:
             return _text(f"Unknown tool: {name}")

@@ -204,6 +204,112 @@ CUSTOMER_TOOLS: list[dict] = [
             "properties": {},
         },
     },
+    {
+        "name": "browse_marketplace",
+        "description": (
+            "Browse available AI squads and tools. Find teams to hire for "
+            "content, SEO, development, outreach, and more."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search by keyword",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "content",
+                        "seo",
+                        "dev",
+                        "outreach",
+                        "marketing",
+                        "data",
+                        "other",
+                    ],
+                    "description": "Filter by category",
+                },
+            },
+        },
+    },
+    {
+        "name": "subscribe",
+        "description": (
+            "Subscribe to a squad or tool from the marketplace. "
+            "The team starts working for you immediately."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "listing_id": {
+                    "type": "string",
+                    "description": "ID of the listing to subscribe to",
+                },
+            },
+            "required": ["listing_id"],
+        },
+    },
+    {
+        "name": "my_subscriptions",
+        "description": (
+            "See your active marketplace subscriptions — squads and tools "
+            "you're paying for."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "create_listing",
+        "description": (
+            "List your own squad or tool on the marketplace for others to "
+            "subscribe to."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Listing title",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What this squad or tool does",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Category (content, seo, dev, outreach, marketing, data, other)",
+                },
+                "listing_type": {
+                    "type": "string",
+                    "enum": ["squad", "tool", "service"],
+                    "description": "Type of listing",
+                },
+                "price_cents": {
+                    "type": "integer",
+                    "description": "Monthly price in cents (e.g. 4900 for $49)",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags to help buyers find your listing",
+                },
+            },
+            "required": ["title", "description", "category", "listing_type", "price_cents"],
+        },
+    },
+    {
+        "name": "my_earnings",
+        "description": (
+            "See how much you're earning from your marketplace listings."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 # Map customer tool names to internal SOS MCP tool names
@@ -216,6 +322,12 @@ TOOL_MAPPING: dict[str, str] = {
     "list_tasks": "task_list",
     "sell": "create_checkout",
     "my_site": "site_info",
+    # Marketplace tools — handled directly in handle_tool, not remapped
+    "browse_marketplace": "browse_marketplace",
+    "subscribe": "subscribe",
+    "my_subscriptions": "my_subscriptions",
+    "create_listing": "create_listing",
+    "my_earnings": "my_earnings",
 }
 
 # Tools that are explicitly BLOCKED for customers
