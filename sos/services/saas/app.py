@@ -17,8 +17,13 @@ from pydantic import BaseModel
 
 from sos.services.saas.audit import get_audit, log_admin
 from sos.services.saas.billing import SaaSBilling
+from sos.services.saas.logging_config import setup_logging
 from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
+from sos.services.saas.notifications import get_router as get_notification_router
 from sos.services.saas.registry import TenantRegistry
+
+# Configure structured logging
+setup_logging("saas")
 
 log = logging.getLogger("sos.saas")
 
@@ -215,6 +220,48 @@ def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100)
     return {"events": get_audit().query(tenant_slug=slug, event_type=event_type, limit=limit)}
 
 
+# --- Notification preferences ---
+
+
+class NotificationPreferencesRequest(BaseModel):
+    """Configure notification channels for a tenant."""
+
+    email: bool = True
+    telegram: bool = False
+    webhook: Optional[str] = None
+    in_app: bool = True
+
+
+@app.post("/tenants/{slug}/notifications")
+def set_notification_prefs(slug: str, req: NotificationPreferencesRequest):
+    """Configure notification preferences for a tenant."""
+    tenant = registry.get(slug)
+    if not tenant:
+        raise HTTPException(404, f"Tenant {slug} not found")
+    prefs = {
+        "email": req.email,
+        "telegram": req.telegram,
+        "webhook": req.webhook,
+        "in_app": req.in_app,
+    }
+    get_notification_router().set_preferences(slug, prefs)
+    log_admin(
+        "notification_preferences.updated",
+        tenant=slug,
+        details=prefs,
+    )
+    return {"ok": True, "preferences": get_notification_router().get_preferences(slug)}
+
+
+@app.get("/tenants/{slug}/notifications")
+def get_notification_prefs(slug: str):
+    """Get notification preferences for a tenant."""
+    tenant = registry.get(slug)
+    if not tenant:
+        raise HTTPException(404, f"Tenant {slug} not found")
+    return get_notification_router().get_preferences(slug)
+
+
 # --- Onboarding endpoint ---
 
 
@@ -222,6 +269,7 @@ class CreateSeatRequest(BaseModel):
     """Create a new seat (MCP token) for a tenant."""
 
     label: str  # e.g., "Sarah - Marketing", "Dev Team"
+    role: str = "admin"  # admin | editor | viewer
 
 
 class OnboardRequest(BaseModel):
