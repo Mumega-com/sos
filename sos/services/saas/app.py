@@ -446,10 +446,56 @@ async def signup(req: SignupRequest):
     )
     registry.activate(slug, squad_id=slug, bus_token=token)
 
-    # 4. Return MCP connection configs for every platform
+    # 4. Create Stripe customer and checkout session (optional)
+    stripe_customer_id = None
+    checkout_url = None
+
+    stripe_secret = os.environ.get("STRIPE_SECRET_KEY", "")
+    if stripe_secret:
+        try:
+            import stripe as stripe_lib
+            stripe_lib.api_key = stripe_secret
+
+            # Create Stripe customer
+            customer = stripe_lib.Customer.create(
+                email=req.email,
+                name=req.name,
+                metadata={"tenant_slug": slug, "plan": req.plan},
+            )
+            stripe_customer_id = customer.id
+
+            # Update tenant with Stripe customer ID
+            registry.update(slug, TenantUpdate(stripe_customer_id=stripe_customer_id))
+            log.info("Created Stripe customer %s for tenant %s", stripe_customer_id, slug)
+
+            # Create checkout session for paid plans
+            price_map = {
+                "starter": os.environ.get("STRIPE_PRICE_STARTER", ""),
+                "growth": os.environ.get("STRIPE_PRICE_GROWTH", ""),
+                "scale": os.environ.get("STRIPE_PRICE_SCALE", ""),
+            }
+            price_id = price_map.get(req.plan, "")
+
+            if price_id:
+                session = stripe_lib.checkout.Session.create(
+                    customer=stripe_customer_id,
+                    mode="subscription",
+                    line_items=[{"price": price_id, "quantity": 1}],
+                    metadata={"slug": slug, "plan": req.plan},
+                    success_url=f"https://mumega.com/welcome?tenant={slug}",
+                    cancel_url="https://mumega.com/pricing",
+                )
+                checkout_url = session.url
+                log.info("Created Stripe checkout session for tenant %s", slug)
+        except ImportError:
+            log.warning("Stripe module not installed — skipping Stripe integration")
+        except Exception as exc:
+            log.error("Stripe integration failed for tenant %s: %s", slug, exc)
+
+    # 5. Return MCP connection configs for every platform
     mcp_url = f"https://mcp.mumega.com/sse/{token}"
 
-    return {
+    response = {
         "welcome": f"Welcome to Mumega, {req.name}!",
         "tenant": slug,
         "site_url": f"https://{slug}.mumega.com",
@@ -486,6 +532,18 @@ async def signup(req: SignupRequest):
             "4. Say 'remember that my business does X' to start building memory",
         ],
     }
+
+    # Add Stripe checkout URL if available
+    if checkout_url:
+        response["checkout_url"] = checkout_url
+        response["next_steps"].insert(0, "0. Complete payment at the checkout link above")
+        response["billing"] = {
+            "stripe_customer_id": stripe_customer_id,
+            "plan": req.plan,
+            "checkout_url": checkout_url,
+        }
+
+    return response
 
 
 if __name__ == "__main__":

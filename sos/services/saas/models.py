@@ -58,3 +58,5 @@ class TenantUpdate(BaseModel):
     status: Optional[TenantStatus] = None
     telegram_chat_id: Optional[str] = None
     inkwell_config: Optional[dict] = None
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
