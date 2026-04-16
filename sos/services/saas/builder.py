@@ -71,6 +71,9 @@ class BuildOrchestrator:
                 # 2. Write tenant-specific config
                 self._write_tenant_config(build_dir, tenant)
 
+                # 2b. Copy tenant-specific content
+                self._copy_tenant_content(build_dir, tenant_slug)
+
                 # 3. Run Astro build
                 build_ok, build_output = await self._run_build(build_dir)
                 if not build_ok:
@@ -214,6 +217,26 @@ export const config = {{
 export type InkwellConfig = typeof config
 """
         (build_dir / "inkwell.config.ts").write_text(config_ts)
+
+    def _copy_tenant_content(self, build_dir: Path, tenant_slug: str) -> None:
+        """Copy tenant-specific content markdown files into the build.
+
+        Copies from ~/.sos/data/tenant-content/{slug}/ to {build_dir}/content/en/pages/
+        """
+        tenant_content_dir = Path.home() / ".sos" / "data" / "tenant-content" / tenant_slug
+        if not tenant_content_dir.exists():
+            log.debug("No tenant content directory for %s", tenant_slug)
+            return
+
+        pages_dir = build_dir / "content" / "en" / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+        for md_file in tenant_content_dir.glob("*.md"):
+            dest = pages_dir / md_file.name
+            shutil.copy2(md_file, dest)
+            log.debug("Copied tenant content: %s -> %s", md_file.name, dest.relative_to(build_dir))
+
+        log.info("Copied %d tenant content files for %s", len(list(tenant_content_dir.glob("*.md"))), tenant_slug)
 
     async def _run_build(self, build_dir: Path) -> tuple[bool, str]:
         """Run ``npx astro build`` in the temp directory."""

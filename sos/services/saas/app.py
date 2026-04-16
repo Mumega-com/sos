@@ -409,18 +409,50 @@ Contact us at {req.email} to discuss your project.
     return [p[0] for p in pages]
 
 
-async def _safe_build(slug: str) -> None:
+def _generate_signup_content(slug: str, name: str) -> None:
+    """Generate minimal starter content for a new signup.
+
+    Creates a welcome page in the tenant's content directory.
+    """
+    content_dir = Path.home() / ".sos" / "data" / "tenant-content" / slug
+    content_dir.mkdir(parents=True, exist_ok=True)
+
+    welcome_content = f"""\
+---
+title: "{name}"
+description: "Welcome to {name} — powered by Mumega"
+---
+
+# Welcome to {name}
+
+Your site is being set up by Mumega. Use your AI to publish content:
+
+1. Connect your AI tool using the MCP config from your welcome email
+2. Say "publish a blog post about [your topic]"
+3. Your content appears here automatically
+
+## Next Steps
+
+- Complete payment (if needed) at your checkout link
+- Connect your AI tool to start building
+- Check back in a few minutes to see your live site
+"""
+    (content_dir / "index.md").write_text(welcome_content)
+    log.info("Generated signup content for tenant %s", slug)
+
+
+async def _safe_build(slug: str, trigger: str = "manual") -> None:
     """Wrapper for async build with error handling."""
     try:
         from sos.services.saas.builder import build_tenant
 
-        result = await build_tenant(slug, trigger="onboard")
+        result = await build_tenant(slug, trigger=trigger)
         if result.get("success"):
-            log.info("Onboard build complete for %s", slug)
+            log.info("Build complete for %s (trigger: %s)", slug, trigger)
         else:
-            log.error("Onboard build failed for %s: %s", slug, result.get("error"))
+            log.error("Build failed for %s: %s", slug, result.get("error"))
     except Exception as exc:
-        log.error("Onboard build crashed for %s: %s", slug, exc)
+        log.error("Build crashed for %s: %s", slug, exc)
 
 
 # --- Build queue endpoints ---
@@ -606,6 +638,12 @@ async def signup(req: SignupRequest):
         )
     )
     registry.activate(slug, squad_id=slug, bus_token=token)
+
+    # 4. Generate minimal starter content for signup
+    _generate_signup_content(slug, req.name)
+
+    # 5. Trigger initial site build (fire-and-forget)
+    asyncio.create_task(_safe_build(slug, "signup"))
 
     # 4. Create Stripe customer and checkout session (optional)
     stripe_customer_id = None
