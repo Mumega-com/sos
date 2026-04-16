@@ -267,6 +267,19 @@ async def onboard_customer(req: OnboardRequest):
     # 5. Activate tenant
     registry.activate(slug, squad_id=slug, bus_token="pending")
 
+    # 6. Generate initial MCP token and send welcome email
+    initial_token = f"sk-{slug}-{secrets.token_hex(16)}"
+    _register_bus_token(slug, initial_token)
+    mcp_url = f"https://mcp.mumega.com/sse/{initial_token}"
+    site_url = f"https://{tenant.subdomain}"
+    try:
+        from sos.services.saas.email import send_onboard_welcome
+        asyncio.create_task(
+            send_onboard_welcome(req.email, req.business_name, mcp_url, slug, site_url)
+        )
+    except Exception as exc:
+        log.warning("Onboard welcome email task creation failed (non-blocking): %s", exc)
+
     return {
         "tenant": tenant.model_dump(),
         "site_url": f"https://{tenant.subdomain}",
@@ -645,7 +658,15 @@ async def signup(req: SignupRequest):
     # 5. Trigger initial site build (fire-and-forget)
     asyncio.create_task(_safe_build(slug, "signup"))
 
-    # 4. Create Stripe customer and checkout session (optional)
+    # 6. Send welcome email (fire-and-forget)
+    mcp_url = f"https://mcp.mumega.com/sse/{token}"
+    try:
+        from sos.services.saas.email import send_welcome
+        asyncio.create_task(send_welcome(req.email, req.name, mcp_url, slug))
+    except Exception as exc:
+        log.warning("Welcome email task creation failed (non-blocking): %s", exc)
+
+    # 7. Create Stripe customer and checkout session (optional)
     stripe_customer_id = None
     checkout_url = None
 
