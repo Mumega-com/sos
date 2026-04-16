@@ -19,8 +19,19 @@ from sos.services.saas.builder import BuildOrchestrator
 
 log = logging.getLogger("sos.saas.build_queue")
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+def _get_redis_url() -> str:
+    """Build Redis URL with password if needed."""
+    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    password = os.environ.get("REDIS_PASSWORD", "")
+
+    if password and "://" in url:
+        # Inject password into URL if not already present
+        scheme, rest = url.split("://", 1)
+        if "@" not in rest:
+            return f"{scheme}://:{password}@{rest}"
+    return url
+
+
 QUEUE_KEY = "saas:build:queue"
 PROCESSING_KEY = "saas:build:processing"
 RESULTS_KEY = "saas:build:results"
@@ -28,9 +39,16 @@ RESULTS_KEY = "saas:build:results"
 
 class BuildQueue:
     def __init__(self) -> None:
-        self.redis = redis.Redis.from_url(
-            REDIS_URL, password=REDIS_PASSWORD, decode_responses=True
-        )
+        redis_url = _get_redis_url()
+        log.debug(f"Redis URL (first 30 chars): {redis_url[:30]}...")
+        try:
+            self.redis = redis.Redis.from_url(redis_url, decode_responses=True)
+            # Test the connection
+            self.redis.ping()
+            log.info("Redis connection established")
+        except Exception as exc:
+            log.error(f"Failed to connect to Redis at {redis_url[:30]}...: {exc}")
+            raise
         self.orchestrator = BuildOrchestrator()
 
     def enqueue(self, tenant_slug: str, trigger: str = "content_changed", priority: int = 0) -> str:
