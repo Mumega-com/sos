@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -85,6 +86,75 @@ def suspend_tenant(slug: str):
     return tenant.model_dump()
 
 
+# --- Multi-seat token management ---
+
+
+@app.post("/tenants/{slug}/seats")
+def create_seat(slug: str, req: CreateSeatRequest):
+    """Create a new seat (additional MCP token) for a tenant."""
+    tenant = registry.get(slug)
+    if not tenant:
+        raise HTTPException(404, f"Tenant {slug} not found")
+
+    # Check seat limits by plan
+    seat_limits = {"starter": 1, "growth": 5, "scale": -1}  # -1 = unlimited
+    plan_key = tenant.plan.value.lower() if hasattr(tenant.plan, "value") else str(tenant.plan).lower()
+    limit = seat_limits.get(plan_key, 1)
+
+    current_seats = _count_seats(slug)
+    if limit != -1 and current_seats >= limit:
+        raise HTTPException(
+            403,
+            f"Plan {plan_key} allows {limit} seat(s). Current: {current_seats}. Upgrade to add more.",
+        )
+
+    # Generate new token for this seat
+    token = f"sk-{slug}-{secrets.token_hex(16)}"
+    _register_bus_token_with_label(slug, token, req.label)
+
+    mcp_url = f"https://mcp.mumega.com/sse/{token}"
+
+    return {
+        "seat": req.label,
+        "token": token,
+        "mcp_url": mcp_url,
+        "connect": {
+            "claude_code": f'claude mcp add mumega --transport sse --url "{mcp_url}"',
+            "claude_desktop": {"mcpServers": {"mumega": {"url": mcp_url}}},
+        },
+        "seats_used": current_seats + 1,
+        "seats_limit": limit if limit != -1 else "unlimited",
+    }
+
+
+@app.get("/tenants/{slug}/seats")
+def list_seats(slug: str):
+    """List all seats (team members) for a tenant."""
+    tenant = registry.get(slug)
+    if not tenant:
+        raise HTTPException(404, f"Tenant {slug} not found")
+    seats = _get_seats(slug)
+    plan_key = tenant.plan.value.lower() if hasattr(tenant.plan, "value") else str(tenant.plan).lower()
+    seat_limits = {"starter": 1, "growth": 5, "scale": -1}
+    limit = seat_limits.get(plan_key, 1)
+    return {
+        "seats": seats,
+        "count": len(seats),
+        "plan": plan_key,
+        "limit": limit if limit != -1 else "unlimited",
+    }
+
+
+@app.delete("/tenants/{slug}/seats/{token_id}")
+def revoke_seat(slug: str, token_id: str):
+    """Revoke a seat by revoking its MCP token."""
+    tenant = registry.get(slug)
+    if not tenant:
+        raise HTTPException(404, f"Tenant {slug} not found")
+    _revoke_seat(slug, token_id)
+    return {"revoked": True, "token_id": token_id}
+
+
 @app.get("/resolve/{hostname}")
 def resolve_hostname(hostname: str):
     """Resolve a hostname to a tenant -- used by Inkwell Worker for multi-tenant routing."""
@@ -133,6 +203,12 @@ def platform_revenue(period: Optional[str] = None):
 
 
 # --- Onboarding endpoint ---
+
+
+class CreateSeatRequest(BaseModel):
+    """Create a new seat (MCP token) for a tenant."""
+
+    label: str  # e.g., "Sarah - Marketing", "Dev Team"
 
 
 class OnboardRequest(BaseModel):
@@ -412,6 +488,90 @@ def _register_bus_token(slug: str, token: str) -> None:
     })
 
     tokens_path.write_text(json.dumps(tokens, indent=2))
+
+
+def _count_seats(slug: str) -> int:
+    """Count active seats (customer-scoped tokens) for a tenant."""
+    tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+    if not tokens_path.exists():
+        return 0
+    tokens = json.loads(tokens_path.read_text())
+    return sum(
+        1
+        for t in tokens
+        if t.get("project") == slug and t.get("active", True) and t.get("scope") == "customer"
+    )
+
+
+def _get_seats(slug: str) -> list[dict]:
+    """Get all seats for a tenant with token info."""
+    tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+    if not tokens_path.exists():
+        return []
+    tokens = json.loads(tokens_path.read_text())
+    seats = []
+    for t in tokens:
+        if t.get("project") == slug and t.get("scope") == "customer":
+            # Use last 12 chars of token for unique identifier (enough entropy)
+            token = t.get("token", "")
+            token_id = token[-12:] if token else "unknown"
+            seats.append({
+                "label": t.get("label", ""),
+                "token_id": token_id,  # last 12 chars, unique enough
+                "active": t.get("active", True),
+                "created_at": t.get("created_at", ""),
+                "agent": t.get("agent", slug),
+            })
+    return seats
+
+
+def _register_bus_token_with_label(slug: str, token: str, label: str) -> None:
+    """Add a new token to the SOS bus tokens.json with a custom label."""
+    tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+    tokens: list[dict] = []
+    if tokens_path.exists():
+        tokens = json.loads(tokens_path.read_text())
+
+    tokens.append({
+        "token": token,
+        "token_hash": "",
+        "project": slug,
+        "label": f"{slug}: {label}",
+        "scope": "customer",
+        "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "agent": slug,
+    })
+
+    tokens_path.write_text(json.dumps(tokens, indent=2))
+    log.info("Registered seat token for %s: %s", slug, label)
+
+
+def _revoke_seat(slug: str, token_id: str) -> None:
+    """Revoke a seat by marking its token as inactive.
+
+    Args:
+        slug: Tenant slug
+        token_id: Last 12 characters of the token (unique identifier)
+    """
+    tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+    if not tokens_path.exists():
+        return
+
+    tokens = json.loads(tokens_path.read_text())
+    found = False
+    for t in tokens:
+        if (
+            t.get("project") == slug
+            and t.get("token", "").endswith(token_id)
+            and t.get("scope") == "customer"
+        ):
+            t["active"] = False
+            found = True
+
+    if found:
+        tokens_path.write_text(json.dumps(tokens, indent=2))
+        log.info("Revoked seat token for %s: %s", slug, token_id)
 
 
 @app.post("/signup")
