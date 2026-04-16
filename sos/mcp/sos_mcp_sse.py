@@ -41,8 +41,11 @@ from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
     TOOL_MAPPING,
     get_customer_tools,
+    get_tools_for_role,
     is_customer_tool,
+    is_tool_allowed_for_role,
 )
+from sos.services.saas.rate_limiter import check_rate_limit
 from sos.services.saas.marketplace import Marketplace
 from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
@@ -138,6 +141,8 @@ class MCPAuthContext:
 
     agent_name: str = ""  # Explicit agent identity from token
     scope: str = ""  # "customer" for external customers; empty for internal agents
+    plan: str | None = None  # starter | growth | scale | None (system)
+    role: str = "admin"  # admin | editor | viewer
 
     @property
     def is_customer(self) -> bool:
@@ -306,6 +311,8 @@ class _TokenCacheWithHotReload:
                 project = item.get("project") or None
                 agent_name = item.get("agent", "")
                 scope = item.get("scope", "")
+                plan = item.get("plan") or None
+                role = item.get("role", "admin")
                 cache[hash_key] = MCPAuthContext(
                     token=hash_key,  # store hash, never the raw token
                     tenant_id=project,
@@ -313,6 +320,8 @@ class _TokenCacheWithHotReload:
                     source="bus_tokens",
                     agent_name=agent_name,
                     scope=scope,
+                    plan=plan,
+                    role=role,
                 )
         except Exception as e:
             log.error(f"Failed to load tokens.json: {e}")
@@ -366,6 +375,8 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
             active = payload.get("active", True)
             agent_name = payload.get("agent", "")
             scope = payload.get("scope", "")
+            plan = payload.get("plan") or None
+            role = payload.get("role", "admin")
             if active and (project or agent_name):
                 ctx = MCPAuthContext(
                     token=token, tenant_id=project,
@@ -373,6 +384,8 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
                     source="cloudflare_kv",
                     agent_name=agent_name,
                     scope=scope,
+                    plan=plan,
+                    role=role,
                 )
             else:
                 ctx = None
@@ -1409,6 +1422,41 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     f"- {listing['title']}: {listing['subscriber_count']} subscribers × ${listing['price_cents'] / 100:.0f}"
                 )
             text = "\n".join(lines)
+            return _text(text)
+
+        # --- notification_settings ---
+        elif name == "notification_settings":
+            tenant_slug = project_scope or agent_scope
+            email = args.get("email")
+            telegram = args.get("telegram")
+            webhook = args.get("webhook")
+            in_app = args.get("in_app")
+
+            from sos.services.saas.notifications import get_router as get_notification_router
+
+            prefs = {}
+            if email is not None:
+                prefs["email"] = email
+            if telegram is not None:
+                prefs["telegram"] = telegram
+            if webhook is not None:
+                prefs["webhook"] = webhook
+            if in_app is not None:
+                prefs["in_app"] = in_app
+
+            # Merge with existing preferences
+            router = get_notification_router()
+            existing = router.get_preferences(tenant_slug)
+            existing.update(prefs)
+
+            router.set_preferences(tenant_slug, existing)
+            text = (
+                f"Notification settings updated for {tenant_slug}:\n"
+                f"- Email: {'enabled' if existing.get('email') else 'disabled'}\n"
+                f"- Telegram: {'enabled' if existing.get('telegram') else 'disabled'}\n"
+                f"- Webhook: {existing.get('webhook') or 'not configured'}\n"
+                f"- In-app: {'enabled' if existing.get('in_app') else 'disabled'}"
+            )
             return _text(text)
 
         else:
@@ -2561,12 +2609,29 @@ async def _process_jsonrpc(
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
-        # Customer tokens see only the 8 curated customer tools
+        # Customer tokens see tools filtered by their role
         if auth.is_customer:
-            return _jsonrpc_ok(msg_id, {"tools": get_customer_tools()})
+            return _jsonrpc_ok(msg_id, {"tools": get_tools_for_role(auth.role)})
         return _jsonrpc_ok(msg_id, {"tools": get_tools()})
     if method == "tools/call":
         tool_name = params.get("name", "")
+        # --- Rate limiting (customer tokens only) ---
+        if auth.is_customer:
+            rl_tenant = auth.project_scope or "system"
+            allowed, _remaining = check_rate_limit(rl_tenant, auth.plan)
+            if not allowed:
+                log.warning(
+                    "rate limit exceeded for tenant %s (plan=%s)",
+                    rl_tenant,
+                    auth.plan,
+                )
+                _audit_tool_call(
+                    rl_tenant,
+                    tool_name,
+                    actor=auth.agent_scope,
+                    details={"status": "blocked", "reason": "rate_limit_exceeded"},
+                )
+                return _jsonrpc_err(msg_id, "Rate limit exceeded. Try again in a minute.")
         # Customer token gating: block admin tools, resolve customer names to internal names
         if auth.is_customer:
             if tool_name in BLOCKED_TOOLS:
@@ -2593,6 +2658,21 @@ async def _process_jsonrpc(
                     tool_name,
                     actor=auth.tenant_id or "",
                     details={"status": "blocked", "reason": "customer_tool_gating"},
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            # --- RBAC: check role-based permission ---
+            if not is_tool_allowed_for_role(tool_name, auth.role):
+                log.warning(
+                    "customer %s (role=%s) denied tool %s",
+                    auth.tenant_id,
+                    auth.role,
+                    tool_name,
+                )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "rbac_denied", "role": auth.role},
                 )
                 return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
             # Resolve customer-facing name to internal SOS tool name

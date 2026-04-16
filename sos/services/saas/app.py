@@ -120,8 +120,8 @@ def create_seat(slug: str, req: CreateSeatRequest):
 
     # Generate new token for this seat
     token = f"sk-{slug}-{secrets.token_hex(16)}"
-    _register_bus_token_with_label(slug, token, req.label)
-    log_admin("seat.created", tenant=slug, details={"label": req.label})
+    _register_bus_token_with_label(slug, token, req.label, role=req.role, plan=plan_key)
+    log_admin("seat.created", tenant=slug, details={"label": req.label, "role": req.role})
 
     mcp_url = f"https://mcp.mumega.com/sse/{token}"
 
@@ -632,11 +632,18 @@ def _get_seats(slug: str) -> list[dict]:
                 "active": t.get("active", True),
                 "created_at": t.get("created_at", ""),
                 "agent": t.get("agent", slug),
+                "role": t.get("role", "admin"),
             })
     return seats
 
 
-def _register_bus_token_with_label(slug: str, token: str, label: str) -> None:
+def _register_bus_token_with_label(
+    slug: str,
+    token: str,
+    label: str,
+    role: str = "admin",
+    plan: str | None = None,
+) -> None:
     """Add a new token to the SOS bus tokens.json with a custom label. Raw token is never stored."""
     tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
     tokens: list[dict] = []
@@ -652,10 +659,12 @@ def _register_bus_token_with_label(slug: str, token: str, label: str) -> None:
         "active": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "agent": slug,
+        "role": role,
+        "plan": plan,
     })
 
     tokens_path.write_text(json.dumps(tokens, indent=2))
-    log.info("Registered seat token for %s: %s", slug, label)
+    log.info("Registered seat token for %s: %s (role=%s)", slug, label, role)
 
 
 def _revoke_seat(slug: str, token_id: str) -> None:

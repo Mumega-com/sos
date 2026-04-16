@@ -310,6 +310,34 @@ CUSTOMER_TOOLS: list[dict] = [
             "properties": {},
         },
     },
+    {
+        "name": "notification_settings",
+        "description": (
+            "Configure how you receive notifications — email, Telegram, or webhook URL. "
+            "Choose your preferred channels for business alerts and updates."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "boolean",
+                    "description": "Receive email notifications",
+                },
+                "telegram": {
+                    "type": "boolean",
+                    "description": "Receive Telegram notifications (requires chat_id setup)",
+                },
+                "webhook": {
+                    "type": "string",
+                    "description": "Webhook URL to receive event notifications (optional)",
+                },
+                "in_app": {
+                    "type": "boolean",
+                    "description": "Receive in-app notifications in the dashboard",
+                },
+            },
+        },
+    },
 ]
 
 # Map customer tool names to internal SOS MCP tool names
@@ -322,6 +350,7 @@ TOOL_MAPPING: dict[str, str] = {
     "list_tasks": "task_list",
     "sell": "create_checkout",
     "my_site": "site_info",
+    "notification_settings": "notification_settings",
     # Marketplace tools — handled directly in handle_tool, not remapped
     "browse_marketplace": "browse_marketplace",
     "subscribe": "subscribe",
@@ -365,3 +394,58 @@ def is_blocked_tool(name: str) -> bool:
 def resolve_internal_name(customer_tool_name: str) -> str | None:
     """Map a customer-facing tool name to the internal SOS MCP tool name."""
     return TOOL_MAPPING.get(customer_tool_name)
+
+
+# ---------------------------------------------------------------------------
+# Role-based access control
+# ---------------------------------------------------------------------------
+
+# Tools allowed per role.  None means "all customer tools".
+ROLE_TOOLS: dict[str, set[str] | None] = {
+    "admin": None,  # admin sees every customer tool
+    "editor": {
+        "remember",
+        "recall",
+        "publish",
+        "create_task",
+        "list_tasks",
+        "sell",
+        "dashboard",
+        "my_site",
+        "notification_settings",
+        "browse_marketplace",
+        "subscribe",
+        "my_subscriptions",
+    },
+    "viewer": {
+        "recall",
+        "list_tasks",
+        "dashboard",
+        "my_site",
+        "notification_settings",
+        "my_subscriptions",
+        "browse_marketplace",
+    },
+}
+
+
+def get_tools_for_role(role: str = "admin") -> list[dict]:
+    """Return tool definitions filtered by role.
+
+    Unknown roles fall back to the most restrictive set (viewer).
+    """
+    allowed = ROLE_TOOLS.get(role, ROLE_TOOLS["viewer"])
+    if allowed is None:
+        return CUSTOMER_TOOLS
+    return [t for t in CUSTOMER_TOOLS if t["name"] in allowed]
+
+
+def is_tool_allowed_for_role(tool_name: str, role: str = "admin") -> bool:
+    """Check if *tool_name* is permitted for *role*.
+
+    Works on customer-facing tool names (before TOOL_MAPPING resolution).
+    """
+    allowed = ROLE_TOOLS.get(role, ROLE_TOOLS["viewer"])
+    if allowed is None:
+        return is_customer_tool(tool_name)
+    return tool_name in allowed
