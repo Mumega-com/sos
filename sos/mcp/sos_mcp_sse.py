@@ -15,6 +15,7 @@ Port: 6070 (env: SOS_MCP_PORT)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -43,6 +44,7 @@ from sos.mcp.customer_tools import (
     is_customer_tool,
 )
 from sos.services.saas.marketplace import Marketplace
+from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
 _marketplace = Marketplace()
 
@@ -283,20 +285,29 @@ class _TokenCacheWithHotReload:
         return self._cache
 
     def _reload(self) -> None:
-        """Reload tokens from file."""
+        """Reload tokens from file. Cache is keyed by SHA-256 token hash."""
         cache: dict[str, MCPAuthContext] = {}
         try:
             raw = json.loads(BUS_TOKENS_PATH.read_text())
             items = raw if isinstance(raw, list) else [raw]
             for item in items:
-                token = item.get("token", "")
-                if not token or not item.get("active"):
+                if not item.get("active"):
+                    continue
+                # Prefer stored token_hash; fall back to hashing raw token for
+                # entries that haven't been migrated yet.
+                stored_hash = item.get("token_hash", "")
+                raw_token = item.get("token", "")
+                if stored_hash:
+                    hash_key = stored_hash
+                elif raw_token:
+                    hash_key = hashlib.sha256(raw_token.encode()).hexdigest()
+                else:
                     continue
                 project = item.get("project") or None
                 agent_name = item.get("agent", "")
                 scope = item.get("scope", "")
-                cache[token] = MCPAuthContext(
-                    token=token,
+                cache[hash_key] = MCPAuthContext(
+                    token=hash_key,  # store hash, never the raw token
                     tenant_id=project,
                     is_system=project is None,
                     source="bus_tokens",
@@ -376,7 +387,8 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
         return None
     if token in _system_tokens():
         return MCPAuthContext(token=token, tenant_id=None, is_system=True, source="system")
-    local_bus = _load_bus_tokens().get(token)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    local_bus = _load_bus_tokens().get(token_hash)
     if local_bus:
         return local_bus
     squad_auth = lookup_squad_token(token, _squad_db)
@@ -2563,6 +2575,12 @@ async def _process_jsonrpc(
                     auth.tenant_id,
                     tool_name,
                 )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "customer_tool_gating"},
+                )
                 return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
             if not is_customer_tool(tool_name):
                 log.warning(
@@ -2570,12 +2588,24 @@ async def _process_jsonrpc(
                     auth.tenant_id,
                     tool_name,
                 )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "customer_tool_gating"},
+                )
                 return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
             # Resolve customer-facing name to internal SOS tool name
             internal_name = TOOL_MAPPING.get(tool_name, tool_name)
             tool_name = internal_name
         tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth)
         _append_audit(auth.token, tool_name, not _tool_result_failed(tool_result))
+        _audit_tool_call(
+            _scope_project(auth) or "system",
+            tool_name,
+            actor=auth.agent_scope,
+            details={"status": "ok"},
+        )
         return _jsonrpc_ok(msg_id, tool_result)
     if method == "ping":
         return _jsonrpc_ok(msg_id, {})

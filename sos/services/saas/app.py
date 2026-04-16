@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from sos.services.saas.audit import get_audit, log_admin
 from sos.services.saas.billing import SaaSBilling
 from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
 from sos.services.saas.registry import TenantRegistry
@@ -44,6 +46,7 @@ async def create_tenant(req: TenantCreate):
     if existing:
         raise HTTPException(409, f"Tenant {req.slug} already exists")
     tenant = registry.create(req)
+    log_admin("tenant.created", tenant=req.slug, details={"plan": req.plan.value if hasattr(req.plan, "value") else str(req.plan)})
     # TODO: trigger async provisioning (bus token, squad, mirror scope)
     return tenant.model_dump()
 
@@ -75,6 +78,7 @@ def activate_tenant(slug: str, squad_id: str, bus_token: str):
     tenant = registry.activate(slug, squad_id, bus_token)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
+    log_admin("tenant.activated", tenant=slug)
     return tenant.model_dump()
 
 
@@ -83,6 +87,7 @@ def suspend_tenant(slug: str):
     tenant = registry.update(slug, TenantUpdate(status=TenantStatus.SUSPENDED))
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
+    log_admin("tenant.suspended", tenant=slug)
     return tenant.model_dump()
 
 
@@ -111,6 +116,7 @@ def create_seat(slug: str, req: CreateSeatRequest):
     # Generate new token for this seat
     token = f"sk-{slug}-{secrets.token_hex(16)}"
     _register_bus_token_with_label(slug, token, req.label)
+    log_admin("seat.created", tenant=slug, details={"label": req.label})
 
     mcp_url = f"https://mcp.mumega.com/sse/{token}"
 
@@ -152,6 +158,7 @@ def revoke_seat(slug: str, token_id: str):
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
     _revoke_seat(slug, token_id)
+    log_admin("seat.revoked", tenant=slug)
     return {"revoked": True, "token_id": token_id}
 
 
@@ -200,6 +207,12 @@ def get_invoice(slug: str):
 @app.get("/revenue")
 def platform_revenue(period: Optional[str] = None):
     return billing.get_revenue(period=period)
+
+
+@app.get("/tenants/{slug}/audit")
+def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100):
+    """Query audit log for a tenant."""
+    return {"events": get_audit().query(tenant_slug=slug, event_type=event_type, limit=limit)}
 
 
 # --- Onboarding endpoint ---
@@ -261,8 +274,13 @@ async def onboard_customer(req: OnboardRequest):
     # 3. Generate initial content based on questionnaire
     initial_pages = _generate_initial_content(slug, req)
 
-    # 4. Trigger build (async, non-blocking)
-    asyncio.create_task(_safe_build(slug))
+    # 4. Trigger build via queue (async, non-blocking)
+    try:
+        build_queue.enqueue(slug, trigger="onboard", priority=5)
+        log.info("Enqueued build for %s (onboard)", slug)
+    except Exception as exc:
+        log.warning("Build enqueue failed for %s (falling back to inline): %s", slug, exc)
+        asyncio.create_task(_safe_build(slug, trigger="onboard"))
 
     # 5. Activate tenant
     registry.activate(slug, squad_id=slug, bus_token="pending")
@@ -515,15 +533,15 @@ class SignupRequest(BaseModel):
 
 
 def _register_bus_token(slug: str, token: str) -> None:
-    """Add a new token to the SOS bus tokens.json."""
+    """Add a new token to the SOS bus tokens.json. Raw token is never stored."""
     tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
     tokens: list[dict[str, object]] = []
     if tokens_path.exists():
         tokens = json.loads(tokens_path.read_text())
 
     tokens.append({
-        "token": token,
-        "token_hash": "",
+        "token": "",  # Never store raw token
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
         "project": slug,
         "label": f"Customer: {slug}",
         "scope": "customer",
@@ -557,12 +575,12 @@ def _get_seats(slug: str) -> list[dict]:
     seats = []
     for t in tokens:
         if t.get("project") == slug and t.get("scope") == "customer":
-            # Use last 12 chars of token for unique identifier (enough entropy)
-            token = t.get("token", "")
-            token_id = token[-12:] if token else "unknown"
+            # Use last 12 chars of token_hash for unique identifier
+            token_hash = t.get("token_hash", "") or hashlib.sha256(t.get("token", "").encode()).hexdigest()
+            token_id = token_hash[-12:] if token_hash else "unknown"
             seats.append({
                 "label": t.get("label", ""),
-                "token_id": token_id,  # last 12 chars, unique enough
+                "token_id": token_id,  # last 12 chars of hash, unique enough
                 "active": t.get("active", True),
                 "created_at": t.get("created_at", ""),
                 "agent": t.get("agent", slug),
@@ -571,15 +589,15 @@ def _get_seats(slug: str) -> list[dict]:
 
 
 def _register_bus_token_with_label(slug: str, token: str, label: str) -> None:
-    """Add a new token to the SOS bus tokens.json with a custom label."""
+    """Add a new token to the SOS bus tokens.json with a custom label. Raw token is never stored."""
     tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
     tokens: list[dict] = []
     if tokens_path.exists():
         tokens = json.loads(tokens_path.read_text())
 
     tokens.append({
-        "token": token,
-        "token_hash": "",
+        "token": "",  # Never store raw token
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
         "project": slug,
         "label": f"{slug}: {label}",
         "scope": "customer",
@@ -597,7 +615,7 @@ def _revoke_seat(slug: str, token_id: str) -> None:
 
     Args:
         slug: Tenant slug
-        token_id: Last 12 characters of the token (unique identifier)
+        token_id: Last 12 characters of the token_hash (unique identifier)
     """
     tokens_path = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
     if not tokens_path.exists():
@@ -606,13 +624,11 @@ def _revoke_seat(slug: str, token_id: str) -> None:
     tokens = json.loads(tokens_path.read_text())
     found = False
     for t in tokens:
-        if (
-            t.get("project") == slug
-            and t.get("token", "").endswith(token_id)
-            and t.get("scope") == "customer"
-        ):
-            t["active"] = False
-            found = True
+        if t.get("project") == slug and t.get("scope") == "customer":
+            token_hash = t.get("token_hash", "") or hashlib.sha256(t.get("token", "").encode()).hexdigest()
+            if token_hash.endswith(token_id):
+                t["active"] = False
+                found = True
 
     if found:
         tokens_path.write_text(json.dumps(tokens, indent=2))
@@ -650,13 +666,20 @@ async def signup(req: SignupRequest):
             plan=plan_map.get(req.plan, TenantPlan.STARTER),
         )
     )
+    log_admin("tenant.created", tenant=slug, details={"plan": req.plan})
     registry.activate(slug, squad_id=slug, bus_token=token)
+    log_admin("tenant.activated", tenant=slug)
 
     # 4. Generate minimal starter content for signup
     _generate_signup_content(slug, req.name)
 
-    # 5. Trigger initial site build (fire-and-forget)
-    asyncio.create_task(_safe_build(slug, "signup"))
+    # 5. Trigger initial site build via queue (fire-and-forget)
+    try:
+        build_queue.enqueue(slug, trigger="signup", priority=5)
+        log.info("Enqueued build for %s (signup)", slug)
+    except Exception as exc:
+        log.warning("Build enqueue failed for %s (falling back to inline): %s", slug, exc)
+        asyncio.create_task(_safe_build(slug, trigger="signup"))
 
     # 6. Send welcome email (fire-and-forget)
     mcp_url = f"https://mcp.mumega.com/sse/{token}"
