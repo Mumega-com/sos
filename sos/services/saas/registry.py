@@ -46,6 +46,7 @@ class TenantRegistry:
                     mirror_project TEXT,
                     bus_token TEXT,
                     telegram_chat_id TEXT,
+                    notification_prefs TEXT,
                     inkwell_config TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -57,6 +58,14 @@ class TenantRegistry:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tenants_domain ON tenants(domain)"
             )
+            # Migration: add notification_prefs column if it doesn't exist
+            try:
+                conn.execute(
+                    "ALTER TABLE tenants ADD COLUMN notification_prefs TEXT"
+                )
+            except Exception:
+                # Column already exists, that's fine
+                pass
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
