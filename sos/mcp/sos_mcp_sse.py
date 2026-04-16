@@ -36,6 +36,12 @@ from sse_starlette.sse import EventSourceResponse
 from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
 from sos.services.squad.auth import _lookup_token as lookup_squad_token
 from sos.services.squad.service import SquadDB
+from sos.mcp.customer_tools import (
+    BLOCKED_TOOLS,
+    TOOL_MAPPING,
+    get_customer_tools,
+    is_customer_tool,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -126,6 +132,12 @@ class MCPAuthContext:
         return None if self.is_system else self.tenant_id
 
     agent_name: str = ""  # Explicit agent identity from token
+    scope: str = ""  # "customer" for external customers; empty for internal agents
+
+    @property
+    def is_customer(self) -> bool:
+        """True only for external customer tokens — gates tool visibility and access."""
+        return self.scope == "customer"
 
     @property
     def agent_scope(self) -> str:
@@ -234,7 +246,71 @@ def mirror_put(path: str, body: dict[str, Any]) -> Any:
 
 _squad_db = SquadDB()
 _cloudflare_token_cache: dict[str, tuple[float, MCPAuthContext | None]] = {}
-_local_token_cache: dict[str, MCPAuthContext] = {}
+
+
+class _TokenCacheWithHotReload:
+    """Token cache with automatic mtime-based reload.
+
+    Stores tokens.json mtime and reloads the cache if the file changes.
+    Includes a 30-second TTL to avoid filesystem hits on every request.
+    """
+    def __init__(self):
+        self._cache: dict[str, MCPAuthContext] = {}
+        self._mtime: float = 0
+        self._last_check: float = 0
+        self._check_interval: float = 30  # Check mtime every 30 seconds max
+
+    def get(self) -> dict[str, MCPAuthContext]:
+        """Get tokens, reloading if file changed or TTL expired."""
+        now = time.monotonic()
+
+        # Check if we should reload (at least 30 seconds since last check or file changed)
+        if now - self._last_check >= self._check_interval:
+            try:
+                current_mtime = os.path.getmtime(BUS_TOKENS_PATH)
+                if current_mtime != self._mtime:
+                    log.info(f"tokens.json changed (mtime {self._mtime:.1f} -> {current_mtime:.1f}), reloading")
+                    self._reload()
+                    self._mtime = current_mtime
+            except OSError:
+                # File doesn't exist, keep current cache
+                pass
+            self._last_check = now
+
+        return self._cache
+
+    def _reload(self) -> None:
+        """Reload tokens from file."""
+        cache: dict[str, MCPAuthContext] = {}
+        try:
+            raw = json.loads(BUS_TOKENS_PATH.read_text())
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                token = item.get("token", "")
+                if not token or not item.get("active"):
+                    continue
+                project = item.get("project") or None
+                agent_name = item.get("agent", "")
+                scope = item.get("scope", "")
+                cache[token] = MCPAuthContext(
+                    token=token,
+                    tenant_id=project,
+                    is_system=project is None,
+                    source="bus_tokens",
+                    agent_name=agent_name,
+                    scope=scope,
+                )
+        except Exception as e:
+            log.error(f"Failed to load tokens.json: {e}")
+        self._cache = cache
+
+    def invalidate(self) -> None:
+        """Force immediate reload on next call."""
+        self._last_check = 0
+        self._mtime = 0
+
+
+_local_token_cache = _TokenCacheWithHotReload()
 
 
 def _system_tokens() -> set[str]:
@@ -245,30 +321,8 @@ def _system_tokens() -> set[str]:
 
 
 def _load_bus_tokens() -> dict[str, MCPAuthContext]:
-    global _local_token_cache
-    if _local_token_cache:
-        return _local_token_cache
-    cache: dict[str, MCPAuthContext] = {}
-    try:
-        raw = json.loads(BUS_TOKENS_PATH.read_text())
-        items = raw if isinstance(raw, list) else [raw]
-        for item in items:
-            token = item.get("token", "")
-            if not token or not item.get("active"):
-                continue
-            project = item.get("project") or None
-            agent_name = item.get("agent", "")
-            cache[token] = MCPAuthContext(
-                token=token,
-                tenant_id=project,
-                is_system=project is None,
-                source="bus_tokens",
-                agent_name=agent_name,
-            )
-    except Exception:
-        return {}
-    _local_token_cache = cache
-    return cache
+    """Load bus tokens with automatic hot-reload on file changes."""
+    return _local_token_cache.get()
 
 
 def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
@@ -297,12 +351,14 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
             project = payload.get("project") or None
             active = payload.get("active", True)
             agent_name = payload.get("agent", "")
+            scope = payload.get("scope", "")
             if active and (project or agent_name):
                 ctx = MCPAuthContext(
                     token=token, tenant_id=project,
                     is_system=project is None,
                     source="cloudflare_kv",
                     agent_name=agent_name,
+                    scope=scope,
                 )
             else:
                 ctx = None
@@ -1100,8 +1156,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             )
 
             # Clear MCP token cache so new token is recognized immediately
-            global _local_token_cache
-            _local_token_cache = {}
+            _local_token_cache.invalidate()
 
             if not join_result.success:
                 return _text(
@@ -1822,11 +1877,11 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
         dedup_key="agent_slug", dedup_value=slug,
     )
 
-    # 3. Store Bus token (atomic)
+    # 3. Store Bus token (atomic) — scope="customer" gates tool visibility
     bus_added = _atomic_json_append(
         BUS_TOKENS_PATH,
-        {"token": bus_token, "token_hash": "", "project": slug,
-         "label": label, "active": True, "created_at": timestamp},
+        {"token": bus_token, "token_hash": "", "project": slug, "agent": slug,
+         "label": label, "active": True, "created_at": timestamp, "scope": "customer"},
         dedup_key="project", dedup_value=slug,
     )
 
@@ -1834,8 +1889,7 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
         return {"error": f"Customer '{slug}' already exists", "status": "duplicate"}
 
     # 4. Clear MCP token cache so new tokens are recognized immediately
-    global _local_token_cache
-    _local_token_cache = {}
+    _local_token_cache.invalidate()
 
     # 5. Create Squad API key
     squad_token = ""
@@ -2420,9 +2474,31 @@ async def _process_jsonrpc(
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
+        # Customer tokens see only the 8 curated customer tools
+        if auth.is_customer:
+            return _jsonrpc_ok(msg_id, {"tools": get_customer_tools()})
         return _jsonrpc_ok(msg_id, {"tools": get_tools()})
     if method == "tools/call":
         tool_name = params.get("name", "")
+        # Customer token gating: block admin tools, resolve customer names to internal names
+        if auth.is_customer:
+            if tool_name in BLOCKED_TOOLS:
+                log.warning(
+                    "customer %s attempted blocked tool %s",
+                    auth.tenant_id,
+                    tool_name,
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            if not is_customer_tool(tool_name):
+                log.warning(
+                    "customer %s attempted unknown tool %s",
+                    auth.tenant_id,
+                    tool_name,
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            # Resolve customer-facing name to internal SOS tool name
+            internal_name = TOOL_MAPPING.get(tool_name, tool_name)
+            tool_name = internal_name
         tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth)
         _append_audit(auth.token, tool_name, not _tool_result_failed(tool_result))
         return _jsonrpc_ok(msg_id, tool_result)
