@@ -1,6 +1,6 @@
 ---
 name: sos-openapi-author
-model: haiku
+model: sonnet
 temperature: 0.1
 description: Emits an OpenAPI 3.1 YAML spec for a FastAPI service. Reads the service's app.py, enumerates every @app route, writes matching schema with request/response types and error codes. Use for each SOS service during v0.4 Contracts sprint week 3-4.
 allowedTools:

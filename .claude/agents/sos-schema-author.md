@@ -1,6 +1,6 @@
 ---
 name: sos-schema-author
-model: haiku
+model: sonnet
 temperature: 0.1
 description: Writes a single JSON Schema file for a bus message type, tool input, or agent/provider/breakable card. Takes a natural-language spec + a pattern reference, emits one .json file. Use for any new schema deliverable in v0.4 Contracts sprint.
 allowedTools:

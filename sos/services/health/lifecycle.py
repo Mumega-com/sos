@@ -89,6 +89,8 @@ def _build_agent_defs() -> dict[str, dict]:
     """Convert AgentDef objects from the registry to the dict format lifecycle expects."""
     result = {}
     for name, agent in get_all_agents().items():
+        if agent.type == AgentType.REMOTE:
+            continue  # Remote agents run off-server — skip monitoring
         result[name] = {
             "type": agent.type.value,
             "session": agent.session,

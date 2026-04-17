@@ -312,6 +312,7 @@ SQUAD_EVENTS = {
     "squad.archived",
     "task.created",
     "task.claimed",
+    "task.scored",
     "task.routed",
     "task.completed",
     "task.failed",

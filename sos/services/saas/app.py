@@ -24,6 +24,7 @@ from sos.services.saas.billing import SaaSBilling
 from sos.services.saas.logging_config import setup_logging
 from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
 from sos.services.saas.notifications import get_router as get_notification_router
+from sos.services.saas.pairing import router as pairing_router
 from sos.services.saas.registry import TenantRegistry
 from sos.services._health import health_response
 
@@ -33,6 +34,7 @@ setup_logging("saas")
 log = logging.getLogger("sos.saas")
 
 app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
+app.include_router(pairing_router)
 _START_TIME = time.time()
 registry = TenantRegistry()
 billing = SaaSBilling(registry)

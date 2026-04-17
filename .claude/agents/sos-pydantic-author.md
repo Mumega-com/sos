@@ -1,6 +1,6 @@
 ---
 name: sos-pydantic-author
-model: haiku
+model: sonnet
 temperature: 0.1
 description: Writes a Pydantic v2 model matching a JSON Schema. Given a schema file path, emits the Python binding with typed fields, validators, and round-trip helpers when applicable. Use for every schema landed by sos-schema-author in v0.4 Contracts sprint.
 allowedTools:

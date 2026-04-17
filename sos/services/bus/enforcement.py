@@ -66,6 +66,7 @@ _V1_TYPES: set[str] = {
     "task.created",
     "task.claimed",
     "task.completed",
+    "task.scored",
     "task.routed",
     "task.failed",
     "skill.executed",

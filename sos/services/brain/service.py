@@ -13,13 +13,25 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Optional
 
 import redis.asyncio as aioredis
 
-from sos.services.brain.state import BrainState
+from sos.contracts.brain_snapshot import BrainSnapshot
+from sos.contracts.brain_snapshot import RoutingDecision as SnapshotRoute
+from sos.contracts.messages import (
+    TaskRoutedMessage,
+    TaskRoutedPayload,
+    TaskScoredMessage,
+    TaskScoredPayload,
+)
+from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
+from sos.services.brain.scoring import score_task
+from sos.services.brain.state import BrainState, RoutingDecision
+from sos.services.registry import read_all as registry_read_all
 
 logger = logging.getLogger("sos.brain")
 
@@ -29,6 +41,14 @@ logger = logging.getLogger("sos.brain")
 
 # Key pattern: sos:consumer:brain:checkpoint:<stream_name>
 _CHECKPOINT_KEY_PREFIX = "sos:consumer:brain:checkpoint"
+
+# Redis key where the latest BrainSnapshot JSON is persisted (TTL 30s).
+# Dashboard reads this on GET /sos/brain.
+_BRAIN_SNAPSHOT_KEY = "sos:state:brain:snapshot"
+_BRAIN_SNAPSHOT_TTL_SEC = 30
+
+# Stream the Brain emits task.scored events on
+_BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
 
 # XREAD blocking timeout in milliseconds
 _BLOCK_MS = 1000
@@ -128,6 +148,9 @@ class BrainService:
         # Observable state
         self.state: BrainState = BrainState()
 
+        # Snapshot — when this BrainService instance booted (ISO-8601 UTC).
+        self._service_started_at: str = datetime.now(timezone.utc).isoformat()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -171,6 +194,7 @@ class BrainService:
     async def _tick(self) -> None:
         streams = await self._discover_streams()
         if not streams:
+            await self._persist_snapshot()
             await asyncio.sleep(1.0)
             return
 
@@ -187,6 +211,7 @@ class BrainService:
             return
 
         if not results:
+            await self._persist_snapshot()
             return
 
         for stream_raw, entries in results:
@@ -235,6 +260,9 @@ class BrainService:
                     self._seen_ids.add(msg_id)
                     self._checkpoints[stream] = entry_id
                     await self._persist_checkpoint(stream, entry_id)
+
+        # Publish the latest observable snapshot so the dashboard can read it.
+        await self._persist_snapshot()
 
     # ------------------------------------------------------------------
     # Stream discovery
@@ -292,6 +320,54 @@ class BrainService:
         await self._redis.set(key, entry_id)
 
     # ------------------------------------------------------------------
+    # Snapshot (dashboard hand-off)
+    # ------------------------------------------------------------------
+
+    def snapshot(self) -> BrainSnapshot:
+        """Build a BrainSnapshot from the current BrainState.
+
+        Read-only on ``self.state``. Safe to call at any time; the dashboard
+        service reads the serialised form from redis — it never calls this
+        method directly (cross-service imports are forbidden).
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        recent: list[SnapshotRoute] = [
+            SnapshotRoute(
+                task_id=rd.task_id,
+                agent_name=rd.agent_name,
+                score=rd.score,
+                routed_at=rd.routed_at,
+            )
+            for rd in self.state.recent_routing_decisions
+        ]
+        return BrainSnapshot(
+            queue_size=self.state.queue_size(),
+            in_flight=sorted(self.state.tasks_in_flight),
+            recent_routes=recent,
+            events_by_type=dict(self.state.events_by_type),
+            events_seen=self.state.events_seen,
+            last_update_ts=self.state.last_event_at or now_iso,
+            service_started_at=self._service_started_at,
+        )
+
+    async def _persist_snapshot(self) -> None:
+        """Serialise the snapshot to redis with a 30 s TTL.
+
+        The short TTL is intentional: if BrainService stops ticking, the key
+        expires and the dashboard returns 503 — operators can detect a dead
+        brain immediately.
+        """
+        if self._redis is None:
+            return
+        try:
+            payload = self.snapshot().model_dump_json()
+            await self._redis.set(
+                _BRAIN_SNAPSHOT_KEY, payload, ex=_BRAIN_SNAPSHOT_TTL_SEC
+            )
+        except Exception:
+            logger.exception("Failed to persist brain snapshot to redis")
+
+    # ------------------------------------------------------------------
     # Event dispatch
     # ------------------------------------------------------------------
 
@@ -344,7 +420,12 @@ class BrainService:
     # ------------------------------------------------------------------
 
     async def _on_task_created(self, msg: dict) -> None:
-        """Stub: log + track in-flight. Sprint 3 adds scoring + dispatch."""
+        """Score a newly-created task, enqueue it, and emit task.scored.
+
+        Scoring uses defaults for any field missing on the incoming
+        task.created payload:
+            impact=5.0, urgency=<priority>|"medium", unblock_count=0, cost=1.0
+        """
         task_id = msg.get("task_id") or msg.get("id", "unknown")
         logger.info(
             "[brain] task.created task_id=%s title=%r",
@@ -352,6 +433,64 @@ class BrainService:
             msg.get("title", ""),
         )
         self.state.tasks_in_flight.add(task_id)
+
+        # --- Scoring (Sprint 2) -------------------------------------------
+        impact: float = float(msg.get("impact", 5.0))
+        urgency: str = msg.get("priority") or "medium"
+        unblock_count: int = int(msg.get("unblock_count", 0))
+        cost: float = float(msg.get("cost", 1.0))
+
+        score: float = score_task(
+            impact=impact,
+            urgency=urgency,
+            unblock_count=unblock_count,
+            cost=cost,
+        )
+
+        # --- Record required skills for later dispatch matching -----------
+        required_skills: list[str] = []
+        raw_labels = msg.get("labels")
+        if isinstance(raw_labels, list):
+            required_skills = [str(lbl) for lbl in raw_labels if isinstance(lbl, str)]
+        raw_skill_id = msg.get("skill_id")
+        if isinstance(raw_skill_id, str) and raw_skill_id:
+            # A single-string skill_id field is wrapped as a one-element list.
+            required_skills = [raw_skill_id] if not required_skills else required_skills
+        self.state.task_skills[task_id] = required_skills
+
+        # Enqueue on the in-memory priority queue
+        self.state.enqueue(task_id, score)
+
+        # Attempt dispatch of the highest-score queued task (may be this one
+        # or a previously-queued one that now has a matching agent).
+        await self._try_dispatch_next()
+
+        # --- Emit task.scored envelope ------------------------------------
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            scored = TaskScoredMessage(
+                source="agent:brain",
+                target="sos:channel:tasks",
+                timestamp=now_iso,
+                message_id=str(uuid.uuid4()),
+                payload=TaskScoredPayload(
+                    task_id=task_id,
+                    score=score,
+                    urgency=urgency,  # type: ignore[arg-type]
+                    impact=impact,
+                    unblock_count=unblock_count,
+                    cost=cost,
+                    ts=now_iso,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "[brain] task.scored envelope construction failed task_id=%s", task_id
+            )
+            return
+
+        assert self._redis is not None
+        await self._redis.xadd(_BRAIN_EMIT_STREAM, scored.to_redis_fields())
 
     async def _on_task_completed(self, msg: dict) -> None:
         """Stub: log + remove from in-flight."""
@@ -374,9 +513,92 @@ class BrainService:
         )
 
     async def _on_agent_joined(self, msg: dict) -> None:
-        """Stub: log new agent join event."""
+        """Log the join event and attempt to drain the priority queue.
+
+        A new agent may unblock queued tasks whose required skills previously
+        had no matching candidate.
+        """
         logger.info(
             "[brain] agent_joined name=%r model=%r",
-            msg.get("name", "unknown"),
+            msg.get("name") or msg.get("agent_name", "unknown"),
             msg.get("model", ""),
+        )
+        await self._try_dispatch_next()
+
+    # ------------------------------------------------------------------
+    # Dispatch — match highest-score queued task to a registered agent
+    # ------------------------------------------------------------------
+
+    async def _try_dispatch_next(self) -> None:
+        """Pop the highest-score task and try to route it to an agent.
+
+        If no candidate has any skill overlap, the task is put back on the
+        queue unchanged. On match, emits a task.routed event on the brain
+        stream, moves the task to in_flight, and records the routing
+        decision in BrainState.
+        """
+        if self.state.queue_size() == 0:
+            return
+
+        popped = self.state.pop_highest()
+        if popped is None:
+            return
+        task_id, score = popped
+
+        required_skills = self.state.task_skills.get(task_id, [])
+
+        try:
+            candidates = await asyncio.to_thread(registry_read_all)
+        except Exception:
+            logger.exception(
+                "[brain] registry_read_all failed; re-queueing task_id=%s", task_id
+            )
+            self.state.enqueue(task_id, score)
+            return
+
+        selected = select_agent(required_skills, candidates or [], self.state)
+        if selected is None:
+            # No matching candidate — put the task back on the queue.
+            self.state.enqueue(task_id, score)
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        normalized_score = min(score / 100.0, 1.0)
+        overlap = len(set(required_skills) & set(selected.capabilities))
+
+        try:
+            routed = TaskRoutedMessage(
+                source="agent:brain",
+                target="sos:channel:tasks",
+                timestamp=now_iso,
+                message_id=str(uuid.uuid4()),
+                payload=TaskRoutedPayload(
+                    task_id=task_id,
+                    routed_to=selected.name,
+                    routed_at=now_iso,
+                    score=normalized_score,
+                    reason=f"skill-match={overlap}",
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "[brain] task.routed envelope construction failed task_id=%s",
+                task_id,
+            )
+            # Put the task back — we could not emit a valid routing decision.
+            self.state.enqueue(task_id, score)
+            return
+
+        assert self._redis is not None
+        await self._redis.xadd(_BRAIN_EMIT_STREAM, routed.to_redis_fields())
+
+        # State updates — record as in-flight + store decision for dashboard.
+        self.state.tasks_in_flight.add(task_id)
+        self.state.add_routing_decision(
+            RoutingDecision(
+                task_id=task_id,
+                agent_name=selected.name,
+                score=score,
+                routed_at=now_iso,
+            )
         )

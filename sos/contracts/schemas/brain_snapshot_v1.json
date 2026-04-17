@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/brain_snapshot_v1.json",
+  "title": "BrainSnapshot v1",
+  "description": "Observable snapshot of BrainService in-memory state. Returned by GET /sos/brain on the dashboard service for operators and the dashboard UI.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "queue_size",
+    "in_flight",
+    "recent_routes",
+    "events_by_type",
+    "last_update_ts"
+  ],
+  "properties": {
+    "queue_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of tasks currently waiting in the priority queue"
+    },
+    "in_flight": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]+$"
+      },
+      "description": "task_ids created but not yet completed/failed"
+    },
+    "recent_routes": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/RoutingDecision"
+      },
+      "description": "Last 50 routing decisions newest-first"
+    },
+    "events_by_type": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "description": "Per-message-type counters"
+    },
+    "events_seen": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total events consumed since service start"
+    },
+    "last_update_ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of the most recent event"
+    },
+    "service_started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp BrainService started"
+    }
+  },
+  "$defs": {
+    "RoutingDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "agent_name",
+        "score",
+        "routed_at"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "agent_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0
+        },
+        "routed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/pairing_v1.json",
+  "title": "Agent Pairing v1",
+  "description": "Agent pairing protocol. A new agent proves control of a keypair by signing a nonce; the saas service returns a bearer token registered in tokens.json.",
+  "$defs": {
+    "PairingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_name",
+        "pubkey",
+        "skills",
+        "model_provider",
+        "nonce",
+        "signature"
+      ],
+      "properties": {
+        "agent_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "pubkey": {
+          "type": "string",
+          "pattern": "^ed25519:[A-Za-z0-9+/=]{40,88}$",
+          "description": "ed25519 public key, base64"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "model_provider": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9.-]*$",
+          "description": "e.g. 'anthropic:claude-opus-4-7'"
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "description": "Random nonce server issued via GET /sos/pairing/nonce"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^ed25519:[A-Za-z0-9+/=]{40,128}$",
+          "description": "ed25519 signature over the nonce, base64"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["specialist", "coordinator", "executor", "oracle"],
+          "default": "specialist"
+        }
+      }
+    },
+    "PairingResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "agent_id", "issued_at", "expires_at"],
+      "properties": {
+        "token": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Bearer token; sha256 of this value is stored server-side in tokens.json"
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+          "description": "Canonical agent id, e.g. 'Hermes_sos_007'"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Null-equivalent via far-future date if non-expiring"
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["agent", "customer", "admin"],
+          "default": "agent"
+        }
+      }
+    }
+  }
+}

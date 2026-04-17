@@ -1,6 +1,6 @@
 ---
 name: sos-contract-tester
-model: haiku
+model: sonnet
 temperature: 0.0
 description: Generates pytest contract tests for a schema + Pydantic model pair. Covers round-trip, invalid input rejection, boundary values, Redis hash round-trip if applicable. Use for every schema/model shipped by sos-schema-author + sos-pydantic-author in v0.4 Contracts sprint.
 allowedTools:

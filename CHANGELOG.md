@@ -2,6 +2,44 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.3] - 2026-04-17 — "Dispatcher + Brain + Code Mode"
+
+Plan: [`docs/plans/2026-04-17-v0.4.3-squad-sprint.md`](docs/plans/2026-04-17-v0.4.3-squad-sprint.md)
+
+### Added
+- **Brain service (`sos/services/brain/`)** — bus consumer that obeys the 5 invariants (idempotency, per-stream checkpoints, fail-open, SCAN discovery, replay tolerance). Now scores every `task.created`, emits `task.scored`, maintains a priority queue, dispatches to the best-matching agent via `ProviderMatrix`, and emits `task.routed`. Priority queue is FIFO-stable via `(−score, counter, task_id)` heap.
+- **Scoring** — `score_task(impact, urgency, unblock_count, cost)` formula in `sos/services/brain/scoring.py`. URGENCY_WEIGHTS: critical=4.0, high=2.0, medium=1.0, low=0.5. Defaults when payload is thin: impact=5, urgency=payload.priority or "medium", unblock=0, cost=1.0.
+- **Matrix** — `sos/services/brain/matrix.py::select_agent` — picks largest skill overlap, breaks ties by lowest agent load then lex name. Returns `None` on zero overlap.
+- **`task.scored` contract** — JSON Schema (`sos/contracts/schemas/messages/task.scored_v1.json`) + Pydantic binding (`TaskScoredMessage` / `TaskScoredPayload` in `sos/contracts/messages.py`) + enforcement registration in `sos/services/bus/enforcement.py`.
+- **BrainSnapshot contract** — HTTP response shape for the dashboard (not a bus type). Schema at `sos/contracts/schemas/brain_snapshot_v1.json`, Pydantic at `sos/contracts/brain_snapshot.py`. Fields: `queue_size`, `in_flight`, `recent_routes` (≤50), `events_by_type`, `events_seen`, `last_update_ts`, `service_started_at`.
+- **`GET /sos/brain`** — operator dashboard endpoint (`sos/services/dashboard/routes/brain.py`). Reads the Brain's snapshot from Redis key `sos:state:brain:snapshot` (TTL 30s, written at end of every tick) — avoids cross-process imports. Bearer-protected, `503` on cache miss.
+- **`GET /sos/pairing/nonce` + `POST /sos/pairing`** — agent pairing endpoints (`sos/services/saas/pairing.py`). ed25519 pubkey + nonce challenge + signed response → bearer token registered (hash-only) in `tokens.json` under `scope=agent`. Agent ID deterministic: `<Name>_sos_NNN`. Signature verified via `cryptography.hazmat.primitives.asymmetric.ed25519`.
+- **Pairing contract** — schema at `sos/contracts/schemas/pairing_v1.json` (`$defs.PairingRequest` + `$defs.PairingResponse`) + Pydantic at `sos/contracts/pairing.py`.
+- **`sos/cli/pair-agent.sh`** — one-shot agent provisioning script. Generates ed25519 keypair, fetches nonce, signs, pairs, writes token to `~/.sos/token` (0600), smoke-tests host. Turns "onboard a fresh agent" into one command.
+- **Code Mode MCP** — `sos/mcp/code_mode.py`. Tool calls become Python snippets executed in a restricted `exec` sandbox; only the final value returns to the model. Stdout/stderr captured via `contextlib.redirect_stdout/stderr`; timeout via `asyncio.wait_for(asyncio.to_thread(...))`; trailing expression auto-rewritten to `_last = <expr>`. Targets Cloudflare's ~99.9% token reduction on tool-heavy flows. Wired into `sos_mcp_sse` gateway as the `code_mode` tool, exposing a narrow safe-tool namespace (`status, peers, memories, recall, search_code, task_board, task_list`).
+- **OpenAPI** — `sos/contracts/openapi/dashboard.yaml` (adds `/sos/brain` + BrainSnapshot/RoutingDecision) and `sos/contracts/openapi/saas.yaml` (adds `/sos/pairing/*` + PairingRequest/PairingResponse). Both validated with `openapi-spec-validator`.
+- **`sos-brain-wire` specialist** — new Sonnet stateless subagent (`.claude/agents/sos-brain-wire.md`). One-shot Brain deliverable: touch ≤2 files, write one unit test, must obey the 5-invariant bus-consumer pattern. Joins the reused v0.4.0 squad (schema-author, pydantic-author, openapi-author, contract-tester, connectivity-medic).
+
+### Changed
+- **`BrainService` emits cross-service state via Redis, not Python imports.** At end of every `_tick()`, writes `sos:state:brain:snapshot` (30s TTL). Dashboard reads from this key instead of importing BrainService — clean inter-process boundary.
+- **`sos/services/brain/state.py`** gained `priority_queue`, `_queue_counter`, `enqueue`, `pop_highest`, `queue_size`, `task_skills`.
+- **`agent_joined` handling** — the payload lacks skills/capabilities, so dispatch looks them up via `sos.services.registry.read_all()` called through `asyncio.to_thread` from the async consumer.
+
+### Fixed
+- **Heap FIFO stability** — tie-breaking `(−score, counter, task_id)` ensures equal-score tasks pop in insertion order, not arbitrary string order.
+
+### Architectural invariants
+- Brain obeys the 5 bus-consumer invariants. Every new handler must too — violations are blockers.
+- Cross-service state hand-off goes through Redis keys with TTL, never through in-process imports. The `sos:state:<service>:snapshot` convention is established.
+- Pairing tokens are stored **hash-only** in `tokens.json`; plaintext is returned to the caller exactly once and never persisted.
+- Schema catalog is the source of truth — `enforcement.py::_V1_TYPES` mirrors `messages.py::MessageType` mirrors `schemas/messages/<type>_v1.json` filenames.
+
+### Tests
+- 103 new green tests across brain / contracts / services / mcp: priority queue (6), scoring integration (4), matrix (7), dispatch (5), task.scored contract (14), brain_snapshot contract (14), pairing contract (20), dashboard brain route (5), pairing endpoint (9), code_mode unit (12), code_mode integration (6), brain E2E (1 — full scoring → dispatch → dashboard round-trip against fakeredis).
+
+### Commits
+- Single squad sprint: 28 steps across 6 sprints, 5 reused specialists + 1 new (`sos-brain-wire`), parallel dispatch where independent.
+
 ## [0.4.1] - 2026-04-18 — "Moat + Coherence"
 
 ### Added

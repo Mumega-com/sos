@@ -54,6 +54,7 @@ MessageType = Literal[
     "task.claimed",
     "task.completed",
     "task.routed",
+    "task.scored",
     "task.failed",
     "skill.executed",
     "agent_joined",
@@ -440,6 +441,43 @@ class TaskRoutedMessage(BusMessage):
 
 
 # ---------------------------------------------------------------------------
+# TaskScored  (canonical type: "task.scored" — emitted by Brain after scoring)
+# ---------------------------------------------------------------------------
+
+
+class TaskScoredPayload(BaseModel):
+    """Payload for task.scored v1 — ranking output from brain.scoring.score_task."""
+
+    model_config = ConfigDict(strict=False)
+
+    task_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    score: float = Field(ge=0.0, lt=10000.0)
+    urgency: Literal["critical", "high", "medium", "low"]
+    impact: Optional[float] = Field(default=None, ge=1.0, le=10.0)
+    unblock_count: Optional[int] = Field(default=None, ge=0)
+    cost: Optional[float] = Field(default=None, ge=0.1, le=10.0)
+    ts: str
+
+    @field_validator("ts")
+    @classmethod
+    def _parse_ts(cls, v: str) -> str:
+        """Validate ts is ISO 8601."""
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
+
+class TaskScoredMessage(BusMessage):
+    """Full envelope for task.scored events emitted by the Brain service."""
+
+    type: Literal["task.scored"] = Field(default="task.scored")  # type: ignore[assignment]
+    target: str = Field(
+        default="sos:channel:tasks",
+        pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+    )
+    payload: TaskScoredPayload
+
+
+# ---------------------------------------------------------------------------
 # TaskFailed  (canonical type: "task.failed" per SQUAD_EVENTS)
 # ---------------------------------------------------------------------------
 
@@ -583,6 +621,7 @@ _TYPE_MAP: dict[str, type[BusMessage]] = {
     "task.claimed": TaskClaimedMessage,
     "task.completed": TaskCompletedMessage,
     "task.routed": TaskRoutedMessage,
+    "task.scored": TaskScoredMessage,
     "task.failed": TaskFailedMessage,
     "skill.executed": SkillExecutedMessage,
     "agent_joined": AgentJoinedMessage,

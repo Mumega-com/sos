@@ -676,6 +676,18 @@ def get_tools() -> list[dict[str, Any]]:
                 "properties": {},
             },
         },
+        {
+            "name": "code_mode",
+            "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["code"],
+                "properties": {
+                    "code": {"type": "string", "description": "Python snippet to execute. Last expression becomes the return value. Available names: `tools` (SimpleNamespace) and a small allowlist of builtins (int, str, list, dict, ...). Imports are blocked."},
+                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 10.0, "default": 5.0},
+                },
+            },
+        },
     ]
 
 
@@ -814,6 +826,73 @@ def _text(t: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": t}]}
 
 
+# Safe, read-only tools exposed inside code_mode's `tools` namespace. Keep this
+# set narrow — every name here is callable from a client-supplied snippet.
+_CODE_MODE_SAFE_TOOLS: frozenset[str] = frozenset(
+    {"status", "peers", "memories", "recall", "search_code", "task_board", "task_list"}
+)
+
+
+def _make_code_mode_sync_wrapper(
+    tool_name: str, auth: MCPAuthContext
+) -> Any:
+    """Build a sync callable that forwards kwargs to ``handle_tool(tool_name, ...)``.
+
+    Runs the coroutine to completion using the event loop the helper itself
+    is running on. If we're in an event loop (normal case — ``handle_tool``
+    is async), schedule via ``run_coroutine_threadsafe`` and block the
+    snippet's worker thread until done.
+    """
+
+    def _sync(**kw: Any) -> Any:
+        coro = handle_tool(tool_name, kw, auth)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        import concurrent.futures  # noqa: PLC0415 - local import keeps hot path cold
+
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return fut.result(timeout=10.0)
+        except concurrent.futures.TimeoutError:
+            return {"error": "tool_call_timeout"}
+
+    return _sync
+
+
+async def _handle_code_mode(
+    args: dict[str, Any], auth: MCPAuthContext
+) -> dict[str, Any]:
+    """Execute a Python snippet via ``sos.mcp.code_mode.execute_snippet``.
+
+    Exposes a narrow, read-only slice of ``handle_tool`` as the ``tools``
+    namespace. Empty ``code`` is rejected. The return shape is a standard
+    MCP content block wrapping a JSON body (``value``, ``stdout``,
+    ``stderr``, ``duration_ms``, ``token_estimate``).
+    """
+    from sos.mcp.code_mode import execute_snippet  # noqa: PLC0415
+
+    code = str(args.get("code", ""))
+    if not code.strip():
+        return _text("error: empty code")
+    timeout_s = float(args.get("timeout_s", 5.0))
+
+    tools_map: dict[str, Any] = {
+        tn: _make_code_mode_sync_wrapper(tn, auth) for tn in _CODE_MODE_SAFE_TOOLS
+    }
+
+    result = await execute_snippet(code=code, tools=tools_map, timeout_s=timeout_s)
+    payload = {
+        "value": repr(result["value"]),
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "duration_ms": result["duration_ms"],
+        "token_estimate": result["token_estimate"],
+    }
+    return _text(json.dumps(payload))
+
+
 async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     r = _get_redis()
@@ -846,6 +925,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             return _text("Rate limit: too many write operations. Try again in a minute.")
 
     try:
+        # --- code_mode ---
+        if name == "code_mode":
+            return await _handle_code_mode(args, auth)
+
         # --- ask ---
         if name == "ask":
             agent = _require_same_tenant_agent(auth, args.get("agent"))
