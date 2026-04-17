@@ -33,6 +33,24 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 - **Testing**: Load tests for rate limiter and circuit breaker (#20)
 - **Ops**: Prometheus alerting rules for SOS services (#23)
 
+## [0.4.0] - 2026-04-17
+
+### Added
+- **All legacy producers migrated to v1 types**:
+  - `sos/bus/bridge.py` `sos_msg()` — builds via `SendMessage`/`AnnounceMessage` Pydantic models. Legacy `msg_type="chat"` is mapped to `"send"`; legacy target `"broadcast"` is normalized to `"sos:channel:global"`.
+  - `sos/mcp/sos_mcp.py` `sos_msg()` — same migration. The deprecated MCP stdio entry-point emits v1 on the wire.
+  - `sos/mcp/sos_mcp_sse.py` broadcast handler — uses `SendMessage` directly with channel target (parallel to the send handler shipped in beta.1).
+  - `sos/mcp/redis_bus.py` `sos_message()` — same v1 mapping, kept for backwards parameter compatibility with older MCP installs.
+- **Strict enforcement** at `sos/services/bus/enforcement.py`. `enforce()` now rejects unknown types with `SOS-4004` (legacy-tolerance window closed). `enforce_or_log()` preserved for gradual rollout call sites that may still need it.
+
+### Changed
+- The legacy `{"type": "chat", ...}` and `{"type": "broadcast", ...}` shapes no longer exist anywhere in the SOS codebase as a producer. Consumers that read legacy entries from historical Redis streams continue to work because `from_redis_fields()` on `BusMessage` is tolerant of both shapes.
+- Contract tests: 56/56 passing (8 schema files × canonical target pattern × round-trip symmetry).
+
+### Sprint delivery notes
+- Sprint 3 was a ~30-minute integration pass (no subagent dispatch; each migration is 30–50 lines and reads best done in-process).
+- Running services picked up the migrations on next restart. Existing long-lived bus messages in historical streams (pre-0.4.0 legacy shape) are read unchanged by `from_redis_fields()`.
+
 ## [0.4.0-beta.1] - 2026-04-17
 
 ### Added
@@ -42,7 +60,7 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ### Changed
 - `sos/mcp/sos_mcp_sse.py` send handler produces v1 messages; inbox + wake-daemon continue to parse identically (payload is still JSON-encoded in Redis hash field).
 
-### Known remaining
+### Known remaining (closed in 0.4.0)
 - `sos/bus/bridge.py`, `sos/mcp/redis_bus.py`, `sos/mcp/sos_mcp.py` still produce legacy "chat"/"broadcast" types. They flow through `enforcement.enforce()` legacy-tolerant path. Migration scheduled for Sprint 3+.
 
 ## [0.4.0-alpha.2] - 2026-04-17
@@ -72,8 +90,8 @@ customer tool gating, signup → build pipeline, ToRivers marketplace.
 ## [Unreleased]
 
 ### Pending
-- Sprint 3: migrate remaining legacy producers (bridge.py, redis_bus.py, sos_mcp.py) from "chat"/"broadcast" to v1 "send" type. Flip enforcement to fully strict (drop legacy-tolerance path).
-- Sprint 3 alt: retire shared `sk-claudeai-*` token; per-agent token migration for mumega-hosted tmux agents (kasra deferred per +500k context decision).
+- **Service restart** to pick up the 0.4.0 producers (sos_mcp_sse, sos_mcp, bridge, redis_bus). Running processes import `sos_msg()` at boot and continue to use the legacy builder until restart.
+- Per-agent token migration for mumega-hosted tmux agents (kasra deferred per +500k context decision). Only sos-medic + trop provisioned with per-agent tokens so far.
 - v0.4.1 Provider Matrix (deterministic LLM routing, circuit breakers, FMAAP Metabolism extension).
 - v0.4.2 External observability plane (mumega-watch on a second VPS, not Cloudflare).
 - Additional model provider integrations.

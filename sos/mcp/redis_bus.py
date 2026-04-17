@@ -129,15 +129,39 @@ def make_response(msg_id, result=None, error=None):
 
 
 def sos_message(msg_type, source, target, content):
-    msg = {
-        "id": str(uuid4()),
-        "type": msg_type,
-        "source": source,
-        "target": target,
-        "payload": json.dumps({"text": content}),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "1.0",
-    }
+    """v0.4.0: build a v1-shaped bus message via Pydantic contracts.
+
+    Legacy "chat" → v1 "send". Legacy bare "broadcast" target → sos:channel:global.
+    The deprecated redis_bus.py entry-point continues to accept legacy
+    parameter names for backwards compatibility with older MCP installs, but
+    emits v1 types to the wire so downstream validators accept the message.
+    """
+    from sos.contracts.messages import SendMessage, AnnounceMessage
+
+    v1_type = {"chat": "send", "broadcast": "send"}.get(msg_type, msg_type)
+    if target == "broadcast":
+        target = "sos:channel:global"
+
+    if v1_type == "send":
+        m = SendMessage(
+            source=source,
+            target=target,
+            timestamp=SendMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": content, "content_type": "text/plain"},
+        )
+    elif v1_type == "announce":
+        m = AnnounceMessage(
+            source=source,
+            target=target,
+            timestamp=AnnounceMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": content} if content else None,
+        )
+    else:
+        raise ValueError(f"redis_bus: unknown message type {msg_type!r}")
+
+    msg = m.to_redis_fields()
     if PROJECT:
         msg["project"] = PROJECT
     return msg

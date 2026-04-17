@@ -37,7 +37,6 @@ from sse_starlette.sse import EventSourceResponse
 from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
 from sos.services.squad.auth import _lookup_token as lookup_squad_token
 from sos.services.squad.service import SquadDB
-from sos.services.bus.enforcement import enforce, MessageValidationError
 from sos.contracts.messages import SendMessage
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
@@ -948,13 +947,21 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             else:
                 stream = f"{_prefix(project_scope)}:broadcast"
                 channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
-            msg = scoped_sos_msg("broadcast", f"agent:{agent_scope}", channel, text, project_scope)
-            # v0.4.0: schema enforcement (legacy-tolerant on "broadcast" type)
+            # v0.4.0: broadcast uses v1 "send" type with a channel target.
             try:
-                msg = enforce(msg)
-            except MessageValidationError as ve:
-                log.error(f"bus message rejected: {ve}")
-                return _text(f"error: {ve.code} {ve.message}")
+                bmsg = SendMessage(
+                    source=f"agent:{agent_scope}",
+                    target=channel,
+                    timestamp=SendMessage.now_iso(),
+                    message_id=str(uuid4()),
+                    payload={"text": text, "content_type": "text/plain"},
+                )
+            except Exception as ve:
+                log.error(f"broadcast SendMessage construction failed: {ve}")
+                return _text(f"error: SOS-4001 {ve}")
+            msg = bmsg.to_redis_fields()
+            if project_scope:
+                msg["project"] = project_scope
             mid = await r.xadd(stream, msg)
             await r.publish(channel, json.dumps(msg))
             return _text(f"Broadcast to {channel} (id: {mid})")

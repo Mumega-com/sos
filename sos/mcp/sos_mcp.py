@@ -103,15 +103,37 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 def sos_msg(msg_type, source, target, content):
-    msg = {
-        "id": str(uuid4()),
-        "type": msg_type,
-        "source": source,
-        "target": target,
-        "payload": json.dumps({"text": content}),
-        "timestamp": now_iso(),
-        "version": "1.0",
-    }
+    """v0.4.0: build a v1-shaped bus message using Pydantic contracts.
+
+    Legacy "chat" → "send", legacy "broadcast" → "send" with channel target,
+    legacy target "broadcast" → "sos:channel:global". "announce" maps directly.
+    """
+    from sos.contracts.messages import SendMessage, AnnounceMessage
+
+    v1_type = {"chat": "send", "broadcast": "send"}.get(msg_type, msg_type)
+    if target == "broadcast":
+        target = "sos:channel:global"
+
+    if v1_type == "send":
+        m = SendMessage(
+            source=source,
+            target=target,
+            timestamp=SendMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": content, "content_type": "text/plain"},
+        )
+    elif v1_type == "announce":
+        m = AnnounceMessage(
+            source=source,
+            target=target,
+            timestamp=AnnounceMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": content} if content else None,
+        )
+    else:
+        raise ValueError(f"unknown message type: {msg_type!r}")
+
+    msg = m.to_redis_fields()
     if PROJECT:
         msg["project"] = PROJECT
     return msg

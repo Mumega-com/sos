@@ -64,17 +64,20 @@ def is_v1_type(msg_type: str | None) -> bool:
 def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
     """Validate a bus message dict before XADD.
 
-    Contract:
-      - If msg['type'] is one of the 8 v1 types, parse against schema.
+    Contract (v0.4.0 — strict):
+      - msg['type'] must be one of the 8 v1 types; otherwise raise
+        MessageValidationError with SOS-4004 (unknown type).
+      - The message must parse against its v1 schema via parse_message().
         On failure, raise MessageValidationError with SOS-4001.
-      - If msg['type'] is NOT in our v1 catalog (e.g. legacy "chat",
-        "broadcast"), return unchanged. Tolerance window.
       - If msg has no 'type' field at all, raise MessageValidationError
         with SOS-4002 (envelope malformed).
 
-    Returns the input dict on success (possibly normalized by Pydantic).
+    The legacy-tolerant pass-through window ended with v0.4.0. Legacy
+    callers must migrate to v1 types via sos_msg()'s built-in mapping
+    ("chat" → "send", "broadcast" → "send" with channel target).
 
-    Raises MessageValidationError on validation failure for known types.
+    Returns the input dict on success.
+    Raises MessageValidationError on validation failure.
     """
     msg_type = msg_dict.get("type")
 
@@ -85,22 +88,24 @@ def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
         )
 
     if not is_v1_type(msg_type):
-        # Legacy / unknown type — pass through for now.
-        return msg_dict
+        raise MessageValidationError(
+            "SOS-4004",
+            f"unknown message type {msg_type!r}; expected one of: "
+            + ", ".join(sorted(_V1_TYPES)),
+            original_type=msg_type,
+        )
 
     # Known v1 type — full schema validation.
     try:
         parsed = parse_message(msg_dict)
     except Exception as exc:
-        # Re-raise as our typed error with a stable code.
         raise MessageValidationError(
             "SOS-4001",
             f"v1 type '{msg_type}' failed schema validation: {exc}",
             original_type=msg_type,
         ) from exc
 
-    # Source sanity — the pattern is enforced by Pydantic, but we also want
-    # defense in depth at this boundary.
+    # Source sanity — pattern is enforced by Pydantic; defense in depth here.
     if not parsed.source or not parsed.source.startswith("agent:"):
         raise MessageValidationError(
             "SOS-4003",
