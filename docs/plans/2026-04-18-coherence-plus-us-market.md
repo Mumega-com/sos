@@ -62,23 +62,31 @@ If a commit doesn't make this pipeline more real, it doesn't ship.
 
 From reading the kernel, I found **13 duplicates / unwired primitives.** Coherence means all 13 get stitched.
 
-| # | Duplicate / Island | Canonical | Reconciliation |
-|---|---|---|---|
-| 1 | `sos/contracts/squad_task.py::SquadTaskV1` (my Pydantic) | `sos/contracts/squad.py::SquadTask` (dataclass) | Delete my Pydantic. Replace with a thin Pydantic binding wrapping the dataclass |
-| 2 | `sos/contracts/skill_card.py::SkillCard` (my) | `sos/contracts/squad.py::SkillDescriptor` (existing) | Two-layer: SkillDescriptor = execution; SkillCard = commerce/provenance overlay with `skill_descriptor_id` ref |
-| 3 | `sos/contracts/agent_card.py::AgentCard` (my v1) | `sos/kernel/identity.py::AgentIdentity + AgentDNA` | AgentCard = runtime registry view of AgentIdentity; explicit ref |
-| 4 | `sos/services/economy/usage_log.py::UsageEvent` (jsonl) | `sos/contracts/economy.py::Transaction` (existing) | Every UsageEvent emits an Economy Transaction. UsageLog becomes append-only materialized view |
-| 5 | `sos/providers/matrix.py::ProviderCard` | Not duplicated but **unwired** | Wire ProviderMatrix.select_provider into Brain dispatch + AgentDNA.learning_strategy |
-| 6 | SkillCard `verification.sample_output_refs: "engram:xxx"` | `sos/artifacts/registry.py::ArtifactRegistry` with CIDs | Refs should be `artifact:<cid>` pointing to ArtifactRegistry-minted outputs |
-| 7 | SkillCard verification.status string | `CoherencePhysics.compute_collapse_energy` (omega, ΔC) | Every human_verified entry carries physics result, not a flat status |
-| 8 | Dashboard agent list (reads `sos:registry:*`) | `AgentIdentity` in kernel | Registry hashes should serialize from AgentIdentity.to_dict(), not duplicate schema |
-| 9 | tokens.json (separate auth system) | `Identity.public_key` + Ed25519 signatures | Long-term: tokens.json → signed capability assertions. Short-term: keep parallel but document |
-| 10 | Bus messages (my v1) | Existing `SQUAD_EVENTS` set in squad.py | Unify: SQUAD_EVENTS become v1 message types with full Pydantic contracts |
-| 11 | The Brain (spec in brain.md, not implemented) | — | BUILD IT. This is the biggest gap |
-| 12 | Mirror bus consumer (shipped) | Pattern: bus → kernel event handler | Extend pattern: every kernel service subscribes to its own channel the same way |
-| 13 | SOSError taxonomy (my) | `sos/contracts/errors.py` (already existed before I added more) | Already stitched; verify no duplicates |
+**Stage 1 progress (live status):**
 
-**Coherence success criterion:** a future session greps for "SquadTask" or "SkillDescriptor" and finds **exactly one** definition + optionally one typed wrapper. Not two implementations.
+| # | Duplicate / Island | Canonical | Status | Commit |
+|---|---|---|---|---|
+| 1 | `sos/contracts/squad_task.py::SquadTaskV1` (my Pydantic) | `sos/contracts/squad.py::SquadTask` (dataclass) | ✅ Done — wraps dataclass with from/to converters | `9925e90e` |
+| 2 | `sos/contracts/skill_card.py::SkillCard` (my) | `sos/contracts/squad.py::SkillDescriptor` (existing) | ✅ Done — SkillCard now carries `skill_descriptor_id`; input/output schemas demoted to echo | `28fc8dff` |
+| 3 | `sos/contracts/agent_card.py::AgentCard` (my v1) | `sos/kernel/identity.py::AgentIdentity + AgentDNA` | ✅ Done — AgentCard now carries `identity_id`; type enum expanded (+ hermes / codex / cma / human) | `2f7cb81d` |
+| 4 | `sos/services/economy/usage_log.py::UsageEvent` (jsonl) | `sos/contracts/economy.py::Transaction` (existing) | ⏳ In flight — subagent running | — |
+| 5 | `sos/providers/matrix.py::ProviderCard` | Not duplicated but **unwired** | ⏸ Deferred to Stage 2 — wires into Brain when Brain lands | — |
+| 6 | SkillCard `verification.sample_output_refs: "engram:xxx"` | `sos/artifacts/registry.py::ArtifactRegistry` with CIDs | ✅ Done — pattern accepts `artifact:<cid>` (canonical) or `engram:<slug>` (legacy backward-compat) | `ee3f8fec` |
+| 7 | SkillCard verification.status string | `CoherencePhysics.compute_collapse_energy` (omega, ΔC) | ✅ Done — `VerificationInfo.witness_events[]` carries physics per event; `record_witness()` is the canonical write | `505a8ce1` |
+| 8 | Dashboard agent list (reads `sos:registry:*`) | `AgentIdentity` in kernel | ✅ Done — new `sos/services/registry/` reads through typed AgentIdentity | `12714270` |
+| 9 | tokens.json (separate auth system) | `Identity.public_key` + Ed25519 signatures | ✅ Plan doc shipped at `docs/architecture/TOKENS_EVOLUTION.md` — 3-phase migration (dual-write → verify-alongside → capability-first). No code in this phase. | `03cc3da3` |
+| 10 | Bus messages (my v1) | Existing `SQUAD_EVENTS` set in squad.py | ✅ Done — v1 types renamed to dot-separated (`task.created`), + 3 new types (`task.routed`, `task.failed`, `skill.executed`) | `419c0fa8` |
+| 11 | The Brain (spec in brain.md, not implemented) | — | ⏸ Deferred to Stage 2 — Build this next. Biggest single-island gap. | — |
+| 12 | Mirror bus consumer (shipped) | Pattern: bus → kernel event handler | ✅ Pattern canonicalized at `docs/architecture/MIRROR_BUS_CONSUMER_PATTERN.md` (5 invariants + when-to-use-it guidance) | `03cc3da3` |
+| 13 | SOSError taxonomy (my) | `sos/contracts/errors.py` (already existed before I added more) | ✅ Audit complete — 24 codes across 4xxx/5xxx/6xxx/7xxx bands, no duplicates | inline |
+
+**New item surfaced 2026-04-18 (post-Hermes question):**
+
+| # | Gap | Canonical answer | Status |
+|---|---|---|---|
+| 14 | Agent bootstrap — running agent without credentials can't connect to bus (Hermes case) | `scripts/sos-agent-bootstrap.sh` + `/sos/pairing` dashboard route | Slotted into v0.4.3 alongside Brain build |
+
+**Coherence success criterion:** a future session greps for "SquadTask" or "SkillDescriptor" and finds **exactly one** definition + optionally one typed wrapper. Not two implementations. **Currently met for 10 of 13 islands** (island #4 in flight, #5 deferred to Stage 2, #11 is Stage 2 itself).
 
 ---
 
@@ -216,19 +224,33 @@ If we're not at ~$6k MRR by end of week 6, the plan is wrong and we replan.
 
 ---
 
-## What I specifically commit to (sos-dev)
+## What I specifically commit to (sos-dev) — live status
 
-For the next 10 calendar days, my work is:
+**Day 1 (2026-04-18): 10 of 13 islands reconciled in one day** via parallel subagent dispatches. Faster than the original "5 days" estimate.
 
-1. **Day 1-2:** Stage 1 reconciliations #1-3 (SquadTask, SkillCard, AgentCard wrapping the kernel primitives). One commit each, each with tests proving the wrapping preserves behavior.
-2. **Day 3:** Stage 1 reconciliations #4-6 (UsageLog → Economy, ProviderMatrix wiring, Artifact CIDs on SkillCard verification).
-3. **Day 4:** Stage 1 reconciliations #7-10 (CoherencePhysics on verification, Dashboard from Identity, tokens.json doc, bus message / SQUAD_EVENTS unification).
-4. **Day 5:** Canonical mapping doc finalized, all islands either reconciled or explicitly scoped as future.
-5. **Day 6-10:** Build the Brain. Event subscriptions, scoring, FRC integration, ProviderMatrix wiring, test suite that proves routing actually happens.
+- ✅ Islands #1-3 — SquadTask, SkillCard, AgentCard overlay kernel primitives (commits `9925e90e`, `28fc8dff`, `2f7cb81d`)
+- ✅ Islands #6-8 — Artifact CIDs, CoherencePhysics witness, Dashboard registry (commits `ee3f8fec`, `505a8ce1`, `12714270`)
+- ✅ Islands #9-10, #12-13 — Tokens plan, bus events unified, bus-consumer pattern, error taxonomy audit (commits `419c0fa8`, `03cc3da3`)
+- ⏳ Island #4 — UsageLog → Economy transactions (subagent in flight)
+- ⏸ Island #5 — ProviderMatrix wired to Brain (waits for Stage 2)
+- ⏸ Island #11 — Build the Brain (Stage 2 itself)
+- ⏸ Island #14 (new — surfaced by the Hermes question) — Agent bootstrap (`sos-agent-bootstrap.sh` + `/sos/pairing`) slots into Stage 2
 
-**No new documents.** No new framing. No new SkillCard proposals. No new product pages. If it's not reconciliation or implementation, it doesn't happen this stretch.
+**Next steps:**
 
-Your job during this stretch: decide when to start customer outreach (I'd say wait until end of Stage 3 so we can demo a live bounty, but you might want to start earlier to shorten cycle time).
+1. **When island #4 lands (within the hour):** run full test suite, update `CANONICAL_MAPPING.md` as the single coherence reference, tag **`v0.4.2 "Coherent Foundation"`**, CHANGELOG entry.
+
+2. **Stage 2 starts (~5-7 days):** Build the Brain at `sos/services/brain/`. FastAPI, event-driven, scoring + FRC constraint (dS + k*d ln C = 0) + ProviderMatrix wiring (closes island #5). Plus the **agent bootstrap** work — `scripts/sos-agent-bootstrap.sh` + `/sos/pairing` dashboard route — closes island #14 and solves the "Hermes is running but can't find its token" problem at the protocol level, not one-off per agent.
+
+3. **End of Stage 2:** tag **`v0.4.3 "The Brain + Bootstrap"`**.
+
+4. **Stage 3 (~5 days):** run one real bounty through the full pipeline. Witness emits physics, economy settles 85/15, SkillCard earnings auto-bump, dashboard trace visible. Tag **`v0.4.4 "First Bounty"`**.
+
+5. **Phase B starts:** 10 US customers. Target $5-6k MRR by week 6.
+
+**Discipline:** every commit advances the pipeline or closes an island. No new orbital primitives, no new framing, no new product pages until Stage 3 green.
+
+Your job during Stage 2: the Hermes token reload is cleaner once `sos-agent-bootstrap.sh` lands (2-3 days). Park Hermes until then. Customer outreach decision: my recommendation is wait until end of Stage 3 so you demo a live bounty, not an aspirational one — unless you want to stretch the cycle and have contracts ready to sign the day the bounty flows.
 
 ---
 
