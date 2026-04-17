@@ -29,11 +29,15 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
+
+# UsageEvent lives in sos.contracts.economy — imported here for backward
+# compatibility with call sites that still reference
+# `sos.services.economy.usage_log.UsageEvent`.
+from sos.contracts.economy import UsageEvent  # re-export
 
 _log = logging.getLogger("sos.usage_log")
 
@@ -48,38 +52,6 @@ def _default_log_path() -> Path:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-@dataclass
-class UsageEvent:
-    """One model-call telemetry event.
-
-    Canonical on-the-wire shape for the `POST /usage` economy endpoint. Matches
-    `sos.adapters.base.UsageInfo` conceptually but adds tenant/endpoint/
-    occurred_at so the record is self-describing without context.
-
-    All cost fields in **micros** (1e-6 of a currency unit). Edge tenants
-    computing cost from `PricingEntry.estimate_micros()` should pass the
-    integer result directly. USD ledger entries with cost_cents can be
-    converted: `cost_micros = cost_cents * 10_000`.
-    """
-    id: str = field(default_factory=lambda: str(uuid4()))
-    tenant: str = ""                         # tenant slug — must match the bus-token's project/tenant scope
-    provider: str = ""                       # "google" | "anthropic" | "openai" | "vertex" | ...
-    model: str = ""                          # provider model id, e.g. "gemini-flash-lite-latest"
-    endpoint: str = ""                       # tenant-side endpoint that triggered the call, e.g. "/api/archetype-report"
-    input_tokens: int = 0
-    output_tokens: int = 0
-    image_count: int = 0                     # flat-billed image models
-    cost_micros: int = 0                     # integer micros in whatever unit the tenant uses
-    cost_currency: str = "USD"               # "USD" | "MIND" | operator-defined
-    metadata: dict[str, Any] = field(default_factory=dict)  # tenant-side correlation (request_id, report_id, ...)
-    occurred_at: str = field(default_factory=_now_iso)
-    received_at: str = field(default_factory=_now_iso)
-
-    def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        return d
 
 
 # ---------------------------------------------------------------------------

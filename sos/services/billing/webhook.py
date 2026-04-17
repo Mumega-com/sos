@@ -17,7 +17,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from sos.services.billing.provision import provision_tenant
-from sos.services.saas.models import TenantCreate, TenantPlan, TenantUpdate, TenantStatus
+from sos.contracts.tenant import TenantCreate, TenantPlan, TenantUpdate, TenantStatus
 from sos.services.saas.registry import TenantRegistry
 
 log = logging.getLogger("sos.billing.webhook")

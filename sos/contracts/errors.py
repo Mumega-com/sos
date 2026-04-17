@@ -287,6 +287,27 @@ class BusValidationError(SOSError):
     http_status = 422
 
 
+class MessageValidationError(ValueError):
+    """Raised when a v1-typed bus message fails schema validation.
+
+    Kept as a standalone ValueError (not a SOSError subclass) for backward
+    compatibility with call sites that catch `ValueError` / this exact class.
+    New code should catch the typed SOSError subclasses directly
+    (BusValidationError, EnvelopeError, SourcePatternError, UnknownTypeError).
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        original_type: str | None = None,
+    ) -> None:
+        super().__init__(f"[{code}] {message}")
+        self.code = code
+        self.message = message
+        self.original_type = original_type
+
+
 class EnvelopeError(SOSError):
     """SOS-4002: Message envelope is malformed (missing 'type')."""
 

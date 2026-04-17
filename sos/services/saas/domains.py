@@ -42,7 +42,7 @@ class DomainManager:
             result["steps"].append({"action": "cloudflare_hostname", "result": "skipped (no credentials)"})
 
         # 2. Update tenant registry
-        from sos.services.saas.models import TenantUpdate
+        from sos.contracts.tenant import TenantUpdate
 
         self.registry.update(tenant_slug, TenantUpdate(domain=domain))
         result["steps"].append({"action": "registry_update", "result": "ok"})
@@ -108,7 +108,7 @@ class DomainManager:
             return {"error": "No custom domain set", "success": False}
 
         domain = tenant.domain
-        from sos.services.saas.models import TenantUpdate
+        from sos.contracts.tenant import TenantUpdate
 
         self.registry.update(tenant_slug, TenantUpdate(domain=None))
 

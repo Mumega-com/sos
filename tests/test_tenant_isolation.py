@@ -83,7 +83,7 @@ def _slug_from_name(name: str) -> str:
 def _cancel_tenant(slug: str) -> None:
     """Cancel a test tenant (best-effort, never fails the test)."""
     try:
-        from sos.services.saas.models import TenantStatus, TenantUpdate
+        from sos.contracts.tenant import TenantStatus, TenantUpdate
 
         path = BUS_TOKENS_PATH
         if path.exists():

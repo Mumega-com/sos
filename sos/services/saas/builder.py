@@ -24,7 +24,7 @@ from typing import Optional
 
 import httpx
 
-from sos.services.saas.models import Tenant
+from sos.contracts.tenant import Tenant
 from sos.services.saas.registry import TenantRegistry
 
 log = logging.getLogger("sos.saas.builder")

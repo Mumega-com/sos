@@ -21,8 +21,8 @@ from sos.contracts.messages import (
     TaskRoutedMessage,
     parse_message,
 )
+from sos.contracts.errors import MessageValidationError
 from sos.services.bus.enforcement import _V1_TYPES, enforce
-from sos.services.bus.enforcement import MessageValidationError
 
 
 # ---------------------------------------------------------------------------

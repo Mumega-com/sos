@@ -28,30 +28,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sos.contracts.errors import (
+from sos.contracts.errors import (  # re-export for legacy call sites
     BusValidationError,
     EnvelopeError,
+    MessageValidationError,
     SourcePatternError,
     UnknownTypeError,
 )
 from sos.contracts.messages import MessageType, parse_message
 
 logger = logging.getLogger(__name__)
-
-
-class MessageValidationError(ValueError):
-    """Raised when a v1-typed message fails schema validation.
-
-    Kept for backward compatibility with call sites that catch this class.
-    New code should catch the typed SOSError subclasses directly
-    (BusValidationError, EnvelopeError, SourcePatternError, UnknownTypeError).
-    """
-
-    def __init__(self, code: str, message: str, original_type: str | None = None) -> None:
-        super().__init__(f"[{code}] {message}")
-        self.code = code
-        self.message = message
-        self.original_type = original_type
 
 
 # Known v1 message types (must match the Literal in sos.contracts.messages).

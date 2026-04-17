@@ -4,7 +4,7 @@ These tests are the freeze point: if they pass, any implementation that
 emits records passing them is wire-compatible with the UsageEvent v1 schema.
 
 JSON Schema source of truth: sos/contracts/schemas/usage_event_v1.json
-Pydantic/dataclass binding:  sos/services/economy/usage_log.py
+Pydantic/dataclass binding:  sos/contracts/economy.py
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 import jsonschema
 import pytest
 
-from sos.services.economy.usage_log import UsageEvent
+from sos.contracts.economy import UsageEvent
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

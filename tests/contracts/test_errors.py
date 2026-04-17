@@ -294,7 +294,8 @@ def test_fastapi_handler_details_passed_through():
 
 def test_enforcement_no_type_raises_sos_4002():
     """enforce() on a dict with no 'type' produces code SOS-4002."""
-    from sos.services.bus.enforcement import MessageValidationError, enforce
+    from sos.contracts.errors import MessageValidationError
+    from sos.services.bus.enforcement import enforce
 
     with pytest.raises(MessageValidationError) as exc_info:
         enforce({"source": "agent:test", "payload": {}})
@@ -302,7 +303,8 @@ def test_enforcement_no_type_raises_sos_4002():
 
 
 def test_enforcement_unknown_type_raises_sos_4004():
-    from sos.services.bus.enforcement import MessageValidationError, enforce
+    from sos.contracts.errors import MessageValidationError
+    from sos.services.bus.enforcement import enforce
 
     with pytest.raises(MessageValidationError) as exc_info:
         enforce({"type": "legacy_chat", "source": "agent:test"})
@@ -311,7 +313,8 @@ def test_enforcement_unknown_type_raises_sos_4004():
 
 def test_enforcement_unknown_type_cause_is_sos_error():
     """The __cause__ of MessageValidationError is now an UnknownTypeError."""
-    from sos.services.bus.enforcement import MessageValidationError, enforce
+    from sos.contracts.errors import MessageValidationError
+    from sos.services.bus.enforcement import enforce
 
     with pytest.raises(MessageValidationError) as exc_info:
         enforce({"type": "legacy_chat", "source": "agent:test"})
@@ -320,7 +323,8 @@ def test_enforcement_unknown_type_cause_is_sos_error():
 
 def test_enforcement_envelope_error_cause():
     """Envelope errors carry EnvelopeError as __cause__."""
-    from sos.services.bus.enforcement import MessageValidationError, enforce
+    from sos.contracts.errors import MessageValidationError
+    from sos.services.bus.enforcement import enforce
 
     with pytest.raises(MessageValidationError) as exc_info:
         enforce({"source": "agent:test"})

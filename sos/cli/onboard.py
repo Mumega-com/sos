@@ -303,7 +303,7 @@ def onboard(slug: str, domain: str, spai_key: str, model: str = "haiku") -> None
 
     # Register in SaaS tenant registry
     try:
-        from sos.services.saas.models import TenantCreate
+        from sos.contracts.tenant import TenantCreate
         registry = _get_registry()
         tenant = registry.create(TenantCreate(slug=slug, label=slug, email=f"{slug}@mumega.com", domain=domain))
         registry.activate(slug, squad_id=slug, bus_token=token)

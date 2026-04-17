@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sos.services.saas.models import (
+from sos.contracts.tenant import (
     Tenant,
     TenantCreate,
     TenantStatus,
