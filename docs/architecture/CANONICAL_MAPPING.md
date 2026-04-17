@@ -70,3 +70,22 @@ _Added in island #3 — 2026-04-18-coherence-plus-us-market.md_
 - **Rule:** never read `sos:registry:*` directly. Go through `sos.services.registry` helpers so deserialization is consistent.
 
 _Added in island #8 — 2026-04-18-coherence-plus-us-market.md_
+
+## Economy ledger
+- **Canonical ledger:** `sos/contracts/economy.py::Transaction` + `sos/services/economy/wallet.py::SovereignWallet`
+- **Accounting unit:** `microMIND` (integer, 1 MIND = 1,000,000 microMIND) per ECONOMICS_MIND.md
+- **Revenue split:** 85/15 creator/platform per MARKETPLACE.md
+- **Per-event telemetry:** `sos/services/economy/usage_log.py::UsageLog` (append-only JSONL; materialized view of ledger events)
+- **Settlement:** `sos/services/economy/settlement.py::settle_usage_event` — best-effort at UsageLog.append() time; deferred retries via `POST /settle/{id}` admin endpoint
+- **Rule:** every UsageEvent with cost_micros > 0 emits a Transaction. Settlement failures never prevent UsageLog append (the log is the audit trail even when wallets fail).
+
+_Added in island #4 — 2026-04-18-coherence-plus-us-market.md_
+
+## Witness Protocol
+- **Canonical physics:** `sos/kernel/physics.py::CoherencePhysics` — RC-7 compliant. `calculate_will_magnitude(latency_ms)` → omega. `compute_collapse_energy(vote, latency_ms, agent_coherence)` → {omega, delta_c, signature}.
+- **Witness event record:** `sos/contracts/skill_card.py::WitnessEvent` — carries vote / latency / omega / delta_c / agent_coherence_snapshot / signature per event.
+- **Append path:** `sos/contracts/skill_card.py::record_witness(verification, ...)` — the canonical write. Calls CoherencePhysics; auto-transitions status (unverified/auto_verified → human_verified on first positive human; → disputed on any negative vote).
+- **Aggregate views:** `VerificationInfo.total_delta_c()`, `weighted_omega()`, `human_witnessed_count()`.
+- **Rule:** verification.status is the rollup; the truth lives in verification.witness_events. Never set status directly — always go through record_witness() so physics is computed.
+
+_Added in island #7 — 2026-04-18-coherence-plus-us-market.md_

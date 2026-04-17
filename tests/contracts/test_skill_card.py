@@ -24,7 +24,9 @@ from sos.contracts.skill_card import (
     RuntimeInfo,
     SkillCard,
     VerificationInfo,
+    WitnessEvent,
     load_schema,
+    record_witness,
 )
 
 # ---------------------------------------------------------------------------
@@ -737,3 +739,137 @@ class TestArtifactCIDRefs:
 
         mock_registry.get.assert_not_called()
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# 9. WitnessEvent + record_witness (Island #7 — 2026-04-18)
+# ---------------------------------------------------------------------------
+
+
+def _make_witness_event(**overrides: Any) -> dict[str, Any]:
+    """Minimal valid WitnessEvent kwargs."""
+    base: dict[str, Any] = {
+        "witness_id": "human:hadi",
+        "vote": 1,
+        "latency_ms": 350.0,
+        "omega": 0.93,
+        "delta_c": 0.093,
+        "agent_coherence_snapshot": 1.0,
+        "occurred_at": "2026-04-18T00:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestWitnessEvents:
+    def test_witness_event_construction_valid(self):
+        """WitnessEvent constructs with all required fields."""
+        event = WitnessEvent(**_make_witness_event())
+        assert event.witness_id == "human:hadi"
+        assert event.vote == 1
+        assert event.signature == "RC-7_COMPLIANT"
+
+    def test_witness_vote_must_be_plus_or_minus_one_zero_rejected(self):
+        """Vote of 0 must be rejected (not a valid Literal[-1, 1])."""
+        with pytest.raises((ValidationError, Exception)):
+            WitnessEvent(**_make_witness_event(vote=0))
+
+    def test_witness_vote_must_be_plus_or_minus_one_two_rejected(self):
+        """Vote of 2 must be rejected."""
+        with pytest.raises((ValidationError, Exception)):
+            WitnessEvent(**_make_witness_event(vote=2))
+
+    def test_witness_id_pattern_rejects_bare_slug(self):
+        """witness_id without agent:/human: prefix must be rejected."""
+        with pytest.raises((ValidationError, Exception)):
+            WitnessEvent(**_make_witness_event(witness_id="kasra"))
+
+    def test_witness_id_pattern_rejects_uppercase_after_prefix(self):
+        """witness_id with uppercase after prefix must be rejected."""
+        with pytest.raises((ValidationError, Exception)):
+            WitnessEvent(**_make_witness_event(witness_id="agent:OK-upper"))
+
+    def test_witness_id_accepts_agent_prefix(self):
+        """agent:<slug> must be accepted."""
+        event = WitnessEvent(**_make_witness_event(witness_id="agent:sentinel"))
+        assert event.witness_id == "agent:sentinel"
+
+    def test_witness_id_accepts_human_prefix(self):
+        """human:<slug> must be accepted."""
+        event = WitnessEvent(**_make_witness_event(witness_id="human:hadi"))
+        assert event.witness_id == "human:hadi"
+
+    def test_record_witness_updates_status_to_human_verified(self):
+        """First human +1 vote flips unverified → human_verified."""
+        v = VerificationInfo(status="unverified")
+        updated = record_witness(
+            v,
+            witness_id="human:hadi",
+            vote=1,
+            latency_ms=350.0,
+            agent_coherence=1.0,
+        )
+        assert updated.status == "human_verified"
+        assert len(updated.witness_events) == 1
+
+    def test_record_witness_disputed_on_negative_vote(self):
+        """Negative vote → status=disputed regardless of witness type."""
+        v = VerificationInfo(status="auto_verified")
+        updated = record_witness(
+            v,
+            witness_id="human:hadi",
+            vote=-1,
+            latency_ms=400.0,
+            agent_coherence=0.8,
+        )
+        assert updated.status == "disputed"
+        assert updated.witness_events[0].vote == -1
+
+    def test_record_witness_calls_coherence_physics(self):
+        """record_witness must call CoherencePhysics.compute_collapse_energy with correct args."""
+        from unittest.mock import MagicMock, patch
+
+        mock_result = {"vote": 1, "latency_ms": 300.0, "omega": 0.95, "delta_c": 0.095, "signature": "RC-7_COMPLIANT"}
+        with patch("sos.kernel.physics.CoherencePhysics.compute_collapse_energy", return_value=mock_result) as mock_fn:
+            v = VerificationInfo()
+            updated = record_witness(
+                v,
+                witness_id="agent:sentinel",
+                vote=1,
+                latency_ms=300.0,
+                agent_coherence=1.0,
+            )
+        mock_fn.assert_called_once_with(1, 300.0, 1.0)
+        assert updated.witness_events[0].omega == 0.95
+        assert updated.witness_events[0].delta_c == 0.095
+
+    def test_total_delta_c_sums_correctly(self):
+        """total_delta_c must return exact sum of all delta_c values."""
+        events = [
+            WitnessEvent(**_make_witness_event(delta_c=0.1)),
+            WitnessEvent(**_make_witness_event(delta_c=0.2)),
+            WitnessEvent(**_make_witness_event(delta_c=0.05)),
+        ]
+        v = VerificationInfo(witness_events=events)
+        assert abs(v.total_delta_c() - 0.35) < 1e-9
+
+    def test_weighted_omega_empty_returns_zero(self):
+        """weighted_omega() must return 0.0 when there are no witness events."""
+        v = VerificationInfo()
+        assert v.weighted_omega() == 0.0
+
+    def test_human_witnessed_count(self):
+        """human_witnessed_count() counts only human: prefixed witness_ids."""
+        events = [
+            WitnessEvent(**_make_witness_event(witness_id="human:hadi")),
+            WitnessEvent(**_make_witness_event(witness_id="agent:sentinel")),
+            WitnessEvent(**_make_witness_event(witness_id="human:reviewer-b")),
+        ]
+        v = VerificationInfo(witness_events=events)
+        assert v.human_witnessed_count() == 2
+
+    def test_witness_events_cap_at_1000(self):
+        """witness_events must enforce max_length=1000."""
+        events = [WitnessEvent(**_make_witness_event()) for _ in range(1001)]
+        with pytest.raises((ValidationError, Exception)):
+            VerificationInfo(witness_events=events)

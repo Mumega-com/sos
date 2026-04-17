@@ -18,6 +18,7 @@ SkillDescriptor.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -61,6 +62,54 @@ def load_schema() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Sub-models
 # ---------------------------------------------------------------------------
+
+
+class WitnessEvent(BaseModel):
+    """A single witness event carrying CoherencePhysics energy.
+
+    Implements the witness output from sos/kernel/physics.py::CoherencePhysics.compute_collapse_energy.
+    Per RC-7 physics: vote ∈ {+1, -1}; omega = exp(-lambda*(t-t_min)); delta_c = vote × omega × agent_coherence × 0.1.
+    """
+
+    model_config = ConfigDict(strict=False)
+
+    witness_id: str = Field(description="agent:<slug> or human:<slug> — pattern enforced")
+    vote: Literal[-1, 1]  # +1 = verified, -1 = rejected
+    latency_ms: float = Field(ge=0.0, description="time to decide (used by RC-7)")
+    omega: float = Field(description="certainty, 0..1 — output of calculate_will_magnitude")
+    delta_c: float = Field(description="coherence change, bounded by physics")
+    agent_coherence_snapshot: float = Field(description="C of the target at time of witness")
+    signature: Literal["RC-7_COMPLIANT"] = "RC-7_COMPLIANT"
+    occurred_at: str = Field(description="ISO 8601")
+    sample_output_ref: Optional[str] = Field(
+        default=None,
+        description="artifact: or engram: the witness evaluated",
+    )
+
+    @field_validator("witness_id")
+    @classmethod
+    def _check_witness_id_pattern(cls, v: str) -> str:
+        if not re.match(r"^(agent|human):[a-z][a-z0-9-]*$", v):
+            raise ValueError(
+                f"witness_id {v!r} must match ^(agent|human):[a-z][a-z0-9-]*$"
+            )
+        return v
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _parse_occurred_at(cls, v: str) -> str:
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
+    @field_validator("sample_output_ref")
+    @classmethod
+    def _check_sample_output_ref(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.match(_SAMPLE_OUTPUT_REF_PATTERN, v):
+            raise ValueError(
+                f"sample_output_ref {v!r} does not match {_SAMPLE_OUTPUT_REF_PATTERN}. "
+                "Use 'artifact:<sha256-64>' (canonical) or 'engram:<slug>' (legacy)."
+            )
+        return v
 
 
 class LineageEntry(BaseModel):
@@ -120,6 +169,11 @@ class VerificationInfo(BaseModel):
     )
     verified_at: Optional[str] = None
     dispute_reason: Optional[str] = Field(default=None, max_length=2000)
+    witness_events: list[WitnessEvent] = Field(
+        default_factory=list,
+        max_length=1000,
+        description="Ordered log of WitnessEvents — each carries CoherencePhysics energy.",
+    )
 
     @field_validator("sample_output_refs", mode="before")
     @classmethod
@@ -149,6 +203,23 @@ class VerificationInfo(BaseModel):
         if v is not None:
             datetime.fromisoformat(v.replace("Z", "+00:00"))
         return v
+
+    def total_delta_c(self) -> float:
+        """Sum of delta_c across all witness events — gross coherence accumulated."""
+        return sum(w.delta_c for w in self.witness_events)
+
+    def weighted_omega(self) -> float:
+        """Time-weighted average omega across witness events (recent witnesses count more).
+
+        Simple equal-weight for now; time-weighting can be a later refinement.
+        """
+        if not self.witness_events:
+            return 0.0
+        return sum(w.omega for w in self.witness_events) / len(self.witness_events)
+
+    def human_witnessed_count(self) -> int:
+        """Count of witness events from human witnesses."""
+        return sum(1 for w in self.witness_events if w.witness_id.startswith("human:"))
 
     def resolve_artifacts(self) -> "list[Any]":
         """Return ArtifactManifest objects for all artifact: prefixed refs.
@@ -363,6 +434,50 @@ class SkillCard(BaseModel):
     def now_iso() -> str:
         """Return current UTC time as an ISO-8601 string."""
         return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Witness helper
+# ---------------------------------------------------------------------------
+
+
+def record_witness(
+    verification: VerificationInfo,
+    *,
+    witness_id: str,
+    vote: int,  # +1 or -1
+    latency_ms: float,
+    agent_coherence: float,
+    sample_output_ref: Optional[str] = None,
+) -> VerificationInfo:
+    """Append a WitnessEvent to verification, computing physics via kernel.
+
+    This is the canonical path for recording a witness: the physics lives in
+    sos.kernel.physics.CoherencePhysics; this function wraps it + appends to
+    the SkillCard's verification record. Auto-transitions verification.status:
+      - first human positive vote: auto_verified -> human_verified
+      - any disputed: disputed
+    """
+    from sos.kernel.physics import CoherencePhysics
+
+    result = CoherencePhysics.compute_collapse_energy(vote, latency_ms, agent_coherence)
+    event = WitnessEvent(
+        witness_id=witness_id,
+        vote=vote,
+        latency_ms=latency_ms,
+        omega=result["omega"],
+        delta_c=result["delta_c"],
+        agent_coherence_snapshot=agent_coherence,
+        occurred_at=datetime.now(timezone.utc).isoformat(),
+        sample_output_ref=sample_output_ref,
+    )
+    updated_events = list(verification.witness_events) + [event]
+    new_status = verification.status
+    if witness_id.startswith("human:") and vote > 0 and new_status in ("unverified", "auto_verified"):
+        new_status = "human_verified"
+    elif vote < 0:
+        new_status = "disputed"
+    return verification.model_copy(update={"witness_events": updated_events, "status": new_status})
 
 
 # ---------------------------------------------------------------------------

@@ -177,6 +177,60 @@
           "type": "string",
           "description": "If status == disputed, why.",
           "maxLength": 2000
+        },
+        "witness_events": {
+          "type": "array",
+          "description": "Ordered log of WitnessEvents. Each carries CoherencePhysics energy per RC-7. Not in required — defaults to empty list for backward compat.",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": ["witness_id", "vote", "latency_ms", "omega", "delta_c", "agent_coherence_snapshot", "signature", "occurred_at"],
+            "additionalProperties": false,
+            "properties": {
+              "witness_id": {
+                "type": "string",
+                "description": "agent:<slug> or human:<slug>.",
+                "pattern": "^(agent|human):[a-z][a-z0-9-]*$"
+              },
+              "vote": {
+                "type": "integer",
+                "description": "+1 = verified, -1 = rejected.",
+                "enum": [-1, 1]
+              },
+              "latency_ms": {
+                "type": "number",
+                "description": "Time to decide in milliseconds.",
+                "minimum": 0
+              },
+              "omega": {
+                "type": "number",
+                "description": "Certainty 0..1 — output of CoherencePhysics.calculate_will_magnitude."
+              },
+              "delta_c": {
+                "type": "number",
+                "description": "Coherence change — output of CoherencePhysics.compute_collapse_energy."
+              },
+              "agent_coherence_snapshot": {
+                "type": "number",
+                "description": "C of the target agent at time of witness."
+              },
+              "signature": {
+                "type": "string",
+                "description": "Physics compliance signature.",
+                "enum": ["RC-7_COMPLIANT"]
+              },
+              "occurred_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "ISO 8601 UTC timestamp of the witness event."
+              },
+              "sample_output_ref": {
+                "type": "string",
+                "description": "Optional artifact: or engram: reference the witness evaluated.",
+                "pattern": "^(artifact:[0-9a-f]{64}|engram:[a-z0-9][a-z0-9-]{0,62})$"
+              }
+            }
+          }
         }
       }
     },
