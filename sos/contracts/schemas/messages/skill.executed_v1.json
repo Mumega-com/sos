@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/skill.executed_v1.json",
+  "title": "skill.executed v1",
+  "description": "Event emitted when a skill invocation completes, regardless of task state. Distinct from task.completed: a single task may involve multiple skill invocations. skill.executed fires once per invocation.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "skill.executed",
+      "description": "Message type discriminator. Always 'skill.executed' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9-]*$",
+      "description": "Bus identity of the agent that executed the skill."
+    },
+    "target": {
+      "type": "string",
+      "default": "sos:channel:skills",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+      "description": "Bus channel this message is published to. Defaults to 'sos:channel:skills'."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp at which this message was emitted."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "Schema version of this message. SemVer — major.minor or major.minor.patch."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message instance. UUID v4 recommended."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Data describing the completed skill invocation.",
+      "required": [
+        "skill_id",
+        "invocation_id",
+        "agent",
+        "started_at",
+        "completed_at",
+        "success"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Identifier of the skill that was invoked."
+        },
+        "invocation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Globally unique identifier for this specific skill invocation. UUID v4."
+        },
+        "agent": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Name of the agent that executed the skill."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the skill invocation began."
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the skill invocation ended."
+        },
+        "success": {
+          "type": "boolean",
+          "description": "True if the skill completed without error, false otherwise."
+        },
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Task that triggered this skill invocation, if applicable."
+        },
+        "tokens_spent": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total LLM tokens consumed during this skill invocation."
+        },
+        "cost_cents": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Computed cost of this skill invocation in US cents."
+        },
+        "error": {
+          "type": "object",
+          "description": "Structured error detail. Present when success is false.",
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^SOS-[A-Z0-9]{4,}$",
+              "description": "SOS error code in the format SOS-XXXX."
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable description of the error."
+            },
+            "traceback": {
+              "type": "string",
+              "description": "Full stack trace or exception chain. Optional."
+            }
+          }
+        }
+      }
+    }
+  }
+}

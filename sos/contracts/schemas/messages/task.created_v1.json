@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mumega.com/schemas/sos/messages/task_created_v1.json",
-  "title": "task_created v1",
+  "$id": "https://mumega.com/schemas/sos/messages/task.created_v1.json",
+  "title": "task.created v1",
   "description": "Event emitted by the squad service (port 8060) when a new task is added to the task board. Published to the SOS bus so interested agents and workers get notified.",
   "type": "object",
   "required": [
@@ -16,8 +16,8 @@
   "properties": {
     "type": {
       "type": "string",
-      "const": "task_created",
-      "description": "Message type discriminator. Always 'task_created' for this schema."
+      "const": "task.created",
+      "description": "Message type discriminator. Always 'task.created' for this schema."
     },
     "source": {
       "type": "string",

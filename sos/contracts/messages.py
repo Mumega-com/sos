@@ -5,10 +5,20 @@ Cross-language source of truth (JSON Schema, used by Python, Rust, TS):
   sos/contracts/schemas/messages/send_v1.json
   sos/contracts/schemas/messages/wake_v1.json
   sos/contracts/schemas/messages/ask_v1.json
-  sos/contracts/schemas/messages/task_created_v1.json
-  sos/contracts/schemas/messages/task_claimed_v1.json
-  sos/contracts/schemas/messages/task_completed_v1.json
+  sos/contracts/schemas/messages/task.created_v1.json
+  sos/contracts/schemas/messages/task.claimed_v1.json
+  sos/contracts/schemas/messages/task.completed_v1.json
+  sos/contracts/schemas/messages/task.routed_v1.json
+  sos/contracts/schemas/messages/task.failed_v1.json
+  sos/contracts/schemas/messages/skill.executed_v1.json
   sos/contracts/schemas/messages/agent_joined_v1.json
+
+Naming convention:
+  - Bus protocol types (announce, send, wake, ask, agent_joined): unchanged.
+  - Squad/kernel event types: dot-separated per SQUAD_EVENTS in
+    sos/contracts/squad.py (task.created, task.claimed, task.completed, etc.).
+  - Rule: kernel SQUAD_EVENTS wins. Add to SQUAD_EVENTS first, then create
+    v1 binding here, then update enforcement._V1_TYPES.
 
 Pydantic models here are the Python binding; the JSON Schemas above are
 authoritative.  A future Rust port will validate against those same schemas.
@@ -40,9 +50,12 @@ MessageType = Literal[
     "send",
     "wake",
     "ask",
-    "task_created",
-    "task_claimed",
-    "task_completed",
+    "task.created",
+    "task.claimed",
+    "task.completed",
+    "task.routed",
+    "task.failed",
+    "skill.executed",
     "agent_joined",
 ]
 
@@ -263,7 +276,7 @@ class AskMessage(BusMessage):
 
 
 # ---------------------------------------------------------------------------
-# TaskCreated
+# TaskCreated  (canonical type: "task.created" per SQUAD_EVENTS)
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +300,7 @@ class TaskCreatedPayload(BaseModel):
 class TaskCreatedMessage(BusMessage):
     """Event emitted when a new task is added to the task board."""
 
-    type: Literal["task_created"] = Field(default="task_created")  # type: ignore[assignment]
+    type: Literal["task.created"] = Field(default="task.created")  # type: ignore[assignment]
     target: str = Field(
         default="sos:channel:tasks",
         pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
@@ -296,7 +309,7 @@ class TaskCreatedMessage(BusMessage):
 
 
 # ---------------------------------------------------------------------------
-# TaskClaimed
+# TaskClaimed  (canonical type: "task.claimed" per SQUAD_EVENTS)
 # ---------------------------------------------------------------------------
 
 
@@ -311,7 +324,7 @@ class WorkerInfo(BaseModel):
 
 
 class TaskClaimedPayload(BaseModel):
-    """Domain data for the task_claimed event."""
+    """Domain data for the task.claimed event."""
 
     model_config = ConfigDict(strict=False)
 
@@ -332,7 +345,7 @@ class TaskClaimedPayload(BaseModel):
 class TaskClaimedMessage(BusMessage):
     """Event emitted when an agent atomically claims a task."""
 
-    type: Literal["task_claimed"] = Field(default="task_claimed")  # type: ignore[assignment]
+    type: Literal["task.claimed"] = Field(default="task.claimed")  # type: ignore[assignment]
     target: str = Field(
         default="sos:channel:tasks",
         pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
@@ -341,7 +354,7 @@ class TaskClaimedMessage(BusMessage):
 
 
 # ---------------------------------------------------------------------------
-# TaskCompleted
+# TaskCompleted  (canonical type: "task.completed" per SQUAD_EVENTS)
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +394,7 @@ class TaskCompletedPayload(BaseModel):
 class TaskCompletedMessage(BusMessage):
     """Event emitted by an agent when it finishes a task (successfully or otherwise)."""
 
-    type: Literal["task_completed"] = Field(default="task_completed")  # type: ignore[assignment]
+    type: Literal["task.completed"] = Field(default="task.completed")  # type: ignore[assignment]
     target: str = Field(
         default="sos:channel:tasks",
         pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
@@ -390,7 +403,135 @@ class TaskCompletedMessage(BusMessage):
 
 
 # ---------------------------------------------------------------------------
-# AgentJoined
+# TaskRouted  (canonical type: "task.routed" per SQUAD_EVENTS)
+# ---------------------------------------------------------------------------
+
+
+class TaskRoutedPayload(BaseModel):
+    """Data describing the Brain's routing decision for a task."""
+
+    model_config = ConfigDict(strict=False)
+
+    task_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    routed_to: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    routed_at: str
+    score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reason: Optional[str] = Field(default=None, max_length=1024)
+    skill_matched: Optional[str] = None
+    fallback: bool = False
+
+    @field_validator("routed_at")
+    @classmethod
+    def _parse_routed_at(cls, v: str) -> str:
+        """Validate routed_at is ISO 8601."""
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
+
+class TaskRoutedMessage(BusMessage):
+    """Event emitted by the Brain service when it selects an agent for a task."""
+
+    type: Literal["task.routed"] = Field(default="task.routed")  # type: ignore[assignment]
+    target: str = Field(
+        default="sos:channel:tasks",
+        pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+    )
+    payload: TaskRoutedPayload
+
+
+# ---------------------------------------------------------------------------
+# TaskFailed  (canonical type: "task.failed" per SQUAD_EVENTS)
+# ---------------------------------------------------------------------------
+
+
+class TaskFailedPayload(BaseModel):
+    """Data describing an explicit task failure event."""
+
+    model_config = ConfigDict(strict=False)
+
+    task_id: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    failed_at: str
+    error: TaskError
+    retryable: bool = False
+    retry_count: Optional[int] = Field(default=None, ge=0)
+    assigned_to: Optional[str] = Field(default=None, pattern=r"^[a-z][a-z0-9-]*$")
+
+    @field_validator("failed_at")
+    @classmethod
+    def _parse_failed_at(cls, v: str) -> str:
+        """Validate failed_at is ISO 8601."""
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
+
+class TaskFailedMessage(BusMessage):
+    """Explicit failure event distinct from task.completed with status=failed.
+
+    Use this when the failure is detected externally (watchdog, timeout
+    handler, Brain service) rather than by the executing agent itself.
+    """
+
+    type: Literal["task.failed"] = Field(default="task.failed")  # type: ignore[assignment]
+    target: str = Field(
+        default="sos:channel:tasks",
+        pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+    )
+    payload: TaskFailedPayload
+
+
+# ---------------------------------------------------------------------------
+# SkillExecuted  (canonical type: "skill.executed" per SQUAD_EVENTS)
+# ---------------------------------------------------------------------------
+
+
+class SkillExecutedPayload(BaseModel):
+    """Data describing a completed skill invocation (regardless of task state).
+
+    Distinct from task.completed: a single task may involve multiple skill
+    invocations. skill.executed fires once per invocation.
+    """
+
+    model_config = ConfigDict(strict=False)
+
+    skill_id: str = Field(min_length=1, max_length=128)
+    invocation_id: str
+    agent: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    started_at: str
+    completed_at: str
+    success: bool
+    task_id: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9_-]+$")
+    tokens_spent: Optional[int] = Field(default=None, ge=0)
+    cost_cents: Optional[int] = Field(default=None, ge=0)
+    error: Optional[TaskError] = None
+
+    @field_validator("invocation_id")
+    @classmethod
+    def _parse_invocation_id(cls, v: str) -> str:
+        """Validate invocation_id is a UUID."""
+        _uuid_mod.UUID(v)
+        return v
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def _parse_datetime(cls, v: str) -> str:
+        """Validate datetime fields are ISO 8601."""
+        datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return v
+
+
+class SkillExecutedMessage(BusMessage):
+    """Event emitted when a skill invocation completes, regardless of task state."""
+
+    type: Literal["skill.executed"] = Field(default="skill.executed")  # type: ignore[assignment]
+    target: str = Field(
+        default="sos:channel:skills",
+        pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+    )
+    payload: SkillExecutedPayload
+
+
+# ---------------------------------------------------------------------------
+# AgentJoined  (bus protocol type — not a SQUAD_EVENTS entry)
 # ---------------------------------------------------------------------------
 
 
@@ -438,9 +579,12 @@ _TYPE_MAP: dict[str, type[BusMessage]] = {
     "send": SendMessage,
     "wake": WakeMessage,
     "ask": AskMessage,
-    "task_created": TaskCreatedMessage,
-    "task_claimed": TaskClaimedMessage,
-    "task_completed": TaskCompletedMessage,
+    "task.created": TaskCreatedMessage,
+    "task.claimed": TaskClaimedMessage,
+    "task.completed": TaskCompletedMessage,
+    "task.routed": TaskRoutedMessage,
+    "task.failed": TaskFailedMessage,
+    "skill.executed": SkillExecutedMessage,
     "agent_joined": AgentJoinedMessage,
 }
 

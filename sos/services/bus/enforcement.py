@@ -54,15 +54,21 @@ class MessageValidationError(ValueError):
         self.original_type = original_type
 
 
-# Known v1 message types (must match the Literal in sos.contracts.messages)
+# Known v1 message types (must match the Literal in sos.contracts.messages).
+# Squad/kernel event types use dot-separated names per SQUAD_EVENTS in
+# sos/contracts/squad.py. Bus protocol types (announce, send, wake, ask,
+# agent_joined) keep their original names.
 _V1_TYPES: set[str] = {
     "announce",
     "send",
     "wake",
     "ask",
-    "task_created",
-    "task_claimed",
-    "task_completed",
+    "task.created",
+    "task.claimed",
+    "task.completed",
+    "task.routed",
+    "task.failed",
+    "skill.executed",
     "agent_joined",
 }
 
@@ -76,7 +82,7 @@ def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
     """Validate a bus message dict before XADD.
 
     Contract (v0.4.0 — strict):
-      - msg['type'] must be one of the 8 v1 types; otherwise raise
+      - msg['type'] must be one of the 11 v1 types; otherwise raise
         MessageValidationError with SOS-4004 (unknown type).
       - The message must parse against its v1 schema via parse_message().
         On failure, raise MessageValidationError with SOS-4001.

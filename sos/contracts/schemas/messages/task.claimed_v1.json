@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mumega.com/schemas/sos/messages/task_claimed_v1.json",
+  "$id": "https://mumega.com/schemas/sos/messages/task.claimed_v1.json",
   "title": "SOS Task Claimed Message",
   "description": "Event emitted when an agent atomically claims a task. Published to the bus so dispatchers and other workers know the task is locked to a specific claimant.",
   "type": "object",
@@ -17,8 +17,8 @@
   "properties": {
     "type": {
       "type": "string",
-      "const": "task_claimed",
-      "description": "Message type discriminator. Always 'task_claimed' for this schema."
+      "const": "task.claimed",
+      "description": "Message type discriminator. Always 'task.claimed' for this schema."
     },
     "source": {
       "type": "string",
@@ -48,7 +48,7 @@
     },
     "payload": {
       "type": "object",
-      "description": "Domain data for the task_claimed event.",
+      "description": "Domain data for the task.claimed event.",
       "required": [
         "task_id",
         "claimed_at"

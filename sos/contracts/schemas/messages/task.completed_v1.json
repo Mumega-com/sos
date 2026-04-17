@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mumega.com/schemas/sos/messages/task_completed_v1.json",
+  "$id": "https://mumega.com/schemas/sos/messages/task.completed_v1.json",
   "title": "SOS Task Completed Message",
   "description": "Event emitted by an agent when it finishes a task (successfully or otherwise). Triggers feedback loop, settlement, and ledger entry on the SOS bus.",
   "type": "object",
@@ -16,8 +16,8 @@
   "properties": {
     "type": {
       "type": "string",
-      "const": "task_completed",
-      "description": "Discriminator field identifying this as a task_completed event."
+      "const": "task.completed",
+      "description": "Discriminator field identifying this as a task.completed event."
     },
     "source": {
       "type": "string",

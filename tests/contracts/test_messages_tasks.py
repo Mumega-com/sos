@@ -2,6 +2,9 @@
 
 These tests are the freeze point: if they pass, any implementation (Python,
 Rust, TypeScript) that emits records passing them is wire-compatible.
+
+Naming: squad/kernel event types use dot-separated names (task.created,
+task.claimed, task.completed) per SQUAD_EVENTS in sos/contracts/squad.py.
 """
 from __future__ import annotations
 
@@ -34,7 +37,7 @@ def _mid() -> str:
 
 def _task_kwargs(payload: dict) -> dict:
     return {
-        "type": "task_created",
+        "type": "task.created",
         "source": "agent:squad",
         "timestamp": _now(),
         "version": "1.0",
@@ -45,7 +48,7 @@ def _task_kwargs(payload: dict) -> dict:
 
 def _claimed_kwargs(payload: dict) -> dict:
     return {
-        "type": "task_claimed",
+        "type": "task.claimed",
         "source": "agent:kasra",
         "timestamp": _now(),
         "version": "1.0",
@@ -56,7 +59,7 @@ def _claimed_kwargs(payload: dict) -> dict:
 
 def _completed_kwargs(payload: dict) -> dict:
     return {
-        "type": "task_completed",
+        "type": "task.completed",
         "source": "agent:kasra",
         "timestamp": _now(),
         "version": "1.0",
@@ -104,6 +107,16 @@ def test_task_created_minimal():
     assert msg.payload.description is None
     assert msg.payload.assignee is None
     assert msg.payload.labels is None
+
+
+def test_task_created_type_is_dot_separated():
+    """Canonical type uses dot-separated naming per SQUAD_EVENTS."""
+    msg = TaskCreatedMessage(**_task_kwargs({
+        "task_id": "TASK-001",
+        "title": "Test naming",
+        "priority": "low",
+    }))
+    assert msg.type == "task.created"
 
 
 def test_task_created_with_all_optionals():
@@ -176,6 +189,15 @@ def test_task_claimed_minimal():
     assert msg.payload.worker_info is None
 
 
+def test_task_claimed_type_is_dot_separated():
+    """Canonical type uses dot-separated naming per SQUAD_EVENTS."""
+    msg = TaskClaimedMessage(**_claimed_kwargs({
+        "task_id": "TASK-007",
+        "claimed_at": _now(),
+    }))
+    assert msg.type == "task.claimed"
+
+
 def test_task_claimed_with_worker_info():
     msg = TaskClaimedMessage(**_claimed_kwargs({
         "task_id": "TASK-008",
@@ -208,6 +230,16 @@ def test_task_completed_status_done():
     assert msg.payload.status == "done"
     assert msg.payload.duration_s == 45
     assert msg.payload.cost_cents == 18
+
+
+def test_task_completed_type_is_dot_separated():
+    """Canonical type uses dot-separated naming per SQUAD_EVENTS."""
+    msg = TaskCompletedMessage(**_completed_kwargs({
+        "task_id": "TASK-009",
+        "status": "done",
+        "completed_at": _now(),
+    }))
+    assert msg.type == "task.completed"
 
 
 def test_task_completed_status_failed_with_error():
