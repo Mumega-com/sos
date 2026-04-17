@@ -26,7 +26,7 @@ from sos.services.engine.core import SOSEngine
 from sos.services.engine.middleware import capability_guard_middleware
 from sos.kernel.bus import get_bus
 from sos.services.engine.openai_router import router as openai_router
-from sos.services._health import health_response
+from sos.kernel.health import health_response
 
 SERVICE_NAME = "engine"
 _START_TIME = time.time()

@@ -14,7 +14,7 @@ from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 from sos.services.economy.settlement import settle_usage_event, SettlementResult
-from sos.services._health import health_response
+from sos.kernel.health import health_response
 
 SERVICE_NAME = "economy"
 _START_TIME = time.time()

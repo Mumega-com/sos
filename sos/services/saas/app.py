@@ -26,7 +26,7 @@ from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, Ten
 from sos.services.saas.notifications import get_router as get_notification_router
 from sos.services.saas.pairing import router as pairing_router
 from sos.services.saas.registry import TenantRegistry
-from sos.services._health import health_response
+from sos.kernel.health import health_response
 
 # Configure structured logging
 setup_logging("saas")

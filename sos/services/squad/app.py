@@ -10,7 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from sos import __version__
-from sos.services._health import health_response
+from sos.kernel.health import health_response
 from sos.contracts.squad import (
     LoadingLevel,
     PipelineSpec,
