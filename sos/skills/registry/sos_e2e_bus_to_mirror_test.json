@@ -1,0 +1,100 @@
+{
+  "schema_version": "1",
+  "id": "sos-e2e-bus-to-mirror-test-v1",
+  "name": "E2E: bus \u2192 mirror engram + consistent /health shape",
+  "version": "1.0.0",
+  "description": "Ships the first proper end-to-end integration test proving the full write loop: send a v1 message to sos:stream \u2192 bus consumer picks it up \u2192 engram lands in Mirror within 2s. Also normalizes every service's /health endpoint to the same JSON shape: {status, service, version, uptime_seconds, dependencies: [...]}. Adds tests/integration/ scaffold with fixtures for spinning up a redis client + mirror db connection.",
+  "tags": [
+    "sos",
+    "e2e",
+    "tests",
+    "integration",
+    "observability",
+    "internal"
+  ],
+  "author_agent": "agent:sos-dev",
+  "authored_by_ai": true,
+  "created_at": "2026-04-18T10:01:00Z",
+  "updated_at": "2026-04-18T10:01:00Z",
+  "lineage": [],
+  "earnings": {
+    "total_invocations": 0,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "invocations_by_tenant": {}
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "services_to_normalize": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "dashboard",
+          "economy",
+          "saas",
+          "squad",
+          "engine",
+          "mirror"
+        ]
+      },
+      "integration_test_dir": {
+        "type": "string",
+        "default": "tests/integration"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "health_services_normalized": {
+        "type": "integer"
+      },
+      "e2e_tests_added": {
+        "type": "integer"
+      }
+    }
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.7,
+      "operator": 0.2,
+      "network": 0.1
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-e2e-bus-to-mirror-test.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ],
+    "version_target": "v0.4.2"
+  }
+}
