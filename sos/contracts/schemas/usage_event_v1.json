@@ -72,8 +72,24 @@
     },
     "metadata": {
       "type": "object",
-      "description": "Tenant-side free-form correlation bag. Examples: request_id, report_id, session_id.",
-      "additionalProperties": true
+      "description": "Tenant-side free-form correlation bag. Examples: request_id, report_id, session_id. Settlement fields (settlement_status, transaction_id, settlement_errors) are written by the economy service after island #4 settlement.",
+      "additionalProperties": true,
+      "properties": {
+        "settlement_status": {
+          "type": "string",
+          "description": "Written by economy service. Values: 'settled' | 'deferred' | 'skipped'. Present only when a settlement attempt was made.",
+          "enum": ["settled", "deferred", "skipped"]
+        },
+        "transaction_id": {
+          "type": "string",
+          "description": "ID of the primary USAGE_CHARGE Transaction created by settle_usage_event. Set only on settled events."
+        },
+        "settlement_errors": {
+          "type": "array",
+          "description": "Error strings from a failed settlement attempt. Present only when settlement_status=deferred.",
+          "items": { "type": "string" }
+        }
+      }
     },
     "occurred_at": {
       "type": "string",

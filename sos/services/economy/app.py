@@ -13,6 +13,7 @@ from sos.observability.logging import get_logger
 from sos.services.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
+from sos.services.economy.settlement import settle_usage_event, SettlementResult
 from sos.services._health import health_response
 
 SERVICE_NAME = "economy"
@@ -20,7 +21,8 @@ _START_TIME = time.time()
 
 log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
 
-_usage_log = UsageLog()
+wallet = SovereignWallet()
+_usage_log = UsageLog(wallet=wallet)
 
 app = FastAPI(title="SOS Economy Service", version=__version__)
 
@@ -32,8 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-wallet = SovereignWallet()
 
 class BalanceResponse(BaseModel):
     user_id: str
@@ -246,3 +246,63 @@ async def list_usage(
         )
     events = _usage_log.read_all(tenant=filter_tenant, limit=max(1, min(1000, limit)))
     return {"events": [e.to_dict() for e in events], "count": len(events)}
+
+
+# ---------------------------------------------------------------------------
+# Settlement retry endpoint (island #4)
+# ---------------------------------------------------------------------------
+
+
+class SettleResponse(BaseModel):
+    usage_event_id: str
+    settlement_status: str
+    total_charged: int
+    total_creator_credit: int
+    total_platform_fee: int
+    errors: list[str]
+
+
+@app.post("/settle/{usage_event_id}", response_model=SettleResponse)
+async def retry_settle(
+    usage_event_id: str,
+    authorization: Optional[str] = Header(None),
+) -> SettleResponse:
+    """Retry settlement for a deferred UsageEvent.  Admin-only.
+
+    Looks up the event in the log by id, re-runs ``settle_usage_event``, and
+    returns the result.  Does NOT rewrite the JSONL — callers can poll
+    ``GET /usage`` to see the updated ``metadata.settlement_status``.
+    """
+    entry = _verify_bearer(authorization)
+    # Admin check: is_admin (kasra/mumega) OR system-scoped token (no project)
+    is_privileged = entry.get("is_admin") or entry.get("is_system") or (
+        not entry.get("project") and not entry.get("tenant_slug")
+    )
+    if not is_privileged:
+        raise HTTPException(status_code=403, detail="admin token required for settlement retry")
+
+    # Find the event
+    events = _usage_log.read_all()
+    matches = [e for e in events if e.id == usage_event_id]
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"usage event '{usage_event_id}' not found")
+
+    event = matches[-1]  # take the last (most recent) entry for this id
+    result: SettlementResult = await settle_usage_event(event, wallet)
+
+    if result.settlement_status == "settled":
+        # Patch event metadata and append corrected record to the log
+        event.metadata["settlement_status"] = "settled"
+        if result.outcomes:
+            event.metadata["transaction_id"] = result.outcomes[0].transaction_id
+        _usage_log._write_line(event)  # type: ignore[attr-defined]
+        log.info("deferred settlement resolved via API", event_id=usage_event_id)
+
+    return SettleResponse(
+        usage_event_id=result.usage_event_id,
+        settlement_status=result.settlement_status,
+        total_charged=result.total_charged,
+        total_creator_credit=result.total_creator_credit,
+        total_platform_fee=result.total_platform_fee,
+        errors=result.errors,
+    )

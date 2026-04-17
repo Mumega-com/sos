@@ -27,6 +27,9 @@ class TransactionType(Enum):
     WITHDRAWAL = "withdrawal"   # External withdrawal
     REWARD = "reward"           # Bonus/incentive reward
     FEE = "fee"                 # Service fee
+    USAGE_CHARGE = "usage_charge"   # Debit for a metered model-call (UsageEvent driven)
+    SKILL_PAYOUT = "skill_payout"   # 85% creator share from a usage charge
+    PLATFORM_FEE = "platform_fee"   # 15% platform share credited to agent:treasury
 
 
 class TransactionStatus(Enum):
