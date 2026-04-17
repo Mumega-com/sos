@@ -43,7 +43,7 @@ def auth_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Return a fresh import of sos.services.auth with a patched TOKENS_PATH."""
     import importlib
 
-    import sos.services.auth as auth
+    import sos.kernel.auth as auth
 
     tokens_file = tmp_path / "tokens.json"
     tokens_file.write_text(json.dumps([]))
@@ -318,7 +318,7 @@ def test_cache_invalidation_rereads_file(auth_module):
 
 def test_missing_tokens_json_returns_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """If tokens.json doesn't exist, verify_bearer should return None gracefully."""
-    import sos.services.auth as auth
+    import sos.kernel.auth as auth
 
     nonexistent = tmp_path / "no_such_tokens.json"
     monkeypatch.setattr(auth, "TOKENS_PATH", nonexistent)

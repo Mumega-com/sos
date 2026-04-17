@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException
 
 from sos.contracts.brain_snapshot import BrainSnapshot
-from sos.services.auth import verify_bearer
+from sos.kernel.auth import verify_bearer
 
 from ..redis_helper import _get_redis
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from sos import __version__
 from sos.observability.logging import get_logger
-from sos.services.auth import verify_bearer as _auth_verify_bearer
+from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 from sos.services.economy.settlement import settle_usage_event, SettlementResult

@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from sos.services.auth import verify_bearer as _auth_verify_bearer
+from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 
 logger = logging.getLogger("dashboard")
 

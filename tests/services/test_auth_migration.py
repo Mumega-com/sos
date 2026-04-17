@@ -59,7 +59,7 @@ def _strip_env_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 def patched_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Return (auth_module, tokens_file) with TOKENS_PATH pointed at tmp_path."""
     import importlib
-    import sos.services.auth as auth
+    import sos.kernel.auth as auth
 
     tokens_file = _write_tokens(tmp_path, [])
     monkeypatch.setattr(auth, "TOKENS_PATH", tokens_file)
@@ -342,7 +342,7 @@ def _get_mirror_resolve_token():
 def test_mirror_resolve_token_scoped_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """resolve_token must return 'sos:<project>' for a project-scoped SOS bus token."""
     pytest.importorskip("mirror_api", reason="mirror_api not importable")  # soft-skip if no db
-    import sos.services.auth as auth
+    import sos.kernel.auth as auth
 
     raw = "sk-mirror-scoped-001"
     tokens_file = _write_tokens(
@@ -368,7 +368,7 @@ def test_mirror_resolve_token_scoped_project(tmp_path: Path, monkeypatch: pytest
 def test_mirror_resolve_token_internal_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """resolve_token must return None for an internal (no-project) SOS bus token."""
     pytest.importorskip("mirror_api", reason="mirror_api not importable")
-    import sos.services.auth as auth
+    import sos.kernel.auth as auth
 
     raw = "sk-mirror-internal-001"
     tokens_file = _write_tokens(

@@ -48,7 +48,7 @@ from sos.mcp.customer_tools import (
 )
 from sos.services.saas.rate_limiter import check_rate_limit
 from sos.services.saas.marketplace import Marketplace
-from sos.services.auth import verify_bearer as _auth_verify_bearer
+from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
 _marketplace = Marketplace()

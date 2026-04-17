@@ -38,7 +38,7 @@ def tokens_file(tmp_path, monkeypatch):
     ]
     p = tmp_path / "tokens.json"
     p.write_text(json.dumps(tokens))
-    import sos.services.auth as auth_mod
+    import sos.kernel.auth as auth_mod
     monkeypatch.setattr(auth_mod, "TOKENS_PATH", p)
     auth_mod._cache.invalidate()
     return p

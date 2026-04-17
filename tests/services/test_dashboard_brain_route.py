@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
     HAS_FAKEREDIS = False
 
 from sos.contracts.brain_snapshot import BrainSnapshot
-from sos.services.auth import AuthContext
+from sos.kernel.auth import AuthContext
 from sos.services.brain.service import (
     _BRAIN_SNAPSHOT_KEY,
     BrainService,

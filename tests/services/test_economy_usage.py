@@ -33,8 +33,8 @@ def tokens_file(tmp_path, monkeypatch):
     ]
     p = tmp_path / "tokens.json"
     p.write_text(json.dumps(tokens))
-    # Economy now delegates to sos.services.auth — patch TOKENS_PATH there.
-    import sos.services.auth as auth_mod
+    # Economy now delegates to sos.kernel.auth — patch TOKENS_PATH there.
+    import sos.kernel.auth as auth_mod
     monkeypatch.setattr(auth_mod, "TOKENS_PATH", p)
     auth_mod._cache.invalidate()
     return p

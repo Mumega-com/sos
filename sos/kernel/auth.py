@@ -40,7 +40,7 @@ logger = logging.getLogger("sos.auth")
 # Paths & constants
 # ---------------------------------------------------------------------------
 
-TOKENS_PATH = Path(__file__).resolve().parent.parent.parent / "bus" / "tokens.json"
+TOKENS_PATH = Path(__file__).resolve().parent.parent / "bus" / "tokens.json"
 
 # Env vars whose values count as "system-level" tokens when matched.
 # Tuple of (env_var_name, is_admin_scope).

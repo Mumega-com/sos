@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sos.contracts.brain_snapshot import BrainSnapshot
 from sos.contracts.messages import AgentJoinedMessage  # noqa: F401 — for clarity
 from sos.kernel.identity import AgentIdentity
-from sos.services.auth import AuthContext
+from sos.kernel.auth import AuthContext
 from sos.services.brain import service as brain_service_module
 from sos.services.brain.service import BrainService, _BRAIN_SNAPSHOT_KEY
 from sos.services.dashboard.routes import brain as brain_route
