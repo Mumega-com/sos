@@ -28,13 +28,24 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sos.contracts.errors import (
+    BusValidationError,
+    EnvelopeError,
+    SourcePatternError,
+    UnknownTypeError,
+)
 from sos.contracts.messages import MessageType, parse_message
 
 logger = logging.getLogger(__name__)
 
 
 class MessageValidationError(ValueError):
-    """Raised when a v1-typed message fails schema validation."""
+    """Raised when a v1-typed message fails schema validation.
+
+    Kept for backward compatibility with call sites that catch this class.
+    New code should catch the typed SOSError subclasses directly
+    (BusValidationError, EnvelopeError, SourcePatternError, UnknownTypeError).
+    """
 
     def __init__(self, code: str, message: str, original_type: str | None = None) -> None:
         super().__init__(f"[{code}] {message}")
@@ -82,36 +93,52 @@ def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
     msg_type = msg_dict.get("type")
 
     if not msg_type:
-        raise MessageValidationError(
-            "SOS-4002",
+        typed_exc = EnvelopeError(
             "message envelope has no 'type' field",
         )
+        raise MessageValidationError(
+            typed_exc.code,
+            typed_exc.message,
+        ) from typed_exc
 
     if not is_v1_type(msg_type):
-        raise MessageValidationError(
-            "SOS-4004",
+        typed_exc = UnknownTypeError(
             f"unknown message type {msg_type!r}; expected one of: "
             + ", ".join(sorted(_V1_TYPES)),
+            details={"original_type": msg_type},
+        )
+        err = MessageValidationError(
+            typed_exc.code,
+            typed_exc.message,
             original_type=msg_type,
         )
+        raise err from typed_exc
 
     # Known v1 type — full schema validation.
     try:
         parsed = parse_message(msg_dict)
     except Exception as exc:
-        raise MessageValidationError(
-            "SOS-4001",
+        typed_exc = BusValidationError(
             f"v1 type '{msg_type}' failed schema validation: {exc}",
+            details={"original_type": msg_type},
+        )
+        raise MessageValidationError(
+            typed_exc.code,
+            typed_exc.message,
             original_type=msg_type,
-        ) from exc
+        ) from typed_exc
 
     # Source sanity — pattern is enforced by Pydantic; defense in depth here.
     if not parsed.source or not parsed.source.startswith("agent:"):
-        raise MessageValidationError(
-            "SOS-4003",
+        typed_exc = SourcePatternError(
             f"source field missing or malformed: {parsed.source!r}",
-            original_type=msg_type,
+            details={"original_type": msg_type},
         )
+        raise MessageValidationError(
+            typed_exc.code,
+            typed_exc.message,
+            original_type=msg_type,
+        ) from typed_exc
 
     return msg_dict
 

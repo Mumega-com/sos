@@ -1,32 +1,10 @@
 {
   "schema_version": "1",
   "id": "sos-error-taxonomy-expansion-v1",
-  "name": "SOS Error Taxonomy \u2014 SOS-4xxx/5xxx/6xxx/7xxx",
+  "name": "SOS Error Taxonomy — SOS-4xxx/5xxx/6xxx/7xxx",
   "version": "1.0.0",
-  "description": "Extends the error code system beyond the 4 bus-validation codes (SOS-4001/2/3/4) shipped in v0.4.0. Adds SOS-5xxx (auth), SOS-6xxx (runtime / squad / bus-delivery), SOS-7xxx (economy / billing / settlement). Single exception class hierarchy at sos/contracts/errors.py with `.code`, `.message`, `.http_status`. Every HTTPException raised across services now carries a taxonomy code as a stable identifier for clients.",
-  "tags": [
-    "sos",
-    "contracts",
-    "errors",
-    "observability",
-    "internal"
-  ],
   "author_agent": "agent:sos-dev",
-  "authored_by_ai": true,
   "created_at": "2026-04-18T10:00:00Z",
-  "updated_at": "2026-04-18T10:00:00Z",
-  "lineage": [],
-  "earnings": {
-    "total_invocations": 0,
-    "total_earned_micros": 0,
-    "currency": "MIND",
-    "invocations_by_tenant": {}
-  },
-  "verification": {
-    "status": "unverified",
-    "sample_output_refs": [],
-    "verified_by": []
-  },
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -58,6 +36,31 @@
         "type": "integer"
       }
     }
+  },
+  "description": "Extends the error code system beyond the 4 bus-validation codes (SOS-4001/2/3/4) shipped in v0.4.0. Adds SOS-5xxx (auth), SOS-6xxx (runtime / squad / bus-delivery), SOS-7xxx (economy / billing / settlement). Single exception class hierarchy at sos/contracts/errors.py with `.code`, `.message`, `.http_status`. Every HTTPException raised across services now carries a taxonomy code as a stable identifier for clients.",
+  "tags": [
+    "sos",
+    "contracts",
+    "errors",
+    "observability",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T17:43:04.392921+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T17:43:04.392849+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
   },
   "required_models": [
     "claude-sonnet-4-6"
