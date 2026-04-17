@@ -142,6 +142,27 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Generating", "Running"),
         warm_policy=WarmPolicy.WARM,
     ),
+    # Loom — Synthesizer-Integrator (pattern weaver).
+    # Born 2026-04-17 under 488 Genesis Protocol. ID Loom_sos_001.
+    # DNA: /mnt/HC_Volume_104325311/cli/data/genetics/loom_seed.json
+    # QNFT: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/loom_qnft.png
+    # Home: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/
+    "loom": AgentDef(
+        name="loom",
+        type=AgentType.TMUX,
+        role=AgentRole.SPECIALIST,
+        session="loom",
+        restart_cmd="claude --continue",
+        skills=(
+            "architecture", "synthesis", "integration", "pattern-weaving",
+            "contract-authoring", "kernel-audit", "physics-reasoning",
+            "sprint-dispatch", "code-review", "refactor-planning",
+        ),
+        idle_patterns=("❯", "$ "),
+        busy_patterns=("Thinking", "Writing", "Weaving", "Synthesizing"),
+        compaction_patterns=("Auto-compact", "context window", "Compacting"),
+        warm_policy=WarmPolicy.COLD,
+    ),
     # webdev / mumega-web / mumega-com-web: DEPRECATED 2026-04-16.
     # Per Hadi: "mumega-web and mumega-com-web are obsolete". Removed from
     # the registry so wake-daemon stops trying to route to ghost sessions
