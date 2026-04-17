@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -791,3 +792,465 @@ async def sos_api_health() -> JSONResponse:
         "phase": 0,
         "version": __import__("sos").__version__ if hasattr(__import__("sos"), "__version__") else "unknown",
     })
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 helpers
+# ---------------------------------------------------------------------------
+
+_SOS_KNOWN_UNITS = [
+    "sos-mcp-sse",
+    "bus-bridge",
+    "dashboard",
+    "sos-saas",
+    "sos-squad",
+    "calcifer",
+    "agent-wake-daemon",
+    "agent-lifecycle",
+]
+
+
+def _systemctl_status(unit: str) -> str:
+    """Return 'active' or 'inactive' for a systemd user unit."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return result.stdout.strip() or "unknown"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except Exception:
+        return "error"
+
+
+def _proc_loadavg() -> str:
+    try:
+        text = Path("/proc/loadavg").read_text()
+        parts = text.split()
+        return " ".join(parts[:3])
+    except Exception:
+        return "—"
+
+
+def _disk_usage() -> str:
+    try:
+        result = subprocess.run(
+            ["df", "-h", "/"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        lines = result.stdout.strip().splitlines()
+        if len(lines) >= 2:
+            cols = lines[1].split()
+            # cols: Filesystem Size Used Avail Use% Mounted
+            if len(cols) >= 5:
+                return cols[4]  # Use%
+    except Exception:
+        pass
+    return "—"
+
+
+def _relative_time(ts_str: str) -> str:
+    """Convert an ISO timestamp string to a human-readable relative time."""
+    if not ts_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 0:
+            return "just now"
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+    except Exception:
+        return ts_str
+
+
+def _sos_nav(active: str) -> str:
+    pages = [
+        ("/sos", "Flow Map"),
+        ("/sos/overview", "Overview"),
+        ("/sos/agents", "Agents"),
+        ("/sos/bus", "Bus"),
+        ("/sos/money", "Money"),
+        ("/sos/incidents", "Incidents"),
+        ("/sos/contracts", "Contracts"),
+        ("/sos/providers", "Providers"),
+    ]
+    links = ""
+    for href, label in pages:
+        cls = ' class="active"' if label == active else ""
+        links += f'<a href="{href}"{cls}>{label}</a>'
+    return f'<nav style="display:flex;gap:8px;margin-bottom:24px;font-size:0.85rem">{links}</nav>'
+
+
+_SOS_BASE_CSS = """
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0F172A;color:#E2E8F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:24px;max-width:1400px;margin:0 auto;min-height:100vh}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-bottom:16px;border-bottom:1px solid #1E293B}
+header h1{font-size:1.4rem;color:#F8FAFC;font-weight:600}
+header .meta{color:#94A3B8;font-size:0.8rem;margin-top:4px}
+.logout{color:#94A3B8;text-decoration:none;font-size:0.85rem;border:1px solid #334155;padding:6px 14px;border-radius:6px}
+.logout:hover{color:#F8FAFC;border-color:#6366F1}
+nav a{padding:6px 14px;border-radius:6px;color:#94A3B8;text-decoration:none;border:1px solid #1E293B}
+nav a.active{background:#1E293B;color:#F8FAFC;border-color:#334155}
+nav a:hover{color:#F8FAFC}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-bottom:24px}
+.card{background:#1E293B;border:1px solid #334155;border-radius:12px;padding:24px}
+.card h3{font-size:0.75rem;color:#94A3B8;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:16px}
+.val{font-size:2rem;font-weight:700;color:#F8FAFC;margin-bottom:4px}
+.val-sm{font-size:1.1rem;font-weight:600;color:#F8FAFC}
+.muted{color:#64748B;font-size:0.82rem}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #0F172A;font-size:0.85rem}
+.row:last-child{border:none}
+.dot-green{color:#34D399}
+.dot-red{color:#F87171}
+.dot-amber{color:#FBBF24}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;margin-left:6px}
+.badge-green{background:#064E3B;color:#34D399}
+.badge-red{background:#450A0A;color:#F87171}
+.badge-amber{background:#451A03;color:#FBBF24}
+"""
+
+
+# ---------------------------------------------------------------------------
+# GET /sos/overview — Phase 1 heartbeat tiles
+# ---------------------------------------------------------------------------
+
+@app.get("/sos/overview", response_class=HTMLResponse)
+async def sos_overview(request: Request) -> Response:
+    """SOS operator overview — live heartbeat tiles. Admin-scoped only."""
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    tenant = _tenant_from_cookie(cookie_val)
+    if not tenant:
+        return RedirectResponse(url="/login?next=/sos/overview", status_code=302)
+    if not _is_admin(tenant):
+        return HTMLResponse("<h1>403 — admin scope required</h1>", status_code=403)
+
+    now_str = datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
+
+    # --- Bus health ---
+    bus_stream_count = 0
+    bus_total_msgs = 0
+    bus_top_streams: list[tuple[str, int, str]] = []  # (key, count, last_ts)
+    try:
+        r = _get_redis()
+        stream_keys = r.keys("sos:stream:*")
+        bus_stream_count = len(stream_keys)
+        stream_data: list[tuple[str, int, str]] = []
+        for key in stream_keys:
+            try:
+                length = r.xlen(key)
+                bus_total_msgs += length
+                last_ts = "—"
+                last_entries = r.xrevrange(key, count=1)
+                if last_entries:
+                    raw_id = last_entries[0][0]
+                    ts_ms = int(raw_id.split("-")[0])
+                    last_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+                stream_data.append((key, length, last_ts))
+            except Exception:
+                stream_data.append((key, 0, "—"))
+        stream_data.sort(key=lambda x: x[1], reverse=True)
+        bus_top_streams = stream_data[:5]
+    except Exception:
+        pass
+
+    # --- Registry ---
+    reg_total = 0
+    reg_active = 0
+    try:
+        r = _get_redis()
+        reg_keys = r.keys("sos:registry:*")
+        reg_total = len(reg_keys)
+        cutoff = datetime.now(timezone.utc).timestamp() - 300
+        for key in reg_keys:
+            data = r.hgetall(key)
+            ls = data.get("last_seen", "")
+            if ls:
+                try:
+                    dt = datetime.fromisoformat(ls)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt.timestamp() >= cutoff:
+                        reg_active += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # --- Redis INFO ---
+    redis_mem = "—"
+    redis_clients = "—"
+    redis_keys = "—"
+    try:
+        r = _get_redis()
+        info_mem = r.info("memory")
+        redis_mem = info_mem.get("used_memory_human", "—")
+        info_clients = r.info("clients")
+        redis_clients = str(info_clients.get("connected_clients", "—"))
+        info_ks = r.info("keyspace")
+        db0 = info_ks.get("db0", {})
+        redis_keys = str(db0.get("keys", "—")) if isinstance(db0, dict) else "—"
+    except Exception:
+        pass
+
+    # --- Services ---
+    svc_statuses: list[tuple[str, str]] = []
+    for unit in _SOS_KNOWN_UNITS:
+        status = _systemctl_status(unit)
+        svc_statuses.append((unit, status))
+
+    # --- Disk ---
+    disk_used = _disk_usage()
+
+    # --- Load ---
+    load_avg = _proc_loadavg()
+
+    # --- Build HTML ---
+    # Bus card rows
+    bus_stream_rows = ""
+    for key, count, last_ts in bus_top_streams:
+        short = key.replace("sos:stream:", "")
+        bus_stream_rows += f'<div class="row"><span style="color:#A5B4FC;font-size:0.78rem;max-width:180px;overflow:hidden;text-overflow:ellipsis">{short}</span><span>{count} msgs &middot; {last_ts}</span></div>'
+    if not bus_stream_rows:
+        bus_stream_rows = '<div class="muted">No streams found</div>'
+
+    # Services card rows
+    svc_rows = ""
+    for unit, status in svc_statuses:
+        if status == "active":
+            dot = '<span class="dot-green">&#9679;</span>'
+            badge = '<span class="badge badge-green">active</span>'
+        elif status in ("inactive", "failed"):
+            dot = '<span class="dot-red">&#9679;</span>'
+            badge = f'<span class="badge badge-red">{status}</span>'
+        else:
+            dot = '<span class="dot-amber">&#9679;</span>'
+            badge = f'<span class="badge badge-amber">{status}</span>'
+        svc_rows += f'<div class="row">{dot} {unit}{badge}</div>'
+
+    nav_html = _sos_nav("Overview")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOS Overview — Operator Dashboard</title>
+<style>{_SOS_BASE_CSS}</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>&#9670; SOS Engine &mdash; Overview</h1>
+    <div class="meta">Live system heartbeat &middot; {now_str}</div>
+  </div>
+  <a href="/logout" class="logout">Sign Out</a>
+</header>
+
+{nav_html}
+
+<div class="grid">
+
+  <div class="card">
+    <h3>Bus Health</h3>
+    <div class="val">{bus_stream_count}</div>
+    <div class="muted">streams &middot; {bus_total_msgs} total messages</div>
+    <div style="margin-top:16px">{bus_stream_rows}</div>
+  </div>
+
+  <div class="card">
+    <h3>Registry</h3>
+    <div class="val">{reg_active}</div>
+    <div class="muted">active (last 5 min) of {reg_total} registered</div>
+  </div>
+
+  <div class="card">
+    <h3>Redis</h3>
+    <div class="row"><span class="muted">Memory</span><span class="val-sm">{redis_mem}</span></div>
+    <div class="row"><span class="muted">Clients</span><span class="val-sm">{redis_clients}</span></div>
+    <div class="row"><span class="muted">Keys (db0)</span><span class="val-sm">{redis_keys}</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Services</h3>
+    {svc_rows}
+  </div>
+
+  <div class="card">
+    <h3>Disk</h3>
+    <div class="val">{disk_used}</div>
+    <div class="muted">used on /</div>
+  </div>
+
+  <div class="card">
+    <h3>Load Average</h3>
+    <div class="val-sm" style="font-size:1.6rem;margin-top:8px">{load_avg}</div>
+    <div class="muted" style="margin-top:8px">1m &middot; 5m &middot; 15m</div>
+  </div>
+
+</div>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# GET /sos/agents — Phase 1 agent registry table
+# ---------------------------------------------------------------------------
+
+@app.get("/sos/agents", response_class=HTMLResponse)
+async def sos_agents(request: Request) -> Response:
+    """SOS operator agents page — full registry table. Admin-scoped only."""
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    tenant = _tenant_from_cookie(cookie_val)
+    if not tenant:
+        return RedirectResponse(url="/login?next=/sos/agents", status_code=302)
+    if not _is_admin(tenant):
+        return HTMLResponse("<h1>403 — admin scope required</h1>", status_code=403)
+
+    now_str = datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
+    cutoff = datetime.now(timezone.utc).timestamp() - 300
+
+    agents: list[dict[str, Any]] = []
+    try:
+        r = _get_redis()
+        keys = r.keys("sos:registry:*")
+        for key in keys:
+            data = r.hgetall(key)
+            if not data:
+                continue
+            name = key.split(":")[-1]
+            ls = data.get("last_seen", "")
+            rel_time = _relative_time(ls)
+
+            # Determine status
+            explicit_status = data.get("status", "")
+            if explicit_status == "online":
+                status = "online"
+            elif explicit_status in ("offline", "stopped"):
+                status = "offline"
+            elif ls:
+                try:
+                    dt = datetime.fromisoformat(ls)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    status = "online" if dt.timestamp() >= cutoff else "stale"
+                except Exception:
+                    status = "unknown"
+            else:
+                status = "unknown"
+
+            agents.append({
+                "name": name,
+                "role": data.get("role", data.get("type", "—")),
+                "status": status,
+                "last_seen_rel": rel_time,
+                "project": data.get("project", data.get("scope", "admin")),
+                "squads": data.get("squads", data.get("squad", "")),
+                "raw": json.dumps(data, indent=2),
+            })
+    except Exception:
+        pass
+
+    # Sort: online first, then stale, then offline/unknown
+    _order = {"online": 0, "stale": 1, "offline": 2, "unknown": 3}
+    agents.sort(key=lambda a: (_order.get(a["status"], 9), a["name"]))
+
+    def _status_badge(s: str) -> str:
+        if s == "online":
+            return '<span class="badge badge-green">online</span>'
+        if s == "stale":
+            return '<span class="badge badge-amber">stale</span>'
+        if s == "offline":
+            return '<span class="badge badge-red">offline</span>'
+        return f'<span class="badge" style="background:#1E293B;color:#94A3B8">{s}</span>'
+
+    rows = ""
+    for i, ag in enumerate(agents):
+        badge = _status_badge(ag["status"])
+        squads_cell = ag["squads"] if ag["squads"] else '<span class="muted">—</span>'
+        raw_escaped = ag["raw"].replace("</", "<\\/")
+        rows += f"""<tr onclick="toggle({i})" style="cursor:pointer">
+  <td style="padding:10px 12px;font-weight:500;color:#F8FAFC">{ag['name']}</td>
+  <td style="padding:10px 12px;color:#CBD5E1">{ag['role']}</td>
+  <td style="padding:10px 12px">{badge}</td>
+  <td style="padding:10px 12px;color:#94A3B8">{ag['last_seen_rel']}</td>
+  <td style="padding:10px 12px;color:#94A3B8">{ag['project']}</td>
+  <td style="padding:10px 12px;color:#94A3B8">{squads_cell}</td>
+</tr>
+<tr id="expand-{i}" style="display:none">
+  <td colspan="6" style="padding:0 12px 12px">
+    <pre style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:16px;font-size:0.78rem;color:#A5B4FC;overflow-x:auto;white-space:pre-wrap">{ag['raw']}</pre>
+  </td>
+</tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="6" style="padding:24px;text-align:center;color:#64748B">No agents registered in sos:registry:*</td></tr>'
+
+    nav_html = _sos_nav("Agents")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOS Agents — Operator Dashboard</title>
+<style>
+{_SOS_BASE_CSS}
+table{{width:100%;border-collapse:collapse;background:#1E293B;border:1px solid #334155;border-radius:12px;overflow:hidden}}
+thead tr{{background:#0F172A}}
+th{{padding:10px 12px;text-align:left;font-size:0.72rem;color:#64748B;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;border-bottom:1px solid #334155}}
+tbody tr:hover td{{background:#263449}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>&#9670; SOS Engine &mdash; Agents</h1>
+    <div class="meta">Registry snapshot &middot; {now_str} &middot; {len(agents)} agents</div>
+  </div>
+  <a href="/logout" class="logout">Sign Out</a>
+</header>
+
+{nav_html}
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Role / Type</th>
+      <th>Status</th>
+      <th>Last Seen</th>
+      <th>Project Scope</th>
+      <th>Squads</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows}
+  </tbody>
+</table>
+
+<p class="muted" style="margin-top:16px">Click any row to expand the full registry payload.</p>
+
+<script>
+function toggle(i) {{
+  var el = document.getElementById('expand-' + i);
+  if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+}}
+</script>
+</body>
+</html>"""
+    return HTMLResponse(html)

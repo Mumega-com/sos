@@ -1,0 +1,72 @@
+providers:
+  - id: claude-opus-47
+    name: Claude Opus 4.7
+    backend: claude-adapter
+    tier: primary
+    model: claude-opus-4-7
+    timeout_seconds: 120
+    circuit_breaker:
+      failure_threshold: 3
+      recovery_window_seconds: 30
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 50000
+
+  - id: claude-sonnet-46
+    name: Claude Sonnet 4.6
+    backend: claude-adapter
+    tier: primary
+    model: claude-sonnet-4-6
+    timeout_seconds: 60
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_window_seconds: 60
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 10000
+
+  - id: claude-haiku-45
+    name: Claude Haiku 4.5
+    backend: claude-adapter
+    tier: cheap
+    model: claude-haiku-4-5
+    timeout_seconds: 30
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_window_seconds: 60
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 1000
+
+  - id: gemini-25-flash
+    name: Gemini 2.5 Flash
+    backend: gemini-adapter
+    tier: cheap
+    model: gemini-2.5-flash
+    timeout_seconds: 30
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_window_seconds: 60
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 800
+
+  - id: gpt-5-mini
+    name: GPT-5 Mini
+    backend: openai-adapter
+    tier: cheap
+    model: gpt-5-mini
+    timeout_seconds: 30
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_window_seconds: 60
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 1200
+
+  - id: claude-managed-primary
+    name: Claude Managed Agents (Sonnet 4.6)
+    backend: claude-managed-agents
+    tier: fallback
+    model: claude-sonnet-4-6
+    timeout_seconds: 90
+    circuit_breaker:
+      failure_threshold: 3
+      recovery_window_seconds: 120
+      half_open_max_requests: 1
+    cost_per_call_estimate_micros: 12000

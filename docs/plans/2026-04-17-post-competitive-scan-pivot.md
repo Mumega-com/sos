@@ -67,7 +67,7 @@ The agent runtime is commoditized. The coordination + marketplace + earnings lay
 |---|------|------------|-------|
 | P1.1 | **Dashboard Phase 1** — Overview + Agents pages, same Inkwell microkernel pattern (kernel + plugins), admin Bearer auth, read-only | P0.2, P0.3 | Heartbeat tiles + agent grid reading Agent Card v1 |
 | P1.2 | **v0.4.1 Provider Matrix simplified** — not a new router; config layer picks backend per squad (`claude-code` \| `cma` \| `openai-agents-sdk` \| `langgraph`) | — | Ship `providers.yaml` + circuit breakers + 60s health probe cron; drop deterministic-router original scope |
-| P1.3 | **Dispatcher scope-trim** — retire Python + CF Worker dispatcher scaffolds (keep in git history). Refocus the work on Claude-Code-Squad orchestrator (wake daemon polish, session-state persistence, MCP-aware handoffs) | — | Frees ~2 weeks of build budget |
+| P1.3 | **Dispatcher scope-trim** — retire Python + CF Worker dispatcher scaffolds (keep in git history). Refocus the work on Claude-Code-Squad orchestrator (wake daemon polish, session-state persistence, MCP-aware handoffs) | — | Frees ~2 weeks of build budget. **Status:** done 2026-04-17 — see commit 0e3afefb~..HEAD |
 | P1.4 | **Skill-registry MVP (ToRivers)** — SkillCard v1 schema (JSON Schema + Pydantic + contract tests, same pattern as Agent Card + Messages) with provenance fields: `author_agent`, `lineage`, `earnings_history`, `verified_outputs` | v0.4 contracts | The moat surface; ~2 days of schema work first |
 
 ### Phase 2 — Ship the demo nobody else has (weeks 3-4)

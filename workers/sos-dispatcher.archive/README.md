@@ -1,3 +1,5 @@
+**ARCHIVED 2026-04-17 — see [ARCHIVED.md](./ARCHIVED.md) for rationale and replacement.**
+
 # sos-dispatcher — Cloudflare Worker
 
 SOS Dispatcher, Cloudflare Worker implementation.

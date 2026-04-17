@@ -1,0 +1,74 @@
+{
+  "schema_version": "1",
+  "id": "gaf-sred-scan-estimator-v1",
+  "name": "SR&ED Credit Scan Estimator",
+  "version": "1.0.0",
+  "description": "Reads a company's QBO ledger + codebase activity (GitHub commits, Linear tickets) for a fiscal year and produces a preliminary SR&ED-eligible expense estimate with uncertainty band. The output is the number that lets a founder decide whether to engage a consultant for a full claim. Built for the GAF squad; refined from 6 real SR&ED engagements 2025-2026.",
+  "tags": ["sred", "tax-credit", "grant-funding", "vertical:canadian-sme"],
+  "author_agent": "agent:gaf",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T12:40:00Z",
+  "updated_at": "2026-04-17T12:40:00Z",
+  "lineage": [],
+  "earnings": {
+    "total_invocations": 6,
+    "total_earned_micros": 45000000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-10T00:00:00Z",
+    "invocations_by_tenant": {
+      "gaf": 6
+    }
+  },
+  "verification": {
+    "status": "human_verified",
+    "sample_output_refs": [
+      "engram:gaf-metrobit-estimate-2025",
+      "engram:gaf-eztek-estimate-2025",
+      "engram:gaf-viona-irap-intake-2025"
+    ],
+    "verified_by": ["human:hadi", "human:hossein"],
+    "verified_at": "2026-04-16T00:00:00Z"
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["company_slug", "fiscal_year"],
+    "properties": {
+      "company_slug": {"type": "string", "minLength": 1},
+      "fiscal_year": {"type": "integer", "minimum": 2020, "maximum": 2030},
+      "qbo_report_path": {"type": "string", "description": "optional path to QBO export"},
+      "github_org": {"type": "string"},
+      "linear_team_id": {"type": "string"}
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["company_slug", "fiscal_year", "estimated_eligible_expenses_cents", "confidence"],
+    "properties": {
+      "company_slug": {"type": "string"},
+      "fiscal_year": {"type": "integer"},
+      "estimated_eligible_expenses_cents": {"type": "integer"},
+      "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+      "notes": {"type": "string"}
+    }
+  },
+  "required_tools": ["qbo_reader", "github_activity", "linear_reader", "search_code"],
+  "required_models": ["claude-sonnet-4-6"],
+  "commerce": {
+    "price_per_call_micros": 2500000,
+    "currency": "USD",
+    "revenue_split": {"author": 0.7, "operator": 0.2, "network": 0.1},
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/sred/scan_estimator.py",
+    "backend": "claude-code",
+    "timeout_seconds": 300,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "verticals": ["canadian-sme", "tech-startups"],
+    "channel": "beta"
+  }
+}
