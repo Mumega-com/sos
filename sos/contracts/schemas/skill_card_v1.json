@@ -145,12 +145,17 @@
         },
         "sample_output_refs": {
           "type": "array",
-          "description": "Stable references to verified example outputs (mirror engram id, URL, hash).",
+          "description": "Stable references to verified example outputs. Canonical form: 'artifact:<sha256-64>'. Legacy: 'engram:<slug>' (backward-compat; migrate to artifact: CIDs via ArtifactRegistry.mint()).",
           "items": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^(artifact:[0-9a-f]{64}|engram:[a-z0-9][a-z0-9-]{0,62})$"
           },
           "maxItems": 50
+        },
+        "primary_artifact_cid": {
+          "type": "string",
+          "description": "Optional first-class CID of the representative verified output. Bare 64-char lowercase hex SHA-256. Resolves via ArtifactRegistry.",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "verified_by": {
           "type": "array",

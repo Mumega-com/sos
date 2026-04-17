@@ -558,3 +558,124 @@ class TestAthenaGateInvariants:
         ]
         with pytest.raises(ValidationError):
             SkillCard(**kw)
+
+
+# ---------------------------------------------------------------------------
+# 7. Artifact CID / sample_output_refs (Island #6 — 2026-04-18)
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactCIDRefs:
+    """Validate the SkillCard.verification.sample_output_refs pattern upgrade."""
+
+    _VALID_CID = "a" * 64  # 64-char hex
+
+    def _kw_with_refs(self, refs: list[str]) -> dict[str, Any]:
+        kw = _minimal_kwargs()
+        kw["verification"] = {"sample_output_refs": refs}
+        return kw
+
+    # ---- acceptance ----
+
+    def test_valid_artifact_cid_ref_accepted(self):
+        """artifact:<64-hex> must be accepted."""
+        SkillCard(**self._kw_with_refs([f"artifact:{self._VALID_CID}"]))
+
+    def test_valid_engram_legacy_ref_accepted(self):
+        """engram:<slug> must remain accepted (backward-compat)."""
+        SkillCard(**self._kw_with_refs(["engram:gaf-metrobit-estimate-2025"]))
+
+    def test_multiple_mixed_refs_accepted(self):
+        """A mix of artifact: and engram: refs must all pass."""
+        refs = [
+            f"artifact:{self._VALID_CID}",
+            "engram:dnu-test-123",
+        ]
+        SkillCard(**self._kw_with_refs(refs))
+
+    # ---- rejection ----
+
+    def test_invalid_format_rejected(self):
+        """Bare strings without a recognized prefix must be rejected."""
+        with pytest.raises(ValidationError):
+            SkillCard(**self._kw_with_refs(["random-string"]))
+
+    def test_artifact_with_short_cid_rejected(self):
+        """artifact: CID shorter than 64 hex chars must be rejected."""
+        with pytest.raises(ValidationError):
+            SkillCard(**self._kw_with_refs(["artifact:abc123"]))
+
+    def test_engram_with_uppercase_rejected(self):
+        """engram slugs must be lowercase."""
+        with pytest.raises(ValidationError):
+            SkillCard(**self._kw_with_refs(["engram:BAD-SLUG"]))
+
+    def test_engram_starting_with_hyphen_rejected(self):
+        """engram slugs must start with a letter or digit."""
+        with pytest.raises(ValidationError):
+            SkillCard(**self._kw_with_refs(["engram:-starts-wrong"]))
+
+    # ---- primary_artifact_cid ----
+
+    def test_primary_artifact_cid_pattern_validated(self):
+        """primary_artifact_cid must be exactly 64 lowercase hex chars."""
+        kw = _minimal_kwargs()
+        kw["verification"] = {"primary_artifact_cid": self._VALID_CID}
+        card = SkillCard(**kw)
+        assert card.verification is not None
+        assert card.verification.primary_artifact_cid == self._VALID_CID
+
+    def test_primary_artifact_cid_uppercase_rejected(self):
+        kw = _minimal_kwargs()
+        kw["verification"] = {"primary_artifact_cid": "A" * 64}
+        with pytest.raises(ValidationError):
+            SkillCard(**kw)
+
+    def test_primary_artifact_cid_short_rejected(self):
+        kw = _minimal_kwargs()
+        kw["verification"] = {"primary_artifact_cid": "abc123"}
+        with pytest.raises(ValidationError):
+            SkillCard(**kw)
+
+    def test_primary_artifact_cid_optional_none_accepted(self):
+        kw = _minimal_kwargs()
+        kw["verification"] = {}
+        card = SkillCard(**kw)
+        assert card.verification is not None
+        assert card.verification.primary_artifact_cid is None
+
+    # ---- resolve_artifacts helper ----
+
+    def test_resolve_artifacts_filters_non_artifact_refs(self):
+        """resolve_artifacts() must only call registry for artifact: refs."""
+        from unittest.mock import MagicMock, patch
+
+        v = VerificationInfo(
+            sample_output_refs=[
+                f"artifact:{self._VALID_CID}",
+                "engram:legacy-ref",
+            ]
+        )
+
+        fake_manifest = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = fake_manifest
+
+        with patch("sos.artifacts.registry.ArtifactRegistry", return_value=mock_registry):
+            results = v.resolve_artifacts()
+
+        mock_registry.get.assert_called_once_with(self._VALID_CID)
+        assert results == [fake_manifest]
+
+    def test_resolve_artifacts_empty_when_only_engram_refs(self):
+        """resolve_artifacts() returns [] when all refs are engram: legacy."""
+        from unittest.mock import MagicMock, patch
+
+        v = VerificationInfo(sample_output_refs=["engram:some-slug"])
+
+        mock_registry = MagicMock()
+        with patch("sos.artifacts.registry.ArtifactRegistry", return_value=mock_registry):
+            results = v.resolve_artifacts()
+
+        mock_registry.get.assert_not_called()
+        assert results == []

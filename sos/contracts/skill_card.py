@@ -27,6 +27,10 @@ _AGENT_PATTERN = r"^agent:[a-z][a-z0-9-]*$"
 # are consistent across contracts.
 _VERIFIER_PATTERN = r"^(agent|human):[a-z][a-z0-9-]*$"
 _CURRENCY_PATTERN = r"^[A-Z0-9]{2,10}$"
+# Artifact CID ref or legacy engram slug. CID is the migration target.
+_SAMPLE_OUTPUT_REF_PATTERN = r"^(artifact:[0-9a-f]{64}|engram:[a-z0-9][a-z0-9-]{0,62})$"
+# Primary artifact CID — bare 64-char hex (no prefix, just the SHA-256).
+_PRIMARY_ARTIFACT_CID_PATTERN = r"^[0-9a-f]{64}$"
 # id: either UUID v4 or a constrained slug. Blocks ' ', '..', '../../...'.
 _ID_PATTERN = (
     r"^[a-z0-9][a-z0-9_-]{2,63}$"
@@ -91,12 +95,34 @@ class VerificationInfo(BaseModel):
 
     status: Literal["unverified", "auto_verified", "human_verified", "disputed"] = "unverified"
     sample_output_refs: list[str] = Field(default_factory=list, max_length=50)
+    primary_artifact_cid: Optional[str] = Field(
+        default=None,
+        pattern=_PRIMARY_ARTIFACT_CID_PATTERN,
+        description=(
+            "Optional first-class reference to the representative verified output. "
+            "64-char lowercase hex SHA-256 (bare CID, no prefix). "
+            "Resolves via ArtifactRegistry.get(cid)."
+        ),
+    )
     verified_by: list[str] = Field(
         default_factory=list,
         description="agent: or human: URIs of verifiers.",
     )
     verified_at: Optional[str] = None
     dispute_reason: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("sample_output_refs", mode="before")
+    @classmethod
+    def _check_sample_output_ref_patterns(cls, v: list[str]) -> list[str]:
+        import re
+        for item in v:
+            if not re.match(_SAMPLE_OUTPUT_REF_PATTERN, item):
+                raise ValueError(
+                    f"sample_output_refs item {item!r} does not match "
+                    f"{_SAMPLE_OUTPUT_REF_PATTERN}. "
+                    "Use 'artifact:<sha256-64>' (canonical) or 'engram:<slug>' (legacy)."
+                )
+        return v
 
     @field_validator("verified_by", mode="before")
     @classmethod
@@ -113,6 +139,23 @@ class VerificationInfo(BaseModel):
         if v is not None:
             datetime.fromisoformat(v.replace("Z", "+00:00"))
         return v
+
+    def resolve_artifacts(self) -> "list[Any]":
+        """Return ArtifactManifest objects for all artifact: prefixed refs.
+
+        Imports ArtifactRegistry lazily to avoid circular imports.
+        Non-artifact refs (e.g. engram:) are silently filtered out.
+        Raises FileNotFoundError if an artifact CID is not found in the registry.
+        """
+        from sos.artifacts.registry import ArtifactRegistry  # lazy import
+
+        registry = ArtifactRegistry()
+        manifests = []
+        for ref in self.sample_output_refs:
+            if ref.startswith("artifact:"):
+                cid = ref[len("artifact:"):]
+                manifests.append(registry.get(cid))
+        return manifests
 
 
 class RevenueSplit(BaseModel):
