@@ -1,37 +1,10 @@
 {
   "schema_version": "1",
   "id": "sos-auth-caller-migration-v1",
-  "name": "Auth Caller Migration \u2014 route every service through sos.services.auth",
+  "name": "Auth Caller Migration — route every service through sos.services.auth",
   "version": "1.0.0",
-  "description": "Migrates every service's custom verify-bearer logic to use the single sos.services.auth.verify_bearer() function we shipped yesterday. Replaces dashboard _verify_token, economy _verify_bearer, MCP SSE inline token path, and Mirror's resolve_token. Single source of truth for token validation; consistent AuthContext shape returned everywhere.",
-  "tags": [
-    "sos",
-    "auth",
-    "refactor",
-    "coherence",
-    "internal"
-  ],
   "author_agent": "agent:sos-dev",
-  "authored_by_ai": true,
   "created_at": "2026-04-18T09:00:00Z",
-  "updated_at": "2026-04-18T09:00:00Z",
-  "lineage": [
-    {
-      "parent_skill_id": "sos-auth-service-consolidator-v1",
-      "relation": "composed"
-    }
-  ],
-  "earnings": {
-    "total_invocations": 0,
-    "total_earned_micros": 0,
-    "currency": "MIND",
-    "invocations_by_tenant": {}
-  },
-  "verification": {
-    "status": "unverified",
-    "sample_output_refs": [],
-    "verified_by": []
-  },
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -65,6 +38,36 @@
         "type": "integer"
       }
     }
+  },
+  "description": "Migrates every service's custom verify-bearer logic to use the single sos.services.auth.verify_bearer() function we shipped yesterday. Replaces dashboard _verify_token, economy _verify_bearer, MCP SSE inline token path, and Mirror's resolve_token. Single source of truth for token validation; consistent AuthContext shape returned everywhere.",
+  "tags": [
+    "sos",
+    "auth",
+    "refactor",
+    "coherence",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [
+    {
+      "parent_skill_id": "sos-auth-service-consolidator-v1",
+      "relation": "composed"
+    }
+  ],
+  "updated_at": "2026-04-17T17:04:43.112903+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T17:04:43.112835+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
   },
   "required_models": [
     "claude-sonnet-4-6"

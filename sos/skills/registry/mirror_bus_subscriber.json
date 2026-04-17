@@ -1,32 +1,10 @@
 {
   "schema_version": "1",
   "id": "mirror-bus-subscriber-v1",
-  "name": "Mirror Bus Subscriber \u2014 auto-engram from sos:stream",
+  "name": "Mirror Bus Subscriber — auto-engram from sos:stream",
   "version": "1.0.0",
-  "description": "Makes Mirror a native bus consumer. Subscribes to sos:stream:* and auto-stores an engram on every v1 send/remember/task_completed message. Retires the synchronous mirror_post HTTP calls from sos_mcp_sse.py (5-6 call sites). Kills three debt items at once: 'Mirror doesn't consume bus', 'UsageLog not mirrored', 'write amplification on every agent send'.",
-  "tags": [
-    "mirror",
-    "bus",
-    "refactor",
-    "sos-cleanup",
-    "internal"
-  ],
   "author_agent": "agent:sos-dev",
-  "authored_by_ai": true,
   "created_at": "2026-04-17T14:15:00Z",
-  "updated_at": "2026-04-17T14:15:00Z",
-  "lineage": [],
-  "earnings": {
-    "total_invocations": 0,
-    "total_earned_micros": 0,
-    "currency": "MIND",
-    "invocations_by_tenant": {}
-  },
-  "verification": {
-    "status": "unverified",
-    "sample_output_refs": [],
-    "verified_by": []
-  },
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -70,6 +48,31 @@
         "type": "string"
       }
     }
+  },
+  "description": "Makes Mirror a native bus consumer. Subscribes to sos:stream:* and auto-stores an engram on every v1 send/remember/task_completed message. Retires the synchronous mirror_post HTTP calls from sos_mcp_sse.py (5-6 call sites). Kills three debt items at once: 'Mirror doesn't consume bus', 'UsageLog not mirrored', 'write amplification on every agent send'.",
+  "tags": [
+    "mirror",
+    "bus",
+    "refactor",
+    "sos-cleanup",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T16:34:18.645192+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T16:34:18.645121+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
   },
   "required_models": [
     "claude-sonnet-4-6"

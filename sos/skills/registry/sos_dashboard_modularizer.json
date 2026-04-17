@@ -1,32 +1,10 @@
 {
   "schema_version": "1",
   "id": "sos-dashboard-modularizer-v1",
-  "name": "Dashboard file modularization \u2014 split app.py into routes/components/helpers",
+  "name": "Dashboard file modularization — split app.py into routes/components/helpers",
   "version": "1.0.0",
-  "description": "sos/services/dashboard/app.py is 2000+ lines \u2014 getting hard to navigate. Split into: app.py (thin FastAPI + app instance + middleware), routes/ (one file per route family: customer_dashboard.py, sos_operator.py, marketplace.py, login.py, health.py), components/ (HTML template strings, inline SVG loaders), helpers/ (auth / redis / mirror / tenant helpers). Zero functional change. All existing routes + tests pass unchanged.",
-  "tags": [
-    "sos",
-    "dashboard",
-    "refactor",
-    "structure",
-    "internal"
-  ],
   "author_agent": "agent:sos-dev",
-  "authored_by_ai": true,
   "created_at": "2026-04-18T10:02:00Z",
-  "updated_at": "2026-04-18T10:02:00Z",
-  "lineage": [],
-  "earnings": {
-    "total_invocations": 0,
-    "total_earned_micros": 0,
-    "currency": "MIND",
-    "invocations_by_tenant": {}
-  },
-  "verification": {
-    "status": "unverified",
-    "sample_output_refs": [],
-    "verified_by": []
-  },
   "input_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -61,6 +39,31 @@
         "type": "integer"
       }
     }
+  },
+  "description": "sos/services/dashboard/app.py is 2000+ lines — getting hard to navigate. Split into: app.py (thin FastAPI + app instance + middleware), routes/ (one file per route family: customer_dashboard.py, sos_operator.py, marketplace.py, login.py, health.py), components/ (HTML template strings, inline SVG loaders), helpers/ (auth / redis / mirror / tenant helpers). Zero functional change. All existing routes + tests pass unchanged.",
+  "tags": [
+    "sos",
+    "dashboard",
+    "refactor",
+    "structure",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T17:54:10.153793+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T17:54:10.153703+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
   },
   "required_models": [
     "claude-sonnet-4-6"
