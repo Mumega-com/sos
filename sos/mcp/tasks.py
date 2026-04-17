@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 """
-Thin MCP stdio server wrapping Mirror's Sovereign Task System.
-All tasks live in Mirror API (Supabase) — single source of truth.
+Thin MCP stdio server wrapping the Squad Service task system.
+All tasks live in Squad Service (:8060) — single source of truth.
+
+Mirror /tasks endpoints are retired (410 Gone). This file now points
+exclusively at Squad Service for all task operations.
 
 Usage:
   claude mcp add tasks python3 /path/to/SOS/sos/mcp/tasks.py
 
 Environment:
-  MIRROR_URL    — Mirror API URL (default: http://localhost:8844)
-  MIRROR_TOKEN  — Mirror API auth token (required)
+  SQUAD_SERVICE_URL   — Squad Service URL (default: http://localhost:8060)
+  SQUAD_SYSTEM_TOKEN  — Squad Service auth token (optional)
 """
 import os
 import sys
 import json
 import requests
 
-MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
+# Squad Service is the single source of truth for tasks.
+# Mirror /tasks has been retired — do not use MIRROR_URL for task operations.
+SQUAD_SERVICE_URL = os.environ.get("SQUAD_SERVICE_URL", "http://localhost:8060")
+SQUAD_SYSTEM_TOKEN = os.environ.get("SQUAD_SYSTEM_TOKEN", "")
 HEADERS = {
-    "Authorization": f"Bearer {MIRROR_TOKEN}",
+    "Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}",
     "Content-Type": "application/json",
 }
+
+# Legacy alias kept for any remaining imports that reference MIRROR_URL,
+# but all /tasks calls below use SQUAD_SERVICE_URL.
+MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
 
 
 def make_response(id, result=None, error=None):
@@ -111,7 +120,7 @@ def handle_tool_call(name, args):
             if args.get("labels"):
                 payload["labels"] = args["labels"]
 
-            r = requests.post(f"{MIRROR_URL}/tasks", json=payload, headers=HEADERS, timeout=10)
+            r = requests.post(f"{SQUAD_SERVICE_URL}/tasks", json=payload, headers=HEADERS, timeout=10)
             data = r.json()
             task_id = data.get("id", data.get("task_id", "?"))
             return {"content": [{"type": "text", "text": f"Created task: {task_id}"}]}
@@ -125,7 +134,7 @@ def handle_tool_call(name, args):
             if args.get("project"):
                 params["project"] = args["project"]
 
-            r = requests.get(f"{MIRROR_URL}/tasks", params=params, headers=HEADERS, timeout=10)
+            r = requests.get(f"{SQUAD_SERVICE_URL}/tasks", params=params, headers=HEADERS, timeout=10)
             data = r.json()
             tasks = data.get("tasks", data) if isinstance(data, dict) else data
 
@@ -141,16 +150,16 @@ def handle_tool_call(name, args):
         elif name == "task_update":
             task_id = args.pop("task_id")
             payload = {k: v for k, v in args.items() if v is not None}
-            r = requests.put(f"{MIRROR_URL}/tasks/{task_id}", json=payload, headers=HEADERS, timeout=10)
+            r = requests.put(f"{SQUAD_SERVICE_URL}/tasks/{task_id}", json=payload, headers=HEADERS, timeout=10)
             return {"content": [{"type": "text", "text": f"Updated task {task_id}"}]}
 
         elif name == "task_complete":
             task_id = args["task_id"]
-            r = requests.post(f"{MIRROR_URL}/tasks/{task_id}/complete", headers=HEADERS, timeout=10)
+            r = requests.post(f"{SQUAD_SERVICE_URL}/tasks/{task_id}/complete", headers=HEADERS, timeout=10)
             return {"content": [{"type": "text", "text": f"Completed task {task_id}"}]}
 
         elif name == "task_stats":
-            r = requests.get(f"{MIRROR_URL}/tasks/stats", headers=HEADERS, timeout=10)
+            r = requests.get(f"{SQUAD_SERVICE_URL}/tasks/stats", headers=HEADERS, timeout=10)
             stats = r.json()
             return {"content": [{"type": "text", "text": json.dumps(stats, indent=2, default=str)}]}
 
@@ -158,7 +167,7 @@ def handle_tool_call(name, args):
             return {"error": f"Unknown tool: {name}"}
 
     except requests.exceptions.ConnectionError:
-        return {"content": [{"type": "text", "text": "Error: Mirror API not reachable at localhost:8844"}]}
+        return {"content": [{"type": "text", "text": "Error: Squad Service not reachable at localhost:8060"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
 

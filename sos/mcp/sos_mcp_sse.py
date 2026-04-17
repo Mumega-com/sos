@@ -868,20 +868,8 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             mid = await r.xadd(stream, msg)
             await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
-            try:
-                await loop.run_in_executor(
-                    None,
-                    mirror_post,
-                    "/store",
-                    {
-                        "text": f"[{agent_scope} -> {to}] {text}",
-                        "agent": agent_scope,
-                        "project": project_scope,
-                        "context_id": _scoped_context_id(auth, f"msg_{mid}"),
-                    },
-                )
-            except Exception:
-                pass
+            # mirror_post("/store", ...) removed — mirror_bus_consumer subscribes
+            # to sos:stream:* and writes engrams asynchronously off the stream.
             return _text(f"Sent to {to} (id: {mid})")
 
         # --- inbox ---
@@ -969,17 +957,29 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- remember ---
         elif name == "remember":
             ctx = _scoped_context_id(auth, args.get("context"))
-            await loop.run_in_executor(
-                None,
-                mirror_post,
-                "/store",
-                {
-                    "text": args["text"],
-                    "agent": agent_scope,
-                    "project": project_scope,
-                    "context_id": ctx,
-                },
-            )
+            # mirror_post("/store", ...) removed — mirror_bus_consumer writes engrams
+            # from the bus stream asynchronously. Direct HTTP write retired.
+            # Publish a "remember" type message onto the agent's stream so the
+            # bus consumer picks it up and stores the engram automatically.
+            try:
+                from uuid import uuid4 as _uuid4
+                rem_msg = {
+                    "type": "send",
+                    "source": f"agent:{agent_scope}",
+                    "target": f"agent:{agent_scope}",
+                    "timestamp": SendMessage.now_iso(),
+                    "message_id": str(_uuid4()),
+                    "payload": json.dumps({
+                        "text": args["text"],
+                        "content_type": "text/plain",
+                        "remember": True,
+                    }),
+                }
+                if project_scope:
+                    rem_msg["project"] = project_scope
+                await r.xadd(_agent_stream(agent_scope, project_scope), rem_msg)
+            except Exception:
+                pass
             return _text(f"Stored: {ctx}")
 
         # --- recall ---
@@ -1045,19 +1045,22 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- task_create ---
         elif name == "task_create":
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
             await loop.run_in_executor(
                 None,
-                mirror_post,
-                "/tasks",
-                {
-                    "title": args["title"],
-                    "description": args.get("description", ""),
-                    "assignee": _require_same_tenant_agent(auth, args.get("assignee")),
-                    "priority": args.get("priority", "medium"),
-                    "status": "pending",
-                    "agent": agent_scope,
-                    "project": project_scope,
-                },
+                lambda: requests.post(
+                    f"{SQUAD_SERVICE_URL}/tasks",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    json={
+                        "title": args["title"],
+                        "description": args.get("description", ""),
+                        "assignee": _require_same_tenant_agent(auth, args.get("assignee")),
+                        "priority": args.get("priority", "medium"),
+                        "agent": agent_scope,
+                        "project": project_scope or args.get("project"),
+                    },
+                    timeout=10,
+                ),
             )
             return _text(f"Task created: {args['title']}")
 
@@ -1071,7 +1074,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 params += f"&agent={assignee}"
             if project_scope:
                 params += f"&project={project_scope}"
-            result = await loop.run_in_executor(None, mirror_get, f"/tasks{params}")
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
+            result = await loop.run_in_executor(
+                None,
+                lambda: requests.get(
+                    f"{SQUAD_SERVICE_URL}/tasks{params}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                ).json(),
+            )
             tasks = result if isinstance(result, list) else result.get("tasks", [])
             if project_scope:
                 tasks = [t for t in tasks if t.get("project") == project_scope]
@@ -1080,20 +1091,36 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             lines = []
             for t in tasks:
                 lines.append(
-                    f"[{t.get('status', '?')}] {t.get('title', '?')} -> {t.get('assignee', '?')}"
+                    f"[{t.get('status', '?')}] {t.get('title', '?')} -> {t.get('assignee', t.get('agent', '?'))}"
                 )
             return _text("\n".join(lines))
 
         # --- task_update ---
         elif name == "task_update":
-            task = await loop.run_in_executor(None, mirror_get, f"/tasks/{args['task_id']}")
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
+            task = await loop.run_in_executor(
+                None,
+                lambda: requests.get(
+                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                ).json(),
+            )
             _ensure_task_in_scope(task, auth)
-            body: dict[str, Any] = {"task_id": args["task_id"]}
+            body: dict[str, Any] = {}
             if args.get("status"):
                 body["status"] = args["status"]
             if args.get("notes"):
                 body["notes"] = args["notes"]
-            await loop.run_in_executor(None, mirror_put, f"/tasks/{args['task_id']}", body)
+            await loop.run_in_executor(
+                None,
+                lambda: requests.put(
+                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    json=body,
+                    timeout=5,
+                ),
+            )
             return _text(f"Task {args['task_id']} updated")
 
         # --- task_board (prioritized unified view) ---
@@ -1101,7 +1128,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             REVENUE_PROJECTS = {"dentalnearyou", "dnu", "gaf", "viamar", "stemminds", "pecb", "digid", "torivers"}
             PRIORITY_W = {"critical": 4, "urgent": 4, "high": 3, "medium": 2, "low": 1}
 
-            # Pull from Squad Service (primary) and Mirror (secondary)
+            # Pull exclusively from Squad Service — Mirror /tasks is retired (410).
             all_tasks: list[dict] = []
             try:
                 squad_resp = await loop.run_in_executor(
@@ -1114,16 +1141,8 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 all_tasks.extend(squad_tasks)
             except Exception:
                 pass
-            try:
-                mirror_resp = await loop.run_in_executor(None, mirror_get, "/tasks?limit=100")
-                mirror_tasks = mirror_resp if isinstance(mirror_resp, list) else mirror_resp.get("tasks", [])
-                squad_ids = {t.get("id") for t in all_tasks}
-                for t in mirror_tasks:
-                    if t.get("id") not in squad_ids:
-                        t["_source"] = "mirror"
-                        all_tasks.append(t)
-            except Exception:
-                pass
+            # Mirror /tasks secondary fetch removed — Mirror retired its /tasks
+            # endpoints (410 Gone). Squad Service is the single source of truth.
 
             # Filter
             status_filter = args.get("status", "queued")
