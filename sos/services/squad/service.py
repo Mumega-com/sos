@@ -12,6 +12,7 @@ import redis
 
 from sos.contracts.squad import Squad, SquadEvent, SquadMember, SquadRole, SquadStatus, SquadTier
 from sos.kernel import Message, MessageType, Response, ResponseStatus
+from sos.kernel.config import DB_PATH, DEFAULT_TENANT_ID, SOS_DATA_DIR
 from sos.observability.logging import get_logger
 
 try:
@@ -25,12 +26,9 @@ if load_dotenv:
 
 log = get_logger("squad_service")
 
-SOS_DATA_DIR = Path.home() / ".sos" / "data"
-DB_PATH = SOS_DATA_DIR / "squads.db"
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-DEFAULT_TENANT_ID = "default"
 
 
 def now_iso() -> str:

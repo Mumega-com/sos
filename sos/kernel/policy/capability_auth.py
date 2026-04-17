@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import HTTPException, Request
 
 from sos.kernel import CapabilityAction, verify_capability
-from sos.services.common.capability import CapabilityModel
+from sos.kernel.policy.capability import CapabilityModel
 
 
 CAPABILITY_HEADER = "X-SOS-Capability"

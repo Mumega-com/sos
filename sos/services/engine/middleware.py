@@ -4,8 +4,8 @@ import fnmatch
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
-from sos.services.common.capability import CapabilityModel
-from sos.services.common.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest
+from sos.kernel.policy.capability import CapabilityModel
+from sos.kernel.policy.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest
 from sos.kernel.capability import verify_capability_signature
 from sos.observability.logging import get_logger
 

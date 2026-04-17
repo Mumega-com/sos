@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from sos.services.squad.service import DB_PATH, DEFAULT_TENANT_ID
+from sos.kernel.config import DB_PATH, DEFAULT_TENANT_ID
 
 
 class FMAAPPillar(str, Enum):

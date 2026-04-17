@@ -19,7 +19,7 @@ def _seed_squad_db(db_path):
 
 
 def test_fmaap_passes_with_valid_squad_state(tmp_path, monkeypatch):
-    from sos.services.common.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest
+    from sos.kernel.policy.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest
 
     db = _seed_squad_db(tmp_path / "squads.db")
 
@@ -89,7 +89,7 @@ def test_fmaap_passes_with_valid_squad_state(tmp_path, monkeypatch):
 
 
 def test_fmaap_blocks_missing_alignment_and_membership(tmp_path):
-    from sos.services.common.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest, FMAAPPillar
+    from sos.kernel.policy.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest, FMAAPPillar
 
     db = _seed_squad_db(tmp_path / "squads.db")
 
@@ -161,7 +161,7 @@ def test_fmaap_blocks_missing_alignment_and_membership(tmp_path):
 
 
 def test_fmaap_blocks_when_wallet_or_coherence_is_too_low(tmp_path):
-    from sos.services.common.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest, FMAAPPillar
+    from sos.kernel.policy.fmaap import FMAAPPolicyEngine, FMAAPValidationRequest, FMAAPPillar
 
     db = _seed_squad_db(tmp_path / "squads.db")
 
