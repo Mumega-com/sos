@@ -359,20 +359,17 @@ async def sos_agents(request: Request) -> Response:
     now_str = datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
     cutoff = datetime.now(timezone.utc).timestamp() - 300
 
+    from sos.services import registry as agent_registry
+
     agents: list[dict[str, Any]] = []
     try:
-        r = _get_redis()
-        keys = r.keys("sos:registry:*")
-        for key in keys:
-            data = r.hgetall(key)
-            if not data:
-                continue
-            name = key.split(":")[-1]
-            ls = data.get("last_seen", "")
+        idents = agent_registry.read_all()
+        for ident in idents:
+            ls = ident.metadata.get("last_seen", "")
             rel_time = _relative_time(ls)
 
-            # Determine status
-            explicit_status = data.get("status", "")
+            # Determine status: prefer explicit, then infer from last_seen
+            explicit_status = ident.metadata.get("status", "")
             if explicit_status == "online":
                 status = "online"
             elif explicit_status in ("offline", "stopped"):
@@ -388,17 +385,36 @@ async def sos_agents(request: Request) -> Response:
             else:
                 status = "unknown"
 
+            # Public key fingerprint (first 8 chars of sha256)
+            pk_fingerprint = "—"
+            if ident.public_key:
+                import hashlib
+                pk_fingerprint = hashlib.sha256(ident.public_key.encode()).hexdigest()[:8]
+
+            # DNA.physics.C (coherence)
+            coherence = "—"
+            if ident.dna and ident.dna.physics:
+                c_val = ident.dna.physics.C
+                if c_val is not None:
+                    coherence = f"{c_val:.2f}"
+
             agents.append({
-                "name": name,
-                "role": data.get("role", data.get("type", "—")),
+                "name": ident.name,
+                "role": ident.metadata.get("role") or ident.metadata.get("agent_type") or "—",
                 "status": status,
                 "last_seen_rel": rel_time,
-                "project": data.get("project", data.get("scope", "admin")),
-                "squads": data.get("squads", data.get("squad", "")),
-                "raw": json.dumps(data, indent=2),
+                "project": ident.metadata.get("project") or "admin",
+                "squads": ident.squad_id or "",
+                "raw": json.dumps(ident.to_dict(), indent=2, default=str),
+                # New typed fields from AgentIdentity
+                "pk_fingerprint": pk_fingerprint,
+                "verification": ident.verification_status.value,
+                "coherence": coherence,
+                "agent_type": ident.metadata.get("agent_type") or "—",
+                "edition": ident.edition or "—",
             })
     except Exception:
-        pass
+        logger.debug("Failed to load agent registry", exc_info=True)
 
     # Sort: online first, then stale, then offline/unknown
     _order = {"online": 0, "stale": 1, "offline": 2, "unknown": 3}
@@ -413,22 +429,33 @@ async def sos_agents(request: Request) -> Response:
             return '<span class="badge badge-red">offline</span>'
         return f'<span class="badge" style="background:#1E293B;color:#94A3B8">{s}</span>'
 
+    def _verify_badge(v: str) -> str:
+        colors = {
+            "verified": "#34D399",
+            "pending": "#FBBF24",
+            "unverified": "#64748B",
+            "revoked": "#F87171",
+        }
+        color = colors.get(v, "#64748B")
+        return f'<span style="font-size:0.72rem;color:{color}">{v}</span>'
+
     rows = ""
     for i, ag in enumerate(agents):
         badge = _status_badge(ag["status"])
+        verify_badge = _verify_badge(ag["verification"])
         squads_cell = ag["squads"] if ag["squads"] else '<span class="muted">—</span>'
         raw_escaped = ag["raw"].replace("</", "<\\/")
         rows += f"""<tr onclick="toggle({i})" style="cursor:pointer">
-  <td style="padding:10px 12px;font-weight:500;color:#F8FAFC">{ag['name']}</td>
-  <td style="padding:10px 12px;color:#CBD5E1">{ag['role']}</td>
-  <td style="padding:10px 12px">{badge}</td>
+  <td style="padding:10px 12px;font-weight:500;color:#F8FAFC">{ag['name']}<br><span style="font-size:0.72rem;color:#475569">{ag['pk_fingerprint']}</span></td>
+  <td style="padding:10px 12px;color:#CBD5E1">{ag['role']}<br><span style="font-size:0.72rem;color:#6366F1;border:1px solid #312E81;padding:1px 5px;border-radius:4px">{ag['agent_type']}</span></td>
+  <td style="padding:10px 12px">{badge}<br>{verify_badge}</td>
   <td style="padding:10px 12px;color:#94A3B8">{ag['last_seen_rel']}</td>
-  <td style="padding:10px 12px;color:#94A3B8">{ag['project']}</td>
-  <td style="padding:10px 12px;color:#94A3B8">{squads_cell}</td>
+  <td style="padding:10px 12px;color:#94A3B8">{ag['project']}<br><span style="font-size:0.72rem;color:#475569">{ag['edition']}</span></td>
+  <td style="padding:10px 12px;color:#94A3B8">{squads_cell}<br><span style="font-size:0.72rem;color:#94A3B8">C={ag['coherence']}</span></td>
 </tr>
 <tr id="expand-{i}" style="display:none">
   <td colspan="6" style="padding:0 12px 12px">
-    <pre style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:16px;font-size:0.78rem;color:#A5B4FC;overflow-x:auto;white-space:pre-wrap">{ag['raw']}</pre>
+    <pre style="background:#0F172A;border:1px solid #334155;border-radius:8px;padding:16px;font-size:0.78rem;color:#A5B4FC;overflow-x:auto;white-space:pre-wrap">{raw_escaped}</pre>
   </td>
 </tr>"""
 
@@ -465,12 +492,12 @@ tbody tr:hover td{{background:#263449}}
 <table>
   <thead>
     <tr>
-      <th>Name</th>
+      <th>Name / Key</th>
       <th>Role / Type</th>
-      <th>Status</th>
+      <th>Status / Verify</th>
       <th>Last Seen</th>
-      <th>Project Scope</th>
-      <th>Squads</th>
+      <th>Project / Edition</th>
+      <th>Squads / C</th>
     </tr>
   </thead>
   <tbody>

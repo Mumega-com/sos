@@ -61,3 +61,12 @@ _Added in island #2 — 2026-04-18-coherence-plus-us-market.md_
 - **Rule:** soul fields (public_key, dna, verification_status, capabilities) live on AgentIdentity. Runtime operational fields (session, pid, cache) live on AgentCard. `name`, `model` are echoed on AgentCard for display; source of truth is AgentIdentity.
 
 _Added in island #3 — 2026-04-18-coherence-plus-us-market.md_
+
+## Agent Registry
+- **Canonical:** `sos/kernel/identity.py::AgentIdentity` (deserialized shape)
+- **Storage backend:** redis hashes at `sos:registry:<project>:<agent_id>` with TTL
+- **Read/write API:** `sos/services/registry/__init__.py::read_all() / read_one() / write()`
+- **Consumers:** dashboard operator view (`/sos/agents`), Brain service (future), any other service needing agent status
+- **Rule:** never read `sos:registry:*` directly. Go through `sos.services.registry` helpers so deserialization is consistent.
+
+_Added in island #8 — 2026-04-18-coherence-plus-us-market.md_

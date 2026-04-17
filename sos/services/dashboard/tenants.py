@@ -15,24 +15,29 @@ logger = logging.getLogger("dashboard")
 
 
 def _agent_status(project: str | None) -> dict[str, Any]:
+    """Return agent summary sourced from AgentIdentity objects via the registry API.
+
+    All reads go through sos.services.registry so the shape is always typed.
+    The returned dict is backward-compatible: {agents: [{name, status, last_seen}], online}.
+    """
     try:
-        r = _get_redis()
-        # Check registry for agents associated with this project
-        keys = r.keys("sos:registry:*")
+        from sos.services import registry as agent_registry
+
+        idents = agent_registry.read_all(project)
         agents = []
-        for key in keys:
-            data = r.hgetall(key)
-            if data:
-                agents.append({
-                    "name": key.split(":")[-1],
-                    "status": data.get("status", "unknown"),
-                    "last_seen": data.get("last_seen", ""),
-                })
+        for ident in idents:
+            agents.append({
+                "name": ident.name,
+                "status": ident.metadata.get("status", "unknown"),
+                "last_seen": ident.metadata.get("last_seen", ""),
+            })
+
         if not agents:
-            # Fallback: check bus:peers
-            peers_raw = r.get("sos:peers")
-            if peers_raw:
-                try:
+            # Fallback: check bus:peers (no AgentIdentity shape, raw redis OK here)
+            try:
+                r = _get_redis()
+                peers_raw = r.get("sos:peers")
+                if peers_raw:
                     peers = json.loads(peers_raw)
                     for name, info in peers.items():
                         agents.append({
@@ -40,11 +45,12 @@ def _agent_status(project: str | None) -> dict[str, Any]:
                             "status": "online",
                             "last_seen": info.get("last_seen", ""),
                         })
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
         return {"agents": agents, "online": sum(1 for a in agents if a.get("status") == "online")}
     except Exception:
-        logger.debug("Redis unreachable", exc_info=True)
+        logger.debug("Redis unreachable in _agent_status", exc_info=True)
     return {"agents": [], "online": 0}
 
 
