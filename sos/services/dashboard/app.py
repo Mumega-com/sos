@@ -623,6 +623,22 @@ def _is_admin(tenant: dict[str, Any] | None) -> bool:
     return not tenant.get("project")
 
 
+_SERVICE_MAP_PATH = Path(__file__).resolve().parent / "service_map.svg"
+_service_map_cache: str | None = None
+
+
+def _load_service_map_svg() -> str:
+    """Read the service-map SVG once, cache in-process. Empty string on failure."""
+    global _service_map_cache
+    if _service_map_cache is None:
+        try:
+            _service_map_cache = _SERVICE_MAP_PATH.read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to load service map SVG")
+            _service_map_cache = ""
+    return _service_map_cache
+
+
 _SOS_FLOW_MAP_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -684,203 +700,21 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-ser
 </p>
 
 <div class="flow-map">
-  <svg viewBox="0 0 1300 820" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;min-width:1100px">
-    <defs>
-      <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748B"/>
-      </marker>
-      <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#34D399"/>
-      </marker>
-      <marker id="arrow-purple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#A78BFA"/>
-      </marker>
-      <marker id="arrow-amber" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#FBBF24"/>
-      </marker>
-    </defs>
-
-    <!-- === CUSTOMER EDGE (top) === -->
-    <g>
-      <rect x="40" y="30" width="280" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="180" y="60" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">Customer Edge</text>
-      <text x="180" y="80" text-anchor="middle" fill="#94A3B8" font-size="11">CF Pages, Workers, Inkwell</text>
-      <text x="180" y="96" text-anchor="middle" fill="#64748B" font-size="10">trop, gaf, dnu tenants</text>
-    </g>
-
-    <!-- === MCP GATEWAYS (top center) === -->
-    <g>
-      <rect x="380" y="30" width="280" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="520" y="60" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">MCP Gateways</text>
-      <text x="520" y="80" text-anchor="middle" fill="#94A3B8" font-size="11">sos_mcp_sse :6070 · bridge :6380</text>
-      <text x="520" y="96" text-anchor="middle" fill="#64748B" font-size="10">tokens.json · v1 enforcement</text>
-    </g>
-
-    <!-- === ADAPTERS (top right) === -->
-    <g>
-      <rect x="720" y="30" width="280" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="860" y="60" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">LLM Adapters</text>
-      <text x="860" y="80" text-anchor="middle" fill="#94A3B8" font-size="11">Claude · Gemini · OpenAI</text>
-      <text x="860" y="96" text-anchor="middle" fill="#64748B" font-size="10">PricingEntry (v0.4.0)</text>
-    </g>
-
-    <!-- === PROVIDERS (top far right) === -->
-    <g>
-      <rect x="1060" y="30" width="200" height="80" rx="10" fill="#0F172A" stroke="#334155" stroke-width="1" stroke-dasharray="4,2"/>
-      <text x="1160" y="60" text-anchor="middle" fill="#CBD5E1" font-size="13" font-weight="500">Model Providers</text>
-      <text x="1160" y="80" text-anchor="middle" fill="#64748B" font-size="11">Anthropic, Google,</text>
-      <text x="1160" y="96" text-anchor="middle" fill="#64748B" font-size="11">OpenAI APIs</text>
-    </g>
-
-    <!-- === BUS (center — the heart) === -->
-    <g>
-      <rect x="380" y="220" width="540" height="140" rx="14" fill="#0F172A" stroke="#6366F1" stroke-width="2"/>
-      <text x="650" y="255" text-anchor="middle" fill="#A5B4FC" font-size="17" font-weight="700">SOS Bus</text>
-      <text x="650" y="277" text-anchor="middle" fill="#94A3B8" font-size="11">Redis Streams + PubSub</text>
-      <text x="650" y="300" text-anchor="middle" fill="#CBD5E1" font-size="11">8 v1 message types: announce, send, wake, ask,</text>
-      <text x="650" y="316" text-anchor="middle" fill="#CBD5E1" font-size="11">task_created, task_claimed, task_completed, agent_joined</text>
-      <text x="650" y="340" text-anchor="middle" fill="#64748B" font-size="10">sos:stream:global:agent:{name} · sos:channel:{...}</text>
-    </g>
-
-    <!-- === AGENTS (center left) === -->
-    <g>
-      <rect x="40" y="220" width="280" height="140" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="180" y="255" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">Agents</text>
-      <text x="180" y="277" text-anchor="middle" fill="#94A3B8" font-size="11">tmux · openclaw · mcp</text>
-      <text x="180" y="300" text-anchor="middle" fill="#CBD5E1" font-size="11">hadi, kasra, sos-dev, codex,</text>
-      <text x="180" y="316" text-anchor="middle" fill="#CBD5E1" font-size="11">athena, gemini, sos-medic,</text>
-      <text x="180" y="332" text-anchor="middle" fill="#CBD5E1" font-size="11">calcifer, wake-daemon, …</text>
-    </g>
-
-    <!-- === SQUADS (center right) === -->
-    <g>
-      <rect x="980" y="220" width="280" height="140" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="1120" y="255" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">Squad Service</text>
-      <text x="1120" y="277" text-anchor="middle" fill="#94A3B8" font-size="11">:8060 · tasks + skills</text>
-      <text x="1120" y="300" text-anchor="middle" fill="#CBD5E1" font-size="11">mkt-lead, seo, research,</text>
-      <text x="1120" y="316" text-anchor="middle" fill="#CBD5E1" font-size="11">content, ops, …</text>
-      <text x="1120" y="340" text-anchor="middle" fill="#64748B" font-size="10">bounties + claims + settlement</text>
-    </g>
-
-    <!-- === MIRROR (bottom left) === -->
-    <g>
-      <rect x="40" y="440" width="280" height="100" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
-      <text x="180" y="472" text-anchor="middle" fill="#F8FAFC" font-size="14" font-weight="600">Mirror</text>
-      <text x="180" y="492" text-anchor="middle" fill="#94A3B8" font-size="11">:8844 · memory + engrams</text>
-      <text x="180" y="514" text-anchor="middle" fill="#CBD5E1" font-size="11">21k+ engrams</text>
-      <text x="180" y="530" text-anchor="middle" fill="#64748B" font-size="10">Vector search + per-agent recall</text>
-    </g>
-
-    <!-- === ECONOMY (bottom center) === -->
-    <g>
-      <rect x="380" y="440" width="540" height="180" rx="12" fill="#1E293B" stroke="#34D399" stroke-width="2"/>
-      <text x="650" y="475" text-anchor="middle" fill="#6EE7B7" font-size="16" font-weight="700">Economy</text>
-      <text x="650" y="498" text-anchor="middle" fill="#94A3B8" font-size="11">Wallet · Ledger · UsageLog · $MIND</text>
-
-      <rect x="410" y="510" width="150" height="50" rx="6" fill="#0F172A" stroke="#334155" stroke-width="1"/>
-      <text x="485" y="530" text-anchor="middle" fill="#CBD5E1" font-size="11" font-weight="500">SovereignWallet</text>
-      <text x="485" y="546" text-anchor="middle" fill="#64748B" font-size="10">per-user $MIND balance</text>
-
-      <rect x="570" y="510" width="150" height="50" rx="6" fill="#0F172A" stroke="#334155" stroke-width="1"/>
-      <text x="645" y="530" text-anchor="middle" fill="#CBD5E1" font-size="11" font-weight="500">WorkLedger</text>
-      <text x="645" y="546" text-anchor="middle" fill="#64748B" font-size="10">squad bounty settlement</text>
-
-      <rect x="730" y="510" width="170" height="50" rx="6" fill="#0F172A" stroke="#A78BFA" stroke-width="1"/>
-      <text x="815" y="528" text-anchor="middle" fill="#DDD6FE" font-size="11" font-weight="500">UsageLog (new)</text>
-      <text x="815" y="544" text-anchor="middle" fill="#64748B" font-size="10">POST /usage · micros</text>
-
-      <text x="650" y="595" text-anchor="middle" fill="#64748B" font-size="10">PricingEntry table (per-token + flat-per-call)</text>
-    </g>
-
-    <!-- === $MIND/SOLANA (bottom right) === -->
-    <g>
-      <rect x="980" y="440" width="280" height="100" rx="10" fill="#1E293B" stroke="#FBBF24" stroke-width="1.5"/>
-      <text x="1120" y="472" text-anchor="middle" fill="#FCD34D" font-size="14" font-weight="600">$MIND on Solana</text>
-      <text x="1120" y="492" text-anchor="middle" fill="#94A3B8" font-size="11">devnet · transmute</text>
-      <text x="1120" y="514" text-anchor="middle" fill="#CBD5E1" font-size="11">payout + QNFT proofs</text>
-      <text x="1120" y="530" text-anchor="middle" fill="#64748B" font-size="10">Telegram approval gate</text>
-    </g>
-
-    <!-- === STRIPE (far bottom) === -->
-    <g>
-      <rect x="380" y="700" width="540" height="60" rx="8" fill="#0F172A" stroke="#6366F1" stroke-width="1.5"/>
-      <text x="650" y="730" text-anchor="middle" fill="#A5B4FC" font-size="13" font-weight="600">Stripe → USD → $MIND conversion</text>
-      <text x="650" y="748" text-anchor="middle" fill="#64748B" font-size="10">customer pays USD → treasury converts → wallet credit in $MIND</text>
-    </g>
-
-    <!-- === ARROWS === -->
-    <!-- Customer Edge → MCP Gateways (HTTP) -->
-    <line x1="320" y1="70" x2="380" y2="70" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="350" y="62" text-anchor="middle" fill="#94A3B8" font-size="9">HTTP Bearer</text>
-
-    <!-- MCP Gateways → Adapters (execute) -->
-    <line x1="660" y1="70" x2="720" y2="70" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="690" y="62" text-anchor="middle" fill="#94A3B8" font-size="9">execute</text>
-
-    <!-- Adapters → Providers -->
-    <line x1="1000" y1="70" x2="1060" y2="70" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="1030" y="62" text-anchor="middle" fill="#94A3B8" font-size="9">API</text>
-
-    <!-- MCP Gateways → Bus (XADD) -->
-    <line x1="520" y1="110" x2="520" y2="220" stroke="#6366F1" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="540" y="170" fill="#A5B4FC" font-size="10">XADD v1 msg</text>
-
-    <!-- Bus → MCP Gateways (xrevrange/inbox) -->
-    <line x1="620" y1="220" x2="620" y2="110" stroke="#6366F1" stroke-width="2" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
-    <text x="636" y="170" fill="#A5B4FC" font-size="10">XREVRANGE</text>
-
-    <!-- Bus ↔ Agents -->
-    <line x1="380" y1="290" x2="320" y2="290" stroke="#6366F1" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="350" y="282" text-anchor="middle" fill="#A5B4FC" font-size="10">wake pubsub</text>
-
-    <line x1="320" y1="310" x2="380" y2="310" stroke="#6366F1" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="350" y="326" text-anchor="middle" fill="#A5B4FC" font-size="10">publish v1</text>
-
-    <!-- Bus ↔ Squads -->
-    <line x1="920" y1="290" x2="980" y2="290" stroke="#FBBF24" stroke-width="2" marker-end="url(#arrow-amber)"/>
-    <text x="950" y="282" text-anchor="middle" fill="#FCD34D" font-size="10">task_created</text>
-
-    <line x1="980" y1="310" x2="920" y2="310" stroke="#FBBF24" stroke-width="2" marker-end="url(#arrow-amber)"/>
-    <text x="950" y="326" text-anchor="middle" fill="#FCD34D" font-size="10">task_claimed/completed</text>
-
-    <!-- Agents → Mirror (engram store) -->
-    <line x1="180" y1="360" x2="180" y2="440" stroke="#A78BFA" stroke-width="2" marker-end="url(#arrow-purple)"/>
-    <text x="206" y="408" fill="#C4B5FD" font-size="10">remember/recall</text>
-
-    <!-- Mirror → Agents (recall back) — dashed -->
-    <line x1="150" y1="440" x2="150" y2="360" stroke="#A78BFA" stroke-width="2" stroke-dasharray="3,3" marker-end="url(#arrow-purple)"/>
-
-    <!-- Squads → Economy (settle) -->
-    <line x1="1120" y1="360" x2="1120" y2="440" stroke="#34D399" stroke-width="2" marker-end="url(#arrow-green)"/>
-    <text x="1146" y="408" fill="#6EE7B7" font-size="10">settle in $MIND</text>
-
-    <!-- Bus → Economy (UsageLog events) -->
-    <line x1="820" y1="360" x2="820" y2="440" stroke="#A78BFA" stroke-width="2" marker-end="url(#arrow-purple)"/>
-    <text x="840" y="408" fill="#C4B5FD" font-size="10">usage event</text>
-
-    <!-- Economy → $MIND/Solana -->
-    <line x1="920" y1="490" x2="980" y2="490" stroke="#34D399" stroke-width="2" marker-end="url(#arrow-green)"/>
-    <text x="950" y="482" text-anchor="middle" fill="#6EE7B7" font-size="10">transmute</text>
-
-    <!-- Stripe → Economy -->
-    <line x1="650" y1="700" x2="650" y2="620" stroke="#6366F1" stroke-width="2" marker-end="url(#arrow)"/>
-    <text x="672" y="660" fill="#A5B4FC" font-size="10">USD → $MIND</text>
-
-    <!-- Customer Edge → Economy (direct usage POST) -->
-    <path d="M 180 110 Q 180 400 380 500" fill="none" stroke="#A78BFA" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrow-purple)"/>
-    <text x="210" y="450" fill="#C4B5FD" font-size="10">edge tenants</text>
-    <text x="210" y="465" fill="#C4B5FD" font-size="10">POST /usage</text>
-  </svg>
-
+  {service_map_svg}
   <div class="legend">
     <div class="legend-item"><div class="legend-box" style="background:#6366F1"></div>Bus / v1 messages</div>
     <div class="legend-item"><div class="legend-box" style="background:#34D399"></div>Money / settlement / $MIND</div>
     <div class="legend-item"><div class="legend-box" style="background:#A78BFA"></div>Memory / telemetry</div>
     <div class="legend-item"><div class="legend-box" style="background:#FBBF24"></div>Squad / task coordination</div>
-    <div class="legend-item"><div class="legend-box" style="background:#64748B"></div>External API / HTTP</div>
+    <div class="legend-item"><div class="legend-box" style="background:#64748B"></div>External / HTTP</div>
+    <div class="legend-item"><div class="legend-box" style="background:#F87171;border:1px dashed #F87171"></div>Debt / broken</div>
+  </div>
+  <div class="legend" style="margin-top:8px">
+    <div class="legend-item"><div style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#22D3EE;color:#0F172A;font-size:9px;font-weight:700;text-align:center;line-height:14px">C</div>&nbsp;Community (sos-community, Apache 2.0 — proposed)</div>
+    <div class="legend-item"><div style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#EAB308;color:#0F172A;font-size:9px;font-weight:700;text-align:center;line-height:14px">P</div>&nbsp;Proprietary core (Mumega commercial)</div>
+    <div class="legend-item"><div style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#64748B;color:#F8FAFC;font-size:9px;font-weight:700;text-align:center;line-height:14px">X</div>&nbsp;External / third-party</div>
   </div>
 </div>
-
 <div class="info-grid">
   <div class="info-card">
     <h3>Contracts (v0.4.0)</h3>
@@ -945,7 +779,7 @@ async def sos_dashboard_root(request: Request) -> Response:
     html = _SOS_FLOW_MAP_HTML.replace(
         "{timestamp}",
         datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC"),
-    )
+    ).replace("{service_map_svg}", _load_service_map_svg())
     return HTMLResponse(html)
 
 
@@ -1251,6 +1085,15 @@ async def marketplace_skill_detail(skill_id: str, format: str | None = None) -> 
 </body>
 </html>"""
     return HTMLResponse(html)
+
+
+@app.get("/sos/service_map.svg")
+async def sos_service_map_svg() -> Response:
+    """Serve the raw service-map SVG for sharing / downloads (no auth)."""
+    svg = _load_service_map_svg()
+    if not svg:
+        return Response(status_code=404, content="service map unavailable")
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.get("/sos/api/health")

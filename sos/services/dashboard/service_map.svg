@@ -1,0 +1,561 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300"
+     font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+
+  <!-- ═══════════════════════════════════════════════════════════
+       DEFS — arrow markers, one per edge color
+       ═══════════════════════════════════════════════════════════ -->
+  <defs>
+    <!-- Indigo bus -->
+    <marker id="arrow-indigo" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6366F1"/>
+    </marker>
+    <!-- Slate HTTP -->
+    <marker id="arrow-slate" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#64748B"/>
+    </marker>
+    <!-- Green money -->
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#34D399"/>
+    </marker>
+    <!-- Purple memory -->
+    <marker id="arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#A78BFA"/>
+    </marker>
+    <!-- Amber squad -->
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#FBBF24"/>
+    </marker>
+    <!-- Red debt -->
+    <marker id="arrow-red" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#F87171"/>
+    </marker>
+  </defs>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       GLOBAL BACKGROUND
+       ═══════════════════════════════════════════════════════════ -->
+  <rect width="1800" height="1300" fill="#0F172A"/>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ROW LABELS (background panels per row)
+       ═══════════════════════════════════════════════════════════ -->
+  <!-- Row 1 panel -->
+  <rect x="20" y="44" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 2 panel -->
+  <rect x="20" y="184" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 3 panel -->
+  <rect x="20" y="324" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 4 panel -->
+  <rect x="20" y="464" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 5 panel -->
+  <rect x="20" y="604" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 6 panel -->
+  <rect x="20" y="784" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+  <!-- Row 7 panel -->
+  <rect x="20" y="944" width="1760" height="112" rx="8" fill="#1E293B" opacity="0.5"/>
+
+  <!-- Row labels -->
+  <text x="32" y="58" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 1 · INCOMING / CLIENTS</text>
+  <text x="32" y="198" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 2 · MCP / HTTP GATEWAYS</text>
+  <text x="32" y="338" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 3 · KERNEL TRIO + CONTRACTS</text>
+  <text x="32" y="478" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 4 · ADAPTERS + PROVIDER LAYER</text>
+  <text x="32" y="618" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 5 · PRODUCT LAYER (PROPRIETARY CORE)</text>
+  <text x="32" y="798" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 6 · EXTERNAL EGRESS / THIRD-PARTY</text>
+  <text x="32" y="958" fill="#475569" font-size="10" font-weight="600" letter-spacing="1">ROW 7 · SIBLING PRODUCTS</text>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       EDGES — drawn BEFORE nodes so nodes sit on top
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── SLATE HTTP EDGES ── -->
+  <!-- n1(190,100) → n8(1090,240): Customer Edge → SaaS/Signup -->
+  <path d="M190,140 C190,170 1090,170 1090,200" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)"/>
+  <text x="640" y="167" fill="#94A3B8" font-size="9" text-anchor="middle">signup</text>
+
+  <!-- n2(490,100) → n5(190,240): MCP Clients → sos_mcp_sse -->
+  <path d="M490,140 C490,175 190,175 190,200" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)"/>
+
+  <!-- n3(790,100) → n5(190,240): External Agents → sos_mcp_sse -->
+  <path d="M790,140 C790,180 190,180 190,200" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)" opacity="0.7"/>
+
+  <!-- n4(1090,100) → n8(1090,200): Installer → SaaS -->
+  <line x1="1090" y1="140" x2="1090" y2="200" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
+
+  <!-- n27(1390,840) → n8(1090,240): Mumega Edge → SaaS -->
+  <path d="M1390,840 C1390,820 1090,500 1090,280" stroke="#64748B" stroke-width="1.2" fill="none" marker-end="url(#arrow-slate)" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="1270" y="600" fill="#94A3B8" font-size="9" text-anchor="middle">edge sync</text>
+
+  <!-- n8(1090,240) → n9(190,380): SaaS → Auth tokens.json -->
+  <path d="M1090,280 C1090,310 190,310 190,340" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)"/>
+  <text x="640" y="307" fill="#94A3B8" font-size="9" text-anchor="middle">write tokens.json</text>
+
+  <!-- n16(790,520) → n5(190,240): Agents → sos_mcp_sse -->
+  <path d="M790,480 C790,430 190,350 190,280" stroke="#64748B" stroke-width="1.2" fill="none" marker-end="url(#arrow-slate)" opacity="0.7"/>
+
+  <!-- n16(790,520) → n6(490,240): Agents → sos_mcp stdio -->
+  <path d="M790,480 C790,440 490,400 490,280" stroke="#64748B" stroke-width="1.2" fill="none" marker-end="url(#arrow-slate)" opacity="0.5" stroke-dasharray="3,2"/>
+
+  <!-- n15(490,520) → n14(190,520): Provider Matrix → Adapters -->
+  <line x1="490" y1="520" x2="450" y2="520" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow-slate)"/>
+
+  <!-- n14(190,520) → n24(490,840): Adapters → Model Providers -->
+  <path d="M190,560 C190,700 490,750 490,800" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)"/>
+
+  <!-- n16(790,520) → n14(190,520): Agents → Adapters (optional) -->
+  <path d="M790,490 C600,490 450,510 450,520" stroke="#64748B" stroke-width="1" fill="none" marker-end="url(#arrow-slate)" opacity="0.4"/>
+
+  <!-- n29(490,1000) → n8(1090,240): Customer Dashboard → SaaS -->
+  <path d="M490,960 C490,930 1090,400 1090,280" stroke="#64748B" stroke-width="1.2" fill="none" marker-end="url(#arrow-slate)" opacity="0.5" stroke-dasharray="3,2"/>
+  <text x="780" y="620" fill="#94A3B8" font-size="9" text-anchor="middle">reads tenant state</text>
+
+  <!-- n28(190,1000) → n30(790,1000): Inkwell → Mumega Site -->
+  <path d="M320,1000 C455,1000 585,1000 720,1000" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow-slate)"/>
+  <text x="520" y="993" fill="#94A3B8" font-size="9" text-anchor="middle">generates</text>
+
+  <!-- n22(1390,660) → many (aggregate arrow with label) -->
+  <path d="M1390,620 C1390,590 1090,400 1090,280" stroke="#64748B" stroke-width="1" fill="none" marker-end="url(#arrow-slate)" opacity="0.35" stroke-dasharray="2,2"/>
+  <text x="1300" y="430" fill="#94A3B8" font-size="9" text-anchor="middle" opacity="0.8">reads all services</text>
+  <text x="1300" y="440" fill="#94A3B8" font-size="8" text-anchor="middle" opacity="0.8">(+many)</text>
+
+  <!-- ── INDIGO BUS EDGES ── -->
+  <!-- n5(190,240) ↔ n10(490,380): MCP SSE ↔ Redis Bus -->
+  <path d="M320,240 C400,240 400,310 490,340" stroke="#6366F1" stroke-width="2" fill="none" marker-end="url(#arrow-indigo)"/>
+  <path d="M490,340 C400,340 350,270 260,240" stroke="#6366F1" stroke-width="2" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="380" y="286" fill="#6366F1" font-size="9" text-anchor="middle">XADD/XREVRANGE</text>
+
+  <!-- n7(790,240) ↔ n10(490,380): Bus Bridge ↔ Redis Bus -->
+  <path d="M790,280 C790,320 590,330 590,340" stroke="#6366F1" stroke-width="2" fill="none" marker-end="url(#arrow-indigo)"/>
+  <path d="M590,340 C590,310 790,300 790,280" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)" opacity="0.6"/>
+
+  <!-- n6(490,240) ↔ n10(490,380): stdio MCP ↔ Redis Bus (legacy) -->
+  <line x1="490" y1="280" x2="490" y2="340" stroke="#6366F1" stroke-width="1.5" marker-end="url(#arrow-indigo)" stroke-dasharray="4,3" opacity="0.5"/>
+
+  <!-- n10(490,380) ↔ n11(790,380): Bus ↔ Registry -->
+  <path d="M620,360 C705,350 705,360 790,360" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <path d="M790,380 C705,380 705,380 620,380" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)" opacity="0.7"/>
+
+  <!-- n10(490,380) → n13(1390,380): Bus → Wake Daemon (pubsub) -->
+  <path d="M620,370 C900,350 1200,350 1390,360" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="1000" y="346" fill="#6366F1" font-size="9" text-anchor="middle">pubsub subscribe</text>
+
+  <!-- n13(1390,380) → n16(790,520): Wake Daemon → Agents (tmux) -->
+  <path d="M1390,420 C1390,460 900,470 880,480" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="1150" y="455" fill="#6366F1" font-size="9" text-anchor="middle">tmux send-keys wake</text>
+
+  <!-- n10(490,380) ↔ n17(1090,520): Bus ↔ Calcifer -->
+  <path d="M620,390 C860,390 860,490 1090,490" stroke="#6366F1" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <path d="M1090,505 C860,505 850,405 620,395" stroke="#6366F1" stroke-width="1" fill="none" marker-end="url(#arrow-indigo)" opacity="0.6"/>
+
+  <!-- n10(490,380) ↔ n18(190,660): Bus ↔ Squad Service -->
+  <path d="M490,420 C490,450 190,590 190,620" stroke="#FBBF24" stroke-width="1.5" fill="none" marker-end="url(#arrow-amber)"/>
+  <path d="M170,620 C170,560 470,450 470,420" stroke="#FBBF24" stroke-width="1" fill="none" marker-end="url(#arrow-amber)" opacity="0.6"/>
+  <text x="310" y="510" fill="#FBBF24" font-size="9" text-anchor="middle">task_created/claimed</text>
+
+  <!-- ── PURPLE MEMORY / TELEMETRY EDGES ── -->
+  <!-- n5(190,240) → n19(490,660): MCP SSE → Mirror (mirror_post /store) -->
+  <path d="M260,260 C380,260 480,580 490,620" stroke="#A78BFA" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
+  <text x="310" y="410" fill="#A78BFA" font-size="9" text-anchor="middle">/store engram</text>
+
+  <!-- n19(490,660) → n5(190,240): Mirror → MCP SSE (/recent) dashed -->
+  <path d="M480,620 C470,450 270,290 220,265" stroke="#A78BFA" stroke-width="1.2" fill="none" marker-end="url(#arrow-purple)" stroke-dasharray="4,3" opacity="0.6"/>
+  <text x="340" y="440" fill="#A78BFA" font-size="9" text-anchor="middle" opacity="0.8">/recent recall</text>
+
+  <!-- n5(190,240) → n20(790,660): MCP SSE → Economy (UsageLog POST /usage) -->
+  <path d="M320,250 C560,250 760,580 790,620" stroke="#A78BFA" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
+  <text x="580" y="380" fill="#A78BFA" font-size="9" text-anchor="middle">POST /usage</text>
+
+  <!-- n18(190,660) → n20(790,660): Squad posts usage -->
+  <path d="M320,650 C555,640 660,640 790,645" stroke="#A78BFA" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
+
+  <!-- n29(490,1000) → n20(790,660): Customer Dashboard reads UsageLog -->
+  <path d="M620,980 C720,980 800,760 800,700" stroke="#A78BFA" stroke-width="1.2" fill="none" marker-end="url(#arrow-purple)" stroke-dasharray="3,2" opacity="0.7"/>
+
+  <!-- n22(1390,660) → n20(790,660): Operator Dashboard reads UsageLog -->
+  <path d="M1390,650 C1100,630 900,640 860,650" stroke="#A78BFA" stroke-width="1.2" fill="none" marker-end="url(#arrow-purple)" stroke-dasharray="3,2" opacity="0.6"/>
+
+  <!-- n22(1390,660) → n19(490,660): Operator Dashboard reads Mirror -->
+  <path d="M1390,670 C1100,690 700,690 620,675" stroke="#A78BFA" stroke-width="1" fill="none" marker-end="url(#arrow-purple)" stroke-dasharray="3,2" opacity="0.5"/>
+
+  <!-- ── AMBER SQUAD EDGES ── -->
+  <!-- n18(190,660) → n21(1090,660): Squad → SkillCard Registry -->
+  <path d="M320,660 C600,655 860,655 1090,655" stroke="#FBBF24" stroke-width="1.5" fill="none" marker-end="url(#arrow-amber)"/>
+  <text x="705" y="648" fill="#FBBF24" font-size="9" text-anchor="middle">invoke skill</text>
+
+  <!-- n21(1090,660) → n20(790,660): SkillCard → Economy (earnings) -->
+  <path d="M1090,665 C990,675 890,675 860,670" stroke="#FBBF24" stroke-width="1.5" fill="none" marker-end="url(#arrow-amber)"/>
+
+  <!-- ── GREEN MONEY EDGES ── -->
+  <!-- n23(190,840) → n20(790,660): Stripe → Economy (wallet credit) -->
+  <path d="M320,840 C560,840 760,720 790,700" stroke="#34D399" stroke-width="2" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="560" y="796" fill="#34D399" font-size="9" text-anchor="middle">webhook → credit</text>
+
+  <!-- n20(790,660) → n26(1090,840): Economy → Solana -->
+  <path d="M860,700 C900,760 1020,810 1090,800" stroke="#34D399" stroke-width="2" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="980" y="763" fill="#34D399" font-size="9" text-anchor="middle">transmute</text>
+
+  <!-- n20(790,660) → n18(190,660): Economy → Squad (settlement credits) -->
+  <path d="M790,670 C560,680 350,680 320,675" stroke="#34D399" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="555" y="686" fill="#34D399" font-size="9" text-anchor="middle">settle bounty</text>
+
+  <!-- n21(1090,660) → n20(790,660): SkillCard earnings (duplicate as green) -->
+  <!-- (already shown as amber above; skip duplicate) -->
+
+  <!-- ── DEBT / BROKEN EDGES (red dashed) ── -->
+  <!-- n18 ↔ n19: double task system -->
+  <path d="M190,700 C190,760 490,760 490,700" stroke="#F87171" stroke-width="2" fill="none" marker-end="url(#arrow-red)" stroke-dasharray="6,4"/>
+  <text x="340" y="770" fill="#F87171" font-size="9" text-anchor="middle" font-weight="600">DEBT: double task system</text>
+  <text x="340" y="781" fill="#F87171" font-size="8" text-anchor="middle">Squad /tasks vs Mirror /tasks</text>
+
+  <!-- n19 ↛ n10: Mirror doesn't consume bus (X marker) -->
+  <path d="M490,620 C490,500 490,430 490,420" stroke="#F87171" stroke-width="1.5" fill="none" stroke-dasharray="6,4" opacity="0.8"/>
+  <!-- X glyph in middle of that line -->
+  <line x1="480" y1="515" x2="500" y2="535" stroke="#F87171" stroke-width="2"/>
+  <line x1="500" y1="515" x2="480" y2="535" stroke="#F87171" stroke-width="2"/>
+  <text x="520" y="520" fill="#F87171" font-size="8">no XREVRANGE</text>
+
+  <!-- n20 ↛ n19: UsageLog NOT replicated to Mirror -->
+  <path d="M790,650 C660,650 620,650 620,650" stroke="#F87171" stroke-width="1.5" fill="none" stroke-dasharray="6,4" opacity="0.8"/>
+  <!-- X glyph -->
+  <line x1="700" y1="643" x2="714" y2="657" stroke="#F87171" stroke-width="2"/>
+  <line x1="714" y1="643" x2="700" y2="657" stroke="#F87171" stroke-width="2"/>
+  <text x="720" y="643" fill="#F87171" font-size="8">UsageLog not in Mirror</text>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       NODES — drawn on top of edges
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── NODE MACRO (rect + 3 text lines + badge) ──
+       Each node: rect at (x,y) w=260 h=80 rx=10
+       Title: y+22, Role: y+38, Detail: y+52
+       Badge circle: cx=x+250 cy=y+10 r=8
+  -->
+
+  <!-- ─── ROW 1: INCOMING / CLIENTS ─── -->
+
+  <!-- n1: Customer Edge — External (X) grey badge -->
+  <rect x="60" y="60" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="82" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Customer Edge</text>
+  <text x="190" y="98" fill="#94A3B8" font-size="11" text-anchor="middle">CF Pages · Workers · Inkwell tenants</text>
+  <text x="190" y="112" fill="#64748B" font-size="10" text-anchor="middle">trop, gaf, dnu</text>
+  <circle cx="306" cy="70" r="8" fill="#64748B"/>
+  <text x="306" y="74" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n2: MCP Clients — External (X) -->
+  <rect x="360" y="60" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="490" y="82" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">MCP Clients</text>
+  <text x="490" y="98" fill="#94A3B8" font-size="11" text-anchor="middle">Claude Code · Cursor · Codex · Gemini CLI</text>
+  <text x="490" y="112" fill="#64748B" font-size="10" text-anchor="middle">via .mcp.json / ~/.claude.json</text>
+  <circle cx="606" cy="70" r="8" fill="#64748B"/>
+  <text x="606" y="74" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n3: External Agents — External (X) -->
+  <rect x="660" y="60" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="82" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">External Agents</text>
+  <text x="790" y="98" fill="#94A3B8" font-size="11" text-anchor="middle">remote.js SDK · third-party MCP</text>
+  <text x="790" y="112" fill="#64748B" font-size="10" text-anchor="middle">via mcp.mumega.com</text>
+  <circle cx="906" cy="70" r="8" fill="#64748B"/>
+  <text x="906" y="74" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n4: Installer — External (X) -->
+  <rect x="960" y="60" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="82" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Installer</text>
+  <text x="1090" y="98" fill="#94A3B8" font-size="11" text-anchor="middle">curl -sL mumega.com/install</text>
+  <text x="1090" y="112" fill="#64748B" font-size="10" text-anchor="middle">posts to saas /signup</text>
+  <circle cx="1206" cy="70" r="8" fill="#64748B"/>
+  <text x="1206" y="74" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- ─── ROW 2: MCP / HTTP GATEWAYS ─── -->
+
+  <!-- n5: sos_mcp_sse — Community (C) cyan badge -->
+  <rect x="60" y="200" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="222" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">sos_mcp_sse</text>
+  <text x="190" y="238" fill="#94A3B8" font-size="11" text-anchor="middle">MCP SSE :6070</text>
+  <text x="190" y="252" fill="#64748B" font-size="10" text-anchor="middle">v1 SendMessage enforcement</text>
+  <circle cx="306" cy="210" r="8" fill="#22D3EE"/>
+  <text x="306" y="214" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n6: sos_mcp stdio — Community (C) cyan badge, deprecated appearance -->
+  <rect x="360" y="200" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5" opacity="0.75"/>
+  <text x="490" y="222" fill="#94A3B8" font-size="14" font-weight="700" text-anchor="middle">sos_mcp (stdio)</text>
+  <text x="490" y="238" fill="#94A3B8" font-size="11" text-anchor="middle">deprecated MCP stdio</text>
+  <text x="490" y="252" fill="#64748B" font-size="10" text-anchor="middle">legacy path, migrated</text>
+  <circle cx="606" cy="210" r="8" fill="#22D3EE"/>
+  <text x="606" y="214" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+  <!-- deprecated badge -->
+  <rect x="440" y="214" width="100" height="16" rx="4" fill="#475569" opacity="0.7"/>
+  <text x="490" y="225" fill="#F8FAFC" font-size="9" font-weight="600" text-anchor="middle">DEPRECATED</text>
+
+  <!-- n7: bus-bridge — Community (C) -->
+  <rect x="660" y="200" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="222" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">bus-bridge</text>
+  <text x="790" y="238" fill="#94A3B8" font-size="11" text-anchor="middle">HTTP bridge :6380</text>
+  <text x="790" y="252" fill="#64748B" font-size="10" text-anchor="middle">sk-bus-mumega-bridge-001 token</text>
+  <circle cx="906" cy="210" r="8" fill="#22D3EE"/>
+  <text x="906" y="214" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n8: SaaS / Signup — Proprietary (P) gold badge -->
+  <rect x="960" y="200" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="222" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">SaaS / Signup</text>
+  <text x="1090" y="238" fill="#94A3B8" font-size="11" text-anchor="middle">tenants, tokens :8075</text>
+  <text x="1090" y="252" fill="#64748B" font-size="10" text-anchor="middle">/signup, /tenants/{slug}/*</text>
+  <circle cx="1206" cy="210" r="8" fill="#EAB308"/>
+  <text x="1206" y="214" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- ─── ROW 3: KERNEL TRIO + CONTRACTS ─── -->
+
+  <!-- n9: Auth — Community (C) -->
+  <rect x="60" y="340" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="362" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Auth</text>
+  <text x="190" y="378" fill="#94A3B8" font-size="11" text-anchor="middle">tokens.json (hashed)</text>
+  <text x="190" y="392" fill="#64748B" font-size="10" text-anchor="middle">SEC-001 post-hashing</text>
+  <circle cx="306" cy="350" r="8" fill="#22D3EE"/>
+  <text x="306" y="354" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n10: Redis Bus — Community (C) -->
+  <rect x="360" y="340" width="260" height="80" rx="10" fill="#1E293B" stroke="#6366F1" stroke-width="2"/>
+  <text x="490" y="362" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Redis Bus</text>
+  <text x="490" y="378" fill="#94A3B8" font-size="11" text-anchor="middle">streams + pubsub :6379</text>
+  <text x="490" y="392" fill="#64748B" font-size="10" text-anchor="middle">sos:stream:global:agent:{name}</text>
+  <circle cx="606" cy="350" r="8" fill="#22D3EE"/>
+  <text x="606" y="354" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n11: Registry — Community (C) -->
+  <rect x="660" y="340" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="362" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Registry</text>
+  <text x="790" y="378" fill="#94A3B8" font-size="11" text-anchor="middle">sos:registry:* hashes</text>
+  <text x="790" y="392" fill="#64748B" font-size="10" text-anchor="middle">Agent Card v1 TTL'd</text>
+  <circle cx="906" cy="350" r="8" fill="#22D3EE"/>
+  <text x="906" y="354" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n12: Contracts v1 — Community (C) -->
+  <rect x="960" y="340" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="362" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Contracts v1</text>
+  <text x="1090" y="378" fill="#94A3B8" font-size="11" text-anchor="middle">8 msg types + SkillCard v1</text>
+  <text x="1090" y="392" fill="#64748B" font-size="10" text-anchor="middle">JSON Schema Draft 2020-12</text>
+  <circle cx="1206" cy="350" r="8" fill="#22D3EE"/>
+  <text x="1206" y="354" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n13: Wake Daemon — Community (C) -->
+  <rect x="1260" y="340" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1390" y="362" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Wake Daemon</text>
+  <text x="1390" y="378" fill="#94A3B8" font-size="11" text-anchor="middle">bus pubsub → tmux/MCP</text>
+  <text x="1390" y="392" fill="#64748B" font-size="10" text-anchor="middle">auto-wake idle agents</text>
+  <circle cx="1506" cy="350" r="8" fill="#22D3EE"/>
+  <text x="1506" y="354" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- ─── ROW 4: ADAPTERS + PROVIDER LAYER ─── -->
+
+  <!-- n14: Adapters — Community (C) -->
+  <rect x="60" y="480" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="502" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Adapters</text>
+  <text x="190" y="518" fill="#94A3B8" font-size="11" text-anchor="middle">Claude · Gemini · OpenAI</text>
+  <text x="190" y="532" fill="#64748B" font-size="10" text-anchor="middle">PricingEntry refreshed 2026-04</text>
+  <circle cx="306" cy="490" r="8" fill="#22D3EE"/>
+  <text x="306" y="494" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n15: Provider Matrix — Proprietary (P) -->
+  <rect x="360" y="480" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="490" y="502" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Provider Matrix</text>
+  <text x="490" y="518" fill="#94A3B8" font-size="11" text-anchor="middle">config layer + circuit breakers</text>
+  <text x="490" y="532" fill="#64748B" font-size="10" text-anchor="middle">providers.yaml :TBD</text>
+  <circle cx="606" cy="490" r="8" fill="#EAB308"/>
+  <text x="606" y="494" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n16: Agents (tmux) — External (X) -->
+  <rect x="660" y="480" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="502" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Agents (tmux)</text>
+  <text x="790" y="518" fill="#94A3B8" font-size="11" text-anchor="middle">hadi, kasra, codex, sos-dev…</text>
+  <text x="790" y="532" fill="#64748B" font-size="10" text-anchor="middle">Claude Code + tmux substrate</text>
+  <circle cx="906" cy="490" r="8" fill="#64748B"/>
+  <text x="906" y="494" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n17: Calcifer — Proprietary (P) -->
+  <rect x="960" y="480" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="502" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Calcifer</text>
+  <text x="1090" y="518" fill="#94A3B8" font-size="11" text-anchor="middle">autonomous heartbeat</text>
+  <text x="1090" y="532" fill="#64748B" font-size="10" text-anchor="middle">alerts → Discord</text>
+  <circle cx="1206" cy="490" r="8" fill="#EAB308"/>
+  <text x="1206" y="494" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- ─── ROW 5: PRODUCT LAYER ─── -->
+
+  <!-- n18: Squad Service — Proprietary (P) -->
+  <rect x="60" y="620" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="642" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Squad Service</text>
+  <text x="190" y="658" fill="#94A3B8" font-size="11" text-anchor="middle">tasks, skills :8060</text>
+  <text x="190" y="672" fill="#64748B" font-size="10" text-anchor="middle">bounties + claims + settlement</text>
+  <circle cx="306" cy="630" r="8" fill="#EAB308"/>
+  <text x="306" y="634" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n19: Mirror — Proprietary (P) -->
+  <rect x="360" y="620" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="490" y="642" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Mirror</text>
+  <text x="490" y="658" fill="#94A3B8" font-size="11" text-anchor="middle">pgvector engrams :8844</text>
+  <text x="490" y="672" fill="#64748B" font-size="10" text-anchor="middle">20k+ memories, semantic search</text>
+  <circle cx="606" cy="630" r="8" fill="#EAB308"/>
+  <text x="606" y="634" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n20: Economy — Proprietary (P) -->
+  <rect x="660" y="620" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="642" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Economy</text>
+  <text x="790" y="658" fill="#94A3B8" font-size="11" text-anchor="middle">wallet + UsageLog + $MIND</text>
+  <text x="790" y="672" fill="#64748B" font-size="10" text-anchor="middle">/usage POST, transmute</text>
+  <circle cx="906" cy="630" r="8" fill="#EAB308"/>
+  <text x="906" y="634" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n21: SkillCard Registry — Proprietary (P) -->
+  <rect x="960" y="620" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="642" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">SkillCard Registry</text>
+  <text x="1090" y="658" fill="#94A3B8" font-size="11" text-anchor="middle">filesystem JSON + Pydantic</text>
+  <text x="1090" y="672" fill="#64748B" font-size="10" text-anchor="middle">provenance + earnings + commerce</text>
+  <circle cx="1206" cy="630" r="8" fill="#EAB308"/>
+  <text x="1206" y="634" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n22: Operator Dashboard — Proprietary (P) -->
+  <rect x="1260" y="620" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1390" y="642" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Operator Dashboard</text>
+  <text x="1390" y="658" fill="#94A3B8" font-size="11" text-anchor="middle">/sos/overview · /money · /skills</text>
+  <text x="1390" y="672" fill="#64748B" font-size="10" text-anchor="middle">:8090 admin</text>
+  <circle cx="1506" cy="630" r="8" fill="#EAB308"/>
+  <text x="1506" y="634" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- ─── ROW 6: EXTERNAL EGRESS ─── -->
+
+  <!-- n23: Stripe — External (X) -->
+  <rect x="60" y="800" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="822" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Stripe</text>
+  <text x="190" y="838" fill="#94A3B8" font-size="11" text-anchor="middle">USD → $MIND conversion</text>
+  <text x="190" y="852" fill="#64748B" font-size="10" text-anchor="middle">webhook via saas</text>
+  <circle cx="306" cy="810" r="8" fill="#64748B"/>
+  <text x="306" y="814" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n24: Model Providers — External (X) -->
+  <rect x="360" y="800" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="490" y="822" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Anthropic/Google/OpenAI</text>
+  <text x="490" y="838" fill="#94A3B8" font-size="11" text-anchor="middle">model providers</text>
+  <text x="490" y="852" fill="#64748B" font-size="10" text-anchor="middle">PricingEntry per model</text>
+  <circle cx="606" cy="810" r="8" fill="#64748B"/>
+  <text x="606" y="814" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n25: OpenClaw Gateway — External (X), red border = DEGRADED -->
+  <rect x="660" y="800" width="260" height="80" rx="10" fill="#1E293B" stroke="#F87171" stroke-width="2.5"/>
+  <text x="790" y="822" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">OpenClaw Gateway</text>
+  <text x="790" y="838" fill="#94A3B8" font-size="11" text-anchor="middle">:18789 — 6 agents</text>
+  <text x="790" y="852" fill="#F87171" font-size="10" text-anchor="middle">⚠ expired OAuth — DEGRADED</text>
+  <circle cx="906" cy="810" r="8" fill="#64748B"/>
+  <text x="906" y="814" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n26: Solana devnet — External (X) -->
+  <rect x="960" y="800" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1090" y="822" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Solana devnet</text>
+  <text x="1090" y="838" fill="#94A3B8" font-size="11" text-anchor="middle">$MIND on-chain settlement</text>
+  <text x="1090" y="852" fill="#64748B" font-size="10" text-anchor="middle">transmute via wallet.py</text>
+  <circle cx="1206" cy="810" r="8" fill="#64748B"/>
+  <text x="1206" y="814" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- n27: Mumega Edge — External (X) -->
+  <rect x="1260" y="800" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="1390" y="822" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Mumega Edge</text>
+  <text x="1390" y="838" fill="#94A3B8" font-size="11" text-anchor="middle">CF Workers for billing/signup</text>
+  <text x="1390" y="852" fill="#64748B" font-size="10" text-anchor="middle">mumega-edge.workers.dev</text>
+  <circle cx="1506" cy="810" r="8" fill="#64748B"/>
+  <text x="1506" y="814" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- ─── ROW 7: SIBLING PRODUCTS ─── -->
+
+  <!-- n28: Inkwell — Community (C) -->
+  <rect x="60" y="960" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="190" y="982" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Inkwell</text>
+  <text x="190" y="998" fill="#94A3B8" font-size="11" text-anchor="middle">Astro publishing framework</text>
+  <text x="190" y="1012" fill="#64748B" font-size="10" text-anchor="middle">powers mumega-site + tenants</text>
+  <circle cx="306" cy="970" r="8" fill="#22D3EE"/>
+  <text x="306" y="974" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+
+  <!-- n29: Customer Dashboard — Proprietary (P) -->
+  <rect x="360" y="960" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="490" y="982" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Customer Dashboard</text>
+  <text x="490" y="998" fill="#94A3B8" font-size="11" text-anchor="middle">/dashboard, /marketplace</text>
+  <text x="490" y="1012" fill="#64748B" font-size="10" text-anchor="middle">tenant-scoped moat view</text>
+  <circle cx="606" cy="970" r="8" fill="#EAB308"/>
+  <text x="606" y="974" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+
+  <!-- n30: Mumega Site — External (X) -->
+  <rect x="660" y="960" width="260" height="80" rx="10" fill="#1E293B" stroke="#475569" stroke-width="1.5"/>
+  <text x="790" y="982" fill="#F8FAFC" font-size="14" font-weight="700" text-anchor="middle">Mumega Site</text>
+  <text x="790" y="998" fill="#94A3B8" font-size="11" text-anchor="middle">mumega.com (CF Pages)</text>
+  <text x="790" y="1012" fill="#64748B" font-size="10" text-anchor="middle">/products/agent-os, /labs/sos</text>
+  <circle cx="906" cy="970" r="8" fill="#64748B"/>
+  <text x="906" y="974" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       INLINE LEGEND — bottom right
+       ═══════════════════════════════════════════════════════════ -->
+  <rect x="1380" y="1060" width="390" height="215" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1"/>
+  <text x="1400" y="1082" fill="#F8FAFC" font-size="12" font-weight="700">Edge Transport</text>
+  <!-- Indigo bus -->
+  <line x1="1400" y1="1098" x2="1450" y2="1098" stroke="#6366F1" stroke-width="2.5" marker-end="url(#arrow-indigo)"/>
+  <text x="1458" y="1102" fill="#94A3B8" font-size="11">Bus messages (Redis streams + pubsub)</text>
+  <!-- Green money -->
+  <line x1="1400" y1="1116" x2="1450" y2="1116" stroke="#34D399" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <text x="1458" y="1120" fill="#94A3B8" font-size="11">Money / settlement</text>
+  <!-- Purple memory -->
+  <line x1="1400" y1="1134" x2="1450" y2="1134" stroke="#A78BFA" stroke-width="2.5" marker-end="url(#arrow-purple)"/>
+  <text x="1458" y="1138" fill="#94A3B8" font-size="11">Memory / telemetry</text>
+  <!-- Amber squad -->
+  <line x1="1400" y1="1152" x2="1450" y2="1152" stroke="#FBBF24" stroke-width="2.5" marker-end="url(#arrow-amber)"/>
+  <text x="1458" y="1156" fill="#94A3B8" font-size="11">Squad / task coordination</text>
+  <!-- Slate HTTP -->
+  <line x1="1400" y1="1170" x2="1450" y2="1170" stroke="#64748B" stroke-width="2.5" marker-end="url(#arrow-slate)"/>
+  <text x="1458" y="1174" fill="#94A3B8" font-size="11">HTTP / RPC</text>
+  <!-- Red debt -->
+  <line x1="1400" y1="1188" x2="1450" y2="1188" stroke="#F87171" stroke-width="2.5" stroke-dasharray="6,4" marker-end="url(#arrow-red)"/>
+  <text x="1458" y="1192" fill="#94A3B8" font-size="11">Debt / broken edge</text>
+
+  <text x="1400" y="1212" fill="#F8FAFC" font-size="12" font-weight="700">License Badge</text>
+  <!-- C badge -->
+  <circle cx="1412" cy="1228" r="8" fill="#22D3EE"/>
+  <text x="1412" y="1232" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">C</text>
+  <text x="1425" y="1232" fill="#94A3B8" font-size="11">Community (Apache 2.0)</text>
+  <!-- P badge -->
+  <circle cx="1412" cy="1248" r="8" fill="#EAB308"/>
+  <text x="1412" y="1252" fill="#0F172A" font-size="10" font-weight="700" text-anchor="middle">P</text>
+  <text x="1425" y="1252" fill="#94A3B8" font-size="11">Proprietary core (Mumega commercial)</text>
+  <!-- X badge -->
+  <circle cx="1412" cy="1268" r="8" fill="#64748B"/>
+  <text x="1412" y="1272" fill="#F8FAFC" font-size="10" font-weight="700" text-anchor="middle">X</text>
+  <text x="1425" y="1272" fill="#94A3B8" font-size="11">External / third-party</text>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ARCHITECTURAL DEBT CALLOUT BOX
+       ═══════════════════════════════════════════════════════════ -->
+  <rect x="30" y="1060" width="420" height="215" rx="10" fill="#1E293B" stroke="#F87171" stroke-width="1.5"/>
+  <text x="50" y="1082" fill="#F87171" font-size="12" font-weight="700">Known Architectural Debt</text>
+  <text x="50" y="1104" fill="#F87171" font-size="10">1.</text>
+  <text x="64" y="1104" fill="#94A3B8" font-size="10">Double task system — Squad /tasks vs Mirror /tasks</text>
+  <text x="64" y="1116" fill="#64748B" font-size="9">   No reconciliation; tasks can diverge across stores</text>
+  <text x="50" y="1136" fill="#F87171" font-size="10">2.</text>
+  <text x="64" y="1136" fill="#94A3B8" font-size="10">OpenClaw Gateway — expired OAuth, 6 agents degraded</text>
+  <text x="64" y="1148" fill="#64748B" font-size="9">   :18789, no auto-refresh, manual re-auth required</text>
+  <text x="50" y="1168" fill="#F87171" font-size="10">3.</text>
+  <text x="64" y="1168" fill="#94A3B8" font-size="10">Mirror doesn't consume Redis bus (no XREVRANGE)</text>
+  <text x="64" y="1180" fill="#64748B" font-size="9">   Memory store is write-only from bus; no reactive recall</text>
+  <text x="50" y="1200" fill="#F87171" font-size="10">4.</text>
+  <text x="64" y="1200" fill="#94A3B8" font-size="10">UsageLog NOT replicated to Mirror</text>
+  <text x="64" y="1212" fill="#64748B" font-size="9">   Economy events invisible to semantic memory layer</text>
+  <text x="50" y="1232" fill="#F87171" font-size="10">5.</text>
+  <text x="64" y="1232" fill="#94A3B8" font-size="10">Provider Matrix providers.yaml path TBD</text>
+  <text x="64" y="1244" fill="#64748B" font-size="9">   Circuit breaker config not yet wired to adapters layer</text>
+  <text x="50" y="1264" fill="#F87171" font-size="10">6.</text>
+  <text x="64" y="1264" fill="#94A3B8" font-size="10">stdio MCP deprecated but not removed</text>
+  <text x="64" y="1276" fill="#64748B" font-size="9">   Legacy path still referenced; cleanup pending</text>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       TITLE BLOCK (top-right)
+       ═══════════════════════════════════════════════════════════ -->
+  <rect x="1260" y="60" width="520" height="100" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1"/>
+  <text x="1520" y="88" fill="#F8FAFC" font-size="17" font-weight="700" text-anchor="middle">Mumega / Agent OS — Service Dependency Map</text>
+  <text x="1520" y="108" fill="#94A3B8" font-size="11" text-anchor="middle">30 nodes · 7 layers · 4 transport types · 6 debt items</text>
+  <text x="1520" y="124" fill="#64748B" font-size="10" text-anchor="middle">Generated 2026-04-17 · app.mumega.com/sos</text>
+  <text x="1520" y="140" fill="#475569" font-size="10" text-anchor="middle">Community (Apache 2.0) + Proprietary core (Mumega commercial)</text>
+
+</svg>
