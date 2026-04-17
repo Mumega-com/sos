@@ -2,6 +2,49 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.1] - 2026-04-18 — "Moat + Coherence"
+
+### Added
+- **Skill Registry with provenance** — `SkillCard v1` (JSON Schema Draft 2020-12 + Pydantic + 67 contract tests). Provenance fields: `author_agent`, `authored_by_ai`, `lineage[]`, `earnings{}`, `verification{}`, `commerce{}`, `runtime{}`. Mumega's moat primitive. Competes with ClawHub / Vercel skills.sh on **provenance, not volume**.
+- **Public skill marketplace** at `https://app.mumega.com/marketplace` — card grid of every `marketplace_listed: true` skill with earnings proof line, verification badge, price, author. Detail pages at `/marketplace/skill/{id}` (incl. `?format=json`). Unauthenticated.
+- **Operator dashboard** at `https://app.mumega.com/sos` — Phase 0 (flow map) + Phase 1 (Overview + Agents) + Phase 2 (Money pulse + Skill moat). Admin-scoped. Now renders a 30-node / 38-edge service map with license-split badges (Community / Proprietary / External).
+- **Customer dashboard** tenant moat panels — "Your Skills", "Your Earnings", "Recent Usage" on `/dashboard`.
+- **Agent OS product page** at `mumega.com/products/agent-os` — pricing, install one-liner, marketplace link, pitch.
+- **SOS lab page** at `mumega.com/labs/sos` — engineering surface (contracts, changelog, architecture).
+- **`mumega.com/install`** shell script — 30-second Mac onboarding. Signup + `.mcp.json` + `~/.claude.json` patching, per-tool snippets for Cursor / Codex / Gemini CLI / Windsurf.
+- **Internal SkillCards** (8 so far) — Mumega **dogfoods its own skill registry** for its own cleanup work. Every maintenance commit is driven by a SkillCard invocation with provenance + earnings tracking.
+- **Economy UsageLog** (`POST /usage`, trop issue #98) — currency-agnostic (`cost_micros`), tenant-scoped, append-only JSONL. Enables edge tenants (CF Workers) to ingest model-call telemetry.
+- **AI-to-AI commerce demo** — `scripts/demo_ai_to_ai_commerce.py`. Cross-squad purchase with $MIND settlement, full UsageLog trace, earnings bump on author skill.
+- **Provider Matrix simplified** — `sos/providers/matrix.py` with `ProviderCard`, `CircuitBreakerConfig`, `CircuitBreaker` 3-state machine (closed / open / half_open), `load_matrix()`, `select_provider()`. YAML config at `sos/providers/providers.yaml`. Health-probe CLI scaffold at `sos/providers/health_probe.py`. **25 new contract tests** on ProviderCard JSON Schema (v0.4.1 same-day add).
+- **SquadTask v1** — schema + Pydantic binding + 57 tests. Squad Service has a typed contract for the first time. Sole source of truth for task state.
+- **UsageEvent v1** — JSON Schema Draft 2020-12 matching existing Pydantic + 25 roundtrip tests. Completes the contracts set for v0.4.1.
+
+### Changed
+- **Mirror subscribes to the bus.** New `mirror_bus_consumer.service` (systemd --user) tails `sos:stream:global:*`, auto-writes engrams with embeddings on every v1 send / task_completed / announce. Retires 5+ synchronous `mirror_post("/store", ...)` call sites from `sos_mcp_sse.py`. **Kills 3 debt items** (Mirror-no-bus-consumption, UsageLog-not-mirrored, write-amplification).
+- **Squad Service is the single source of truth for tasks.** Mirror `/tasks` endpoints retired → HTTP 410 Gone. SOS `sos/mcp/tasks.py` callers repointed to `http://localhost:8060`. **Ends the double task system.**
+- **Single auth module.** `sos/services/auth/__init__.py` ships `verify_bearer(authorization) -> AuthContext | None`. 4 call sites migrated (dashboard `_verify_token`, economy `_verify_bearer`, MCP SSE token path, Mirror `resolve_token`). Env-var fallback (`SOS_SYSTEM_TOKEN`, `MIRROR_TOKEN`) preserved. 30-second TTL + mtime cache.
+- **Dispatcher scope-trim.** `sos/services/dispatcher/` + `workers/sos-dispatcher/` archived (`.archive/` suffix, `ARCHIVED.md` explains retirement). Post-competitive-scan pivot: runtime is commoditized by OpenAI/Anthropic/Google/MS; Mumega's moat is economy + provenance + coordination.
+- **Deprecated code consolidated.** `sos/mcp/redis_bus.py` + `sos/mcp/sos_mcp.py` stdio moved to `sos/deprecated/` via git mv. `remote.js` kept — actively served as `/sdk/remote.js` by bridge.
+
+### Fixed
+- **Trop #97** — adapter pricing tables stale. Refreshed Gemini / Anthropic / OpenAI catalogs with 2026-04-17 data. Added `PricingEntry` with flat-per-call support (Imagen 4 / DALL-E 3). Source-linked every non-zero entry.
+- **Trop #98** — edge tenants had no way to report usage to the platform ledger. Shipped `POST /usage` + UsageLog.
+
+### Architectural invariants
+- Contract coverage extended: **Agent Card v1 + Messages v1 (8 types) + SkillCard v1 + UsageEvent v1 + ProviderCard v1 + SquadTask v1**.
+- Bus strict enforcement: unknown message types reject with `SOS-4004`.
+- Every non-zero pricing entry carries a `source:` audit tag.
+- `app.mumega.com/sos` is the single operator glass: flow map, agents, bus pulse, money pulse, skill moat, incidents.
+
+### Shipped sprint pattern
+- **Dogfood loop:** every cleanup commit references a SkillCard; each SkillCard's `earnings.invocations_by_tenant.mumega` increments by 1. Pattern proves the platform maintains itself with its own primitives — strongest possible moat proof.
+
+### Tests
+- 403 passed at tag (was 185 at v0.4.0). Contract suite alone: 230 tests (was 46 at v0.4.0).
+
+### Commits
+- 18 commits from `v0.4.0` through `v0.4.1` on branch `codex/sos-runtime-validation`.
+
 ## [0.1.0] - 2026-02-03
 
 ### Added
