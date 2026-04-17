@@ -2,17 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sos.mumega.com/contracts/skill_card/v1",
   "title": "SkillCard v1",
-  "description": "Canonical schema for skills in the SOS / ToRivers skill registry. A SkillCard binds an executable skill to its provenance (who authored it, what it's derived from), earnings history (what it has earned across invocations), verification status (has anyone checked the outputs), and commerce terms (price + revenue split). The registry's defensibility is provenance-grade — not skill count.",
+  "description": "SkillCard is a provenance + commerce overlay on the execution contract at sos/contracts/squad.py::SkillDescriptor. skill_descriptor_id is the canonical reference to the SkillDescriptor that holds entrypoint, trust_tier, loading_level, fuel_grade, and the authoritative input/output schemas for execution. input_schema / output_schema may be echoed here for display but the source of truth is the referenced SkillDescriptor. The registry's defensibility is provenance-grade — not skill count.",
   "type": "object",
   "required": [
     "schema_version",
     "id",
+    "skill_descriptor_id",
     "name",
     "version",
     "author_agent",
-    "created_at",
-    "input_schema",
-    "output_schema"
+    "created_at"
   ],
   "additionalProperties": false,
   "properties": {
@@ -20,6 +19,11 @@
       "type": "string",
       "description": "SkillCard schema version this instance conforms to. Required so v1 and future v1.x / v2 instances are distinguishable at read time.",
       "enum": ["1"]
+    },
+    "skill_descriptor_id": {
+      "type": "string",
+      "description": "Reference to the canonical SkillDescriptor id in sos.contracts.squad. This is the execution contract — input/output schemas, entrypoint, trust_tier, loading_level, fuel_grade are authoritative there. Globally unique: UUID v4 or a registry-assigned slug.",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
     "id": {
       "type": "string",
@@ -178,7 +182,7 @@
     },
 
     "input_schema": {
-      "description": "JSON Schema describing what the skill accepts as input. Must itself carry a '$schema' or 'type' declaration to be a valid schema document.",
+      "description": "Denormalized view of SkillDescriptor.input_schema for display / marketplace rendering. Source of truth for execution is the SkillDescriptor referenced by skill_descriptor_id. Optional — may be omitted when the card is stored without echoing schemas. When present, must carry '$schema' or 'type'.",
       "type": "object",
       "anyOf": [
         {"required": ["$schema"]},
@@ -186,7 +190,7 @@
       ]
     },
     "output_schema": {
-      "description": "JSON Schema describing what the skill returns. Must itself carry a '$schema' or 'type' declaration.",
+      "description": "Denormalized view of SkillDescriptor.output_schema for display. Source of truth is the referenced SkillDescriptor. Optional — may be omitted. When present, must carry '$schema' or 'type'.",
       "type": "object",
       "anyOf": [
         {"required": ["$schema"]},

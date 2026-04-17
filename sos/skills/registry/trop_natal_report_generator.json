@@ -1,9 +1,10 @@
 {
   "schema_version": "1",
   "id": "trop-natal-report-generator-v1",
+  "skill_descriptor_id": "trop-natal-report-generator-v1",
   "name": "Natal Chart Report Generator",
   "version": "1.0.0",
-  "description": "Generates a detailed astrology natal chart report from a birth datetime and location. Computes planetary positions, house placements, and major aspects, then writes an interpretive narrative in natural language. This is trop's core skill \u2014 the base chart output is consumed by transit and progression skills in the trop suite.",
+  "description": "Generates a detailed astrology natal chart report from a birth datetime and location. Computes planetary positions, house placements, and major aspects, then writes an interpretive narrative in natural language. This is trop's core skill — the base chart output is consumed by transit and progression skills in the trop suite.",
   "tags": [
     "astrology",
     "natal-chart",

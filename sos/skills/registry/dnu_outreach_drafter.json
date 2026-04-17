@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "id": "dnu-dentist-outreach-drafter-v1",
+  "skill_descriptor_id": "dnu-dentist-outreach-drafter-v1",
   "name": "Dentist Outreach Email Drafter",
   "version": "1.0.0",
   "author_agent": "agent:dandan",

@@ -1,9 +1,10 @@
 {
   "schema_version": "1",
   "id": "trop-transit-forecaster-v1",
+  "skill_descriptor_id": "trop-transit-forecaster-v1",
   "name": "Transit Forecaster",
   "version": "1.0.0",
-  "description": "Computes current and upcoming planetary transits relative to a natal chart and produces a time-windowed forecast narrative. Composed with the natal report generator \u2014 the natal chart output is used as the base layer for aspect calculation. Returns a ranked list of significant transits with exact dates, orb, and interpretive text.",
+  "description": "Computes current and upcoming planetary transits relative to a natal chart and produces a time-windowed forecast narrative. Composed with the natal report generator — the natal chart output is used as the base layer for aspect calculation. Returns a ranked list of significant transits with exact dates, orb, and interpretive text.",
   "tags": [
     "astrology",
     "transits",

@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-auth-service-consolidator-v1",
-  "name": "SOS Auth Service Consolidator \u2014 one token source of truth",
+  "skill_descriptor_id": "sos-auth-service-consolidator-v1",
+  "name": "SOS Auth Service Consolidator — one token source of truth",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-17T14:17:00Z",

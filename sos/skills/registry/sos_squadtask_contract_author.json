@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-squadtask-contract-author-v1",
-  "name": "SquadTask v1 contract \u2014 schema + Pydantic + tests",
+  "skill_descriptor_id": "sos-squadtask-contract-author-v1",
+  "name": "SquadTask v1 contract — schema + Pydantic + tests",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T09:02:00Z",
@@ -42,7 +43,7 @@
       }
     }
   },
-  "description": "Squad Service has no typed contract for tasks today \u2014 just dicts passed around. Author sos/contracts/schemas/squad_task_v1.json (Draft 2020-12) + Pydantic binding at sos/contracts/squad_task.py + contract tests. Critical for the coherence story since Squad is now the sole source of truth for task state (after yesterday's double-task-system retirement).",
+  "description": "Squad Service has no typed contract for tasks today — just dicts passed around. Author sos/contracts/schemas/squad_task_v1.json (Draft 2020-12) + Pydantic binding at sos/contracts/squad_task.py + contract tests. Critical for the coherence story since Squad is now the sole source of truth for task state (after yesterday's double-task-system retirement).",
   "tags": [
     "sos",
     "contracts",

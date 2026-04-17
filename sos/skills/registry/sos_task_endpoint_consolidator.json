@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-task-endpoint-consolidator-v1",
-  "name": "SOS Task Endpoint Consolidator \u2014 kill double task system",
+  "skill_descriptor_id": "sos-task-endpoint-consolidator-v1",
+  "name": "SOS Task Endpoint Consolidator — kill double task system",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-17T14:16:00Z",

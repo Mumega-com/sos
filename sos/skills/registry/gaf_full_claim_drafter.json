@@ -1,9 +1,10 @@
 {
   "schema_version": "1",
   "id": "gaf-full-claim-drafter-v1",
+  "skill_descriptor_id": "gaf-full-claim-drafter-v1",
   "name": "SR&ED Full Claim Drafter",
   "version": "1.0.0",
-  "description": "Produces a complete, CRA-ready SR&ED claim package \u2014 project narratives, T661 line-item breakdown, eligible expenditure schedule, and a plain-English summary memo for the founder. Forked from the SR&ED Credit Scan Estimator and extended with narrative generation, CRA form mapping, and a multi-pass consistency checker. Designed for the GAF squad to hand directly to the preparer or submit as a preparer-reviewed draft.",
+  "description": "Produces a complete, CRA-ready SR&ED claim package — project narratives, T661 line-item breakdown, eligible expenditure schedule, and a plain-English summary memo for the founder. Forked from the SR&ED Credit Scan Estimator and extended with narrative generation, CRA form mapping, and a multi-pass consistency checker. Designed for the GAF squad to hand directly to the preparer or submit as a preparer-reviewed draft.",
   "tags": [
     "sred",
     "tax-credit",

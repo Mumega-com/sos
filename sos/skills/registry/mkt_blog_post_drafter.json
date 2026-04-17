@@ -1,9 +1,10 @@
 {
   "schema_version": "1",
   "id": "mkt-blog-post-drafter-v1",
+  "skill_descriptor_id": "mkt-blog-post-drafter-v1",
   "name": "Blog Post Drafter",
   "version": "1.0.0",
-  "description": "Drafts a publication-ready blog post from a topic brief and brand voice guidelines. Applies the mkt-lead squad's topic flywheel structure (hook \u2192 junction model \u2192 call-to-action) and the Kay Hermes brand voice. Used across mumega, GAF, and DNU tenants for weekly content cadence. Output includes a title, meta description, full body in Markdown, and a suggested social snippet.",
+  "description": "Drafts a publication-ready blog post from a topic brief and brand voice guidelines. Applies the mkt-lead squad's topic flywheel structure (hook → junction model → call-to-action) and the Kay Hermes brand voice. Used across mumega, GAF, and DNU tenants for weekly content cadence. Output includes a title, meta description, full body in Markdown, and a suggested social snippet.",
   "tags": [
     "content",
     "blog",

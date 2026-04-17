@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-usageevent-schema-author-v1",
-  "name": "UsageEvent JSON Schema Author \u2014 complete the contracts set",
+  "skill_descriptor_id": "sos-usageevent-schema-author-v1",
+  "name": "UsageEvent JSON Schema Author — complete the contracts set",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-17T14:18:00Z",

@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "id": "dnu-patient-recall-scheduler-v1",
+  "skill_descriptor_id": "dnu-patient-recall-scheduler-v1",
   "name": "Dental Patient Recall Scheduler",
   "version": "1.0.0",
   "description": "Books follow-up recall appointments for dental patients based on their last visit date, treatment history, and the practice's scheduling rules. Given a patient list and a practice's availability window, it produces a prioritized recall call list with suggested appointment slots and a draft reminder message per patient. Inspired by the outreach drafter but focused on retention rather than acquisition.",

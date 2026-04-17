@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "id": "gaf-eligibility-triage-v1",
+  "skill_descriptor_id": "gaf-eligibility-triage-v1",
   "name": "SR&ED Eligibility Triage",
   "version": "1.0.0",
   "description": "A fast 10-minute SR&ED eligibility assessment that interviews the founder via structured questions, scores their project against CRA's three eligibility criteria (scientific/technological advancement, uncertainty, and systematic investigation), and returns a go/no-go recommendation with rationale. Inspired by the scan estimator but built for pre-engagement triage rather than full estimation.",

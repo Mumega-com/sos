@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-providercard-schema-author-v1",
+  "skill_descriptor_id": "sos-providercard-schema-author-v1",
   "name": "ProviderCard v1 JSON Schema + contract tests",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
@@ -41,7 +42,7 @@
       }
     }
   },
-  "description": "Writes sos/contracts/schemas/provider_card_v1.json matching the existing Pydantic ProviderCard in sos/providers/matrix.py. Adds roundtrip contract tests verifying schema \u2194 Pydantic parity. Completes the contracts set for the provider routing layer.",
+  "description": "Writes sos/contracts/schemas/provider_card_v1.json matching the existing Pydantic ProviderCard in sos/providers/matrix.py. Adds roundtrip contract tests verifying schema ↔ Pydantic parity. Completes the contracts set for the provider routing layer.",
   "tags": [
     "sos",
     "contracts",

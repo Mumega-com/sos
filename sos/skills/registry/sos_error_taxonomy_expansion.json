@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-error-taxonomy-expansion-v1",
-  "name": "SOS Error Taxonomy \u2014 SOS-4xxx/5xxx/6xxx/7xxx",
+  "skill_descriptor_id": "sos-error-taxonomy-expansion-v1",
+  "name": "SOS Error Taxonomy — SOS-4xxx/5xxx/6xxx/7xxx",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T10:00:00Z",

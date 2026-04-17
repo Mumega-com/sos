@@ -1,7 +1,8 @@
 {
   "schema_version": "1",
   "id": "sos-auth-caller-migration-v1",
-  "name": "Auth Caller Migration \u2014 route every service through sos.services.auth",
+  "skill_descriptor_id": "sos-auth-caller-migration-v1",
+  "name": "Auth Caller Migration — route every service through sos.services.auth",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T09:00:00Z",

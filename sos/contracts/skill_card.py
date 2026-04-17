@@ -4,6 +4,16 @@ Cross-language source of truth (JSON Schema):
   sos/contracts/schemas/skill_card_v1.json
 
 This module is the Python binding; the JSON Schema above is authoritative.
+
+SkillCard is a **provenance + commerce overlay** on the execution contract
+defined at sos/contracts/squad.py::SkillDescriptor. The canonical execution
+fields (entrypoint, trust_tier, loading_level, fuel_grade, required_inputs,
+input_schema, output_schema as source of truth) live on SkillDescriptor.
+SkillCard references it by `skill_descriptor_id`.
+
+input_schema / output_schema may be echoed here for display / marketplace
+rendering, but the source of truth for execution is the referenced
+SkillDescriptor.
 """
 from __future__ import annotations
 
@@ -223,7 +233,16 @@ class RuntimeInfo(BaseModel):
 
 
 class SkillCard(BaseModel):
-    """Canonical skill record in the SOS / ToRivers skill registry."""
+    """Provenance + commerce overlay for a skill in the SOS / ToRivers registry.
+
+    The execution contract (input/output schemas, entrypoint, trust_tier, etc.)
+    lives canonically on sos.contracts.squad.SkillDescriptor, referenced here
+    by `skill_descriptor_id`. SkillCard carries who authored the skill, what it
+    has earned, how it is sold, and its verification status.
+
+    input_schema / output_schema are optional echo fields for display purposes;
+    the source of truth for execution is the referenced SkillDescriptor.
+    """
 
     model_config = ConfigDict(strict=False)
 
@@ -233,12 +252,36 @@ class SkillCard(BaseModel):
         description="SkillCard schema version. v1 cards carry '1' so future v1.x/v2 are distinguishable at read time.",
     )
     id: str = Field(pattern=_ID_PATTERN)
+    skill_descriptor_id: str = Field(
+        pattern=_ID_PATTERN,
+        description=(
+            "Reference to the canonical SkillDescriptor id in sos.contracts.squad. "
+            "This is the execution contract — input/output schemas, entrypoint, "
+            "trust_tier, loading_level, fuel_grade are authoritative there. "
+            "Use resolve_descriptor() to fetch the live descriptor."
+        ),
+    )
     name: str = Field(min_length=1, max_length=200)
     version: str = Field(pattern=_SEMVER_PATTERN)
     author_agent: str = Field(pattern=_AGENT_PATTERN)
     created_at: str
-    input_schema: dict[str, Any]
-    output_schema: dict[str, Any]
+
+    # --- optional echo fields (denormalized view of SkillDescriptor; display only) ---
+    input_schema: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Denormalized view of SkillDescriptor.input_schema for display / marketplace "
+            "rendering. Source of truth is the SkillDescriptor referenced by "
+            "skill_descriptor_id. May be None when the card is stored without echoing schemas."
+        ),
+    )
+    output_schema: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Denormalized view of SkillDescriptor.output_schema for display. "
+            "Source of truth is the referenced SkillDescriptor."
+        ),
+    )
 
     # --- optional ---
     description: Optional[str] = Field(default=None, max_length=4000)
@@ -273,13 +316,18 @@ class SkillCard(BaseModel):
 
     @field_validator("input_schema", "output_schema", mode="after")
     @classmethod
-    def _check_schema_shape(cls, v: dict[str, Any]) -> dict[str, Any]:
-        """Every input/output_schema must declare at least `$schema` or `type`.
+    def _check_schema_shape(cls, v: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        """When echoed, input/output_schema must declare at least `$schema` or `type`.
 
         Prevents `{"input_schema": {"foo": "bar"}}` from validating — that's
         not a JSON Schema document, it's just a dict, and downstream
         validators will choke on it.
+
+        None is valid — it means the card does not echo the schema; resolve the
+        referenced SkillDescriptor via skill_descriptor_id to get the live schema.
         """
+        if v is None:
+            return v
         if "$schema" not in v and "type" not in v:
             raise ValueError("input_schema / output_schema must carry '$schema' or 'type'")
         return v
@@ -297,6 +345,19 @@ class SkillCard(BaseModel):
                     "commerce.marketplace_listed=true requires runtime.entry_point"
                 )
         return self
+
+    def resolve_descriptor(self) -> "Any":
+        """Return the canonical SkillDescriptor for this SkillCard.
+
+        TODO(island-later): wire to squad service / SkillDescriptor registry.
+        This is a stub — the actual lookup requires the squad-service client,
+        which is not yet available at SkillCard construction time. A later island
+        will inject the resolver via a SkillRegistry.resolve(card) pattern.
+
+        Returns None until the wiring lands.
+        """
+        # TODO: replace with actual squad-service lookup
+        return None
 
     @staticmethod
     def now_iso() -> str:

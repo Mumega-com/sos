@@ -39,6 +39,7 @@ def _minimal_kwargs() -> dict[str, Any]:
     return {
         "schema_version": "1",
         "id": "skill-abc-123",
+        "skill_descriptor_id": "skill-abc-123",
         "name": "Test Skill",
         "version": "1.0.0",
         "author_agent": "agent:codex",
@@ -126,8 +127,8 @@ class TestSchemaStructure:
 
     def test_required_fields_match(self, schema):
         expected = {
-            "schema_version", "id", "name", "version", "author_agent",
-            "created_at", "input_schema", "output_schema",
+            "schema_version", "id", "skill_descriptor_id", "name", "version",
+            "author_agent", "created_at",
         }
         assert set(schema["required"]) == expected
 
@@ -298,8 +299,8 @@ class TestSkillCardRejection:
         with pytest.raises((ValidationError, Exception)):
             SkillCard(**kwargs)
 
-    def test_missing_required_input_schema(self):
-        kwargs = {k: v for k, v in _minimal_kwargs().items() if k != "input_schema"}
+    def test_missing_required_skill_descriptor_id(self):
+        kwargs = {k: v for k, v in _minimal_kwargs().items() if k != "skill_descriptor_id"}
         with pytest.raises((ValidationError, Exception)):
             SkillCard(**kwargs)
 
@@ -561,7 +562,64 @@ class TestAthenaGateInvariants:
 
 
 # ---------------------------------------------------------------------------
-# 7. Artifact CID / sample_output_refs (Island #6 — 2026-04-18)
+# 7. SkillDescriptor overlay invariants (Island #2 — 2026-04-18)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillDescriptorOverlay:
+    """SkillCard is a provenance/commerce overlay; skill_descriptor_id is required."""
+
+    def test_skill_descriptor_id_required(self):
+        """Missing skill_descriptor_id must raise ValidationError."""
+        kwargs = {k: v for k, v in _minimal_kwargs().items() if k != "skill_descriptor_id"}
+        with pytest.raises((ValidationError, Exception)):
+            SkillCard(**kwargs)
+
+    def test_skill_descriptor_id_format_slug(self):
+        """skill_descriptor_id must match the id slug pattern."""
+        kw = _minimal_kwargs()
+        kw["skill_descriptor_id"] = "valid-descriptor-id-v1"
+        card = SkillCard(**kw)
+        assert card.skill_descriptor_id == "valid-descriptor-id-v1"
+
+    def test_skill_descriptor_id_format_invalid_rejected(self):
+        """skill_descriptor_id with invalid characters must raise ValidationError."""
+        kw = _minimal_kwargs()
+        kw["skill_descriptor_id"] = "../../etc/passwd"
+        with pytest.raises((ValidationError, Exception)):
+            SkillCard(**kw)
+
+    def test_input_output_schemas_no_longer_required(self):
+        """SkillCard without input_schema / output_schema is valid (overlay only)."""
+        kw = {k: v for k, v in _minimal_kwargs().items()
+              if k not in ("input_schema", "output_schema")}
+        card = SkillCard(**kw)
+        assert card.input_schema is None
+        assert card.output_schema is None
+
+    def test_resolve_descriptor_stub_returns_none(self):
+        """resolve_descriptor() is a stub that returns None until wired to squad-service."""
+        card = SkillCard(**_minimal_kwargs())
+        assert card.resolve_descriptor() is None
+
+    def test_skill_descriptor_id_in_json_schema_required(self):
+        """JSON Schema must list skill_descriptor_id as required."""
+        schema = load_schema()
+        assert "skill_descriptor_id" in schema["required"]
+
+    def test_input_schema_not_in_json_schema_required(self):
+        """JSON Schema must NOT list input_schema as required (it's now optional echo)."""
+        schema = load_schema()
+        assert "input_schema" not in schema["required"]
+
+    def test_output_schema_not_in_json_schema_required(self):
+        """JSON Schema must NOT list output_schema as required (it's now optional echo)."""
+        schema = load_schema()
+        assert "output_schema" not in schema["required"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Artifact CID / sample_output_refs (Island #6 — 2026-04-18)
 # ---------------------------------------------------------------------------
 
 

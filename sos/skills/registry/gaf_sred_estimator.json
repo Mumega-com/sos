@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "id": "gaf-sred-scan-estimator-v1",
+  "skill_descriptor_id": "gaf-sred-scan-estimator-v1",
   "name": "SR&ED Credit Scan Estimator",
   "version": "1.0.0",
   "description": "Reads a company's QBO ledger + codebase activity (GitHub commits, Linear tickets) for a fiscal year and produces a preliminary SR&ED-eligible expense estimate with uncertainty band. The output is the number that lets a founder decide whether to engage a consultant for a full claim. Built for the GAF squad; refined from 6 real SR&ED engagements 2025-2026.",
