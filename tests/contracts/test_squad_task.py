@@ -17,6 +17,11 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError as JSValidationError
 from pydantic import ValidationError as PydanticValidationError
 
+from sos.contracts.squad import (
+    SquadTask as SquadTaskDataclass,
+    TaskStatus,
+    TaskPriority,
+)
 from sos.contracts.squad_task import (
     SquadTaskV1,
     load_schema,
@@ -431,3 +436,115 @@ def test_task_not_in_own_blocked_by(validator: Draft202012Validator) -> None:
     # Pydantic also allows it — service layer must enforce
     task = parse_squad_task(data)
     assert task_id in task.blocked_by
+
+
+# ---------------------------------------------------------------------------
+# 16. Wrapper ↔ dataclass round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_from_dataclass_preserves_all_fields() -> None:
+    """SquadTaskV1.from_dataclass() copies every dataclass field."""
+    dc = SquadTaskDataclass(
+        id="task-abc-001",
+        squad_id="squad-marketing",
+        title="Write Q2 blog post",
+        description="Detailed blog post",
+        status=TaskStatus.CLAIMED,
+        priority=TaskPriority.HIGH,
+        assignee="kasra",
+        skill_id="mkt-blog-post-drafter",
+        project="mumega",
+        labels=["content", "marketing"],
+        blocked_by=["task-prereq-001"],
+        blocks=["task-downstream-002"],
+        inputs={"fuel_grade": "premium"},
+        result={"summary": "done"},
+        token_budget=8000,
+        bounty={"reward": 100},
+        external_ref="clickup:task-xyz",
+        created_at="2026-04-17T10:00:00+00:00",
+        updated_at="2026-04-17T11:00:00+00:00",
+        completed_at="2026-04-17T12:00:00+00:00",
+        claimed_at="2026-04-17T10:30:00+00:00",
+        attempt=2,
+    )
+    v1 = SquadTaskV1.from_dataclass(dc)
+    assert v1.id == dc.id
+    assert v1.squad_id == dc.squad_id
+    assert v1.title == dc.title
+    assert v1.description == dc.description
+    assert v1.status == dc.status.value
+    assert v1.priority == dc.priority.value
+    assert v1.assignee == dc.assignee
+    assert v1.skill_id == dc.skill_id
+    assert v1.project == dc.project
+    assert v1.labels == dc.labels
+    assert v1.blocked_by == dc.blocked_by
+    assert v1.blocks == dc.blocks
+    assert v1.inputs == dc.inputs
+    assert v1.result == dc.result
+    assert v1.token_budget == dc.token_budget
+    assert v1.bounty == dc.bounty
+    assert v1.external_ref == dc.external_ref
+    assert v1.created_at == dc.created_at
+    assert v1.updated_at == dc.updated_at
+    assert v1.completed_at == dc.completed_at
+    assert v1.claimed_at == dc.claimed_at
+    assert v1.attempt == dc.attempt
+    assert v1.schema_version == "1"
+
+
+def test_to_dataclass_preserves_all_fields() -> None:
+    """SquadTaskV1.to_dataclass() copies every matching field to the dataclass."""
+    v1 = parse_squad_task({
+        **_full(),
+        "status": "claimed",
+        "priority": "high",
+    })
+    dc = v1.to_dataclass()
+    assert dc.id == v1.id
+    assert dc.squad_id == v1.squad_id
+    assert dc.title == v1.title
+    assert dc.description == v1.description
+    assert dc.status == TaskStatus(v1.status)
+    assert dc.priority == TaskPriority(v1.priority)
+    assert dc.assignee == v1.assignee
+    assert dc.skill_id == v1.skill_id
+    assert dc.project == v1.project
+    assert dc.labels == list(v1.labels)
+    assert dc.blocked_by == list(v1.blocked_by)
+    assert dc.blocks == list(v1.blocks)
+    assert dc.inputs == dict(v1.inputs)
+    assert dc.result == dict(v1.result)
+    assert dc.token_budget == v1.token_budget
+    assert dc.bounty == dict(v1.bounty)
+    assert dc.external_ref == v1.external_ref
+    assert dc.created_at == v1.created_at
+    assert dc.attempt == v1.attempt
+
+
+def test_dataclass_and_pydantic_agree_on_valid_shape() -> None:
+    """Roundtrip: dataclass → SquadTaskV1 → dataclass produces identical values."""
+    original = SquadTaskDataclass(
+        id="task-abc-001",
+        squad_id="squad-engineering",
+        title="Implement feature X",
+        status=TaskStatus.IN_PROGRESS,
+        priority=TaskPriority.CRITICAL,
+        created_at="2026-04-17T09:00:00+00:00",
+        attempt=1,
+    )
+    v1 = SquadTaskV1.from_dataclass(original)
+    reconstructed = v1.to_dataclass()
+
+    assert reconstructed.id == original.id
+    assert reconstructed.squad_id == original.squad_id
+    assert reconstructed.title == original.title
+    assert reconstructed.status == original.status
+    assert reconstructed.priority == original.priority
+    assert reconstructed.created_at == original.created_at
+    assert reconstructed.attempt == original.attempt
+    # Pydantic-only fields (schema_version, bounty_micros) are NOT on the dataclass
+    assert not hasattr(reconstructed, "schema_version")
+    assert not hasattr(reconstructed, "bounty_micros")

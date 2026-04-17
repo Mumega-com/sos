@@ -1,12 +1,10 @@
-"""SquadTask v1 — Pydantic v2 binding for the SOS Squad Task schema.
+"""Pydantic v2 binding for the canonical `sos.contracts.squad.SquadTask` dataclass.
+
+For programmatic validation + JSON Schema round-trip. Do NOT add new fields here —
+modify the dataclass upstream and regenerate this binding.
 
 Cross-language source of truth (JSON Schema):
   sos/contracts/schemas/squad_task_v1.json
-
-This module is the Python binding; the JSON Schema above is authoritative.
-The dataclass in sos/contracts/squad.py (SquadTask) remains for internal
-service use. This Pydantic model is the *validated contract* boundary —
-used when crossing service or API boundaries.
 """
 from __future__ import annotations
 
@@ -16,6 +14,12 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from sos.contracts.squad import (
+    SquadTask as SquadTaskDataclass,
+    TaskPriority,
+    TaskStatus,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,12 +66,18 @@ def load_schema() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Pydantic model
+# Pydantic model — thin wrapper over sos.contracts.squad.SquadTask
 # ---------------------------------------------------------------------------
 
 
 class SquadTaskV1(BaseModel):
-    """Validated contract for a SquadTask crossing a service / API boundary."""
+    """Validated contract for a SquadTask crossing a service / API boundary.
+
+    Wraps `sos.contracts.squad.SquadTask` (kernel dataclass). Field names
+    are identical to the dataclass attributes, with two additions:
+    - `schema_version`: wire-format discriminator (always "1")
+    - `bounty_micros`: integer-micro denomination for the bounty reward
+    """
 
     model_config = ConfigDict(strict=False)
 
@@ -82,7 +92,7 @@ class SquadTaskV1(BaseModel):
     status: TaskStatusLiteral
     created_at: str
 
-    # --- optional ---
+    # --- optional (mirror dataclass fields) ---
     description: str = ""
     priority: TaskPriorityLiteral = "medium"
     assignee: Optional[str] = None
@@ -122,6 +132,78 @@ class SquadTaskV1(BaseModel):
     def now_iso() -> str:
         """Return current UTC time as an ISO-8601 string."""
         return datetime.now(timezone.utc).isoformat()
+
+    # ---------------------------------------------------------------------------
+    # Dataclass interop
+    # ---------------------------------------------------------------------------
+
+    @classmethod
+    def from_dataclass(cls, task: SquadTaskDataclass) -> SquadTaskV1:
+        """Construct a SquadTaskV1 from a kernel SquadTask dataclass instance.
+
+        `schema_version` defaults to "1". `bounty_micros` defaults to 0
+        (not present on the dataclass — enrich separately if needed).
+        """
+        return cls.model_validate(
+            {
+                "schema_version": "1",
+                "id": task.id,
+                "squad_id": task.squad_id,
+                "title": task.title,
+                "description": task.description,
+                "status": task.status.value if isinstance(task.status, TaskStatus) else task.status,
+                "priority": task.priority.value if isinstance(task.priority, TaskPriority) else task.priority,
+                "assignee": task.assignee,
+                "skill_id": task.skill_id,
+                "project": task.project,
+                "labels": list(task.labels),
+                "blocked_by": list(task.blocked_by),
+                "blocks": list(task.blocks),
+                "inputs": dict(task.inputs),
+                "result": dict(task.result),
+                "token_budget": task.token_budget,
+                "bounty": dict(task.bounty),
+                "bounty_micros": 0,
+                "external_ref": task.external_ref,
+                "created_at": task.created_at or cls.now_iso(),
+                "updated_at": task.updated_at or None,
+                "completed_at": task.completed_at,
+                "claimed_at": task.claimed_at,
+                "attempt": task.attempt,
+            }
+        )
+
+    def to_dataclass(self) -> SquadTaskDataclass:
+        """Convert this Pydantic wrapper back to the kernel SquadTask dataclass.
+
+        `schema_version` and `bounty_micros` are Pydantic-layer additions;
+        they are dropped here. `bounty_micros` is stored in `bounty` by the
+        caller if needed.
+        """
+        return SquadTaskDataclass(
+            id=self.id,
+            squad_id=self.squad_id,
+            title=self.title,
+            description=self.description,
+            status=TaskStatus(self.status),
+            priority=TaskPriority(self.priority),
+            assignee=self.assignee,
+            skill_id=self.skill_id,
+            project=self.project,
+            labels=list(self.labels),
+            blocked_by=list(self.blocked_by),
+            blocks=list(self.blocks),
+            inputs=dict(self.inputs),
+            result=dict(self.result),
+            token_budget=self.token_budget,
+            bounty=dict(self.bounty),
+            external_ref=self.external_ref,
+            created_at=self.created_at,
+            updated_at=self.updated_at or "",
+            completed_at=self.completed_at,
+            claimed_at=self.claimed_at,
+            attempt=self.attempt,
+        )
 
 
 # ---------------------------------------------------------------------------
