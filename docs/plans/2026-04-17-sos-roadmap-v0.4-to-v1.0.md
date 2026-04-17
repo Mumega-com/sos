@@ -7,20 +7,28 @@
 
 ---
 
-## One-page version
+## One-page version (updated 2026-04-17 with shipped state)
 
 ```
-  v0.4.0  Contracts          — sprint in flight (Week 1 shipped)
+  v0.4.0-alpha.2  ✅ shipped 2026-04-17  Agent Card + 8 message schemas + enforcement
+  v0.4.0-beta.1   ✅ shipped 2026-04-17  MCP send migrated to v1 "send" type
+  v0.4.0          🟡 in flight           finish legacy producer migration + error taxonomy + OpenAPI
   v0.4.1  Provider Matrix    — LLM routing independence, closes OpenClaw-risk class
-  v0.4.2  Observability      — mumega-watch CF Worker, breakables inventory, status page
-  v0.4.3  Dispatcher         — CF Worker on Mesh + Code Mode MCP (99.9% token reduction)
-  v0.5.0  Traceable          — OpenTelemetry end-to-end + Workers analytics
+  v0.4.2  Observability      — external watchdog on 2nd VPS (CF Worker path dropped per Hadi; Mesh remains available for mesh membership)
+  v0.4.3  Dispatcher         — Python on VPS (CF Worker deferred — SOS stays CF-agnostic at kernel layer)
+  v0.5.0  Traceable          — OpenTelemetry end-to-end
   v0.6.0  Migratable         — Alembic migrations, idempotency keys, feature flags
   v0.7.0  Isolated           — adapters run as separate services, not in-process imports
   v0.8.0  Capable            — capability auth enforced, error taxonomy complete
   v0.9.0  Frozen             — contract freeze, no breaking changes without 2.0
-  v1.0.0  Ship               — OSS-ready, stable, dual-mode deployment (bare-metal + CF-native)
+  v1.0.0  Ship               — Rust kernel (summer target), Python reference remains
 ```
+
+**Hadi directive 2026-04-17 evening:** close SOS + Mirror public repos; Mumega goes
+Palantir-path (closed core, sovereign-capable). Federation + mesh use Cloudflare
+opportunistically but the kernel stays bare-metal-deployable. Rust port target:
+late June / early July 2026. Private repos preserve git history; OSS extraction
+revisited at v1.0 or later.
 
 Each version is a shippable increment. Each one ships more determinism than the last. The last three are OSS-maturity moves; the first four are in-flight product enablement.
 
