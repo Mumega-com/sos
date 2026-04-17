@@ -71,11 +71,11 @@ def patched_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def dashboard_module(patched_auth, monkeypatch: pytest.MonkeyPatch):
     """Return dashboard module with auth patched to use tmp tokens."""
     auth, tokens_file = patched_auth
-    import sos.services.dashboard.app as dash
+    import sos.services.dashboard.auth as dash_auth
 
-    # Redirect dashboard's auth import to the same patched instance.
-    monkeypatch.setattr(dash, "_auth_verify_bearer", auth.verify_bearer)
-    return dash, tokens_file, auth
+    # Redirect dashboard auth submodule to the same patched instance.
+    monkeypatch.setattr(dash_auth, "_auth_verify_bearer", auth.verify_bearer)
+    return dash_auth, tokens_file, auth
 
 
 @pytest.fixture()
