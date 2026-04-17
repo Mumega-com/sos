@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-dashboard-modularizer-v1",
-  "name": "Dashboard file modularization — split app.py into routes/components/helpers",
+  "name": "Dashboard file modularization \u2014 split app.py into routes/components/helpers",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T10:02:00Z",
@@ -40,7 +40,7 @@
       }
     }
   },
-  "description": "sos/services/dashboard/app.py is 2000+ lines — getting hard to navigate. Split into: app.py (thin FastAPI + app instance + middleware), routes/ (one file per route family: customer_dashboard.py, sos_operator.py, marketplace.py, login.py, health.py), components/ (HTML template strings, inline SVG loaders), helpers/ (auth / redis / mirror / tenant helpers). Zero functional change. All existing routes + tests pass unchanged.",
+  "description": "sos/services/dashboard/app.py is 2000+ lines \u2014 getting hard to navigate. Split into: app.py (thin FastAPI + app instance + middleware), routes/ (one file per route family: customer_dashboard.py, sos_operator.py, marketplace.py, login.py, health.py), components/ (HTML template strings, inline SVG loaders), helpers/ (auth / redis / mirror / tenant helpers). Zero functional change. All existing routes + tests pass unchanged.",
   "tags": [
     "sos",
     "dashboard",
@@ -72,9 +72,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

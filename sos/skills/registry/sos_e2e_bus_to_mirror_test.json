@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-e2e-bus-to-mirror-test-v1",
-  "name": "E2E: bus → mirror engram + consistent /health shape",
+  "name": "E2E: bus \u2192 mirror engram + consistent /health shape",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T10:01:00Z",
@@ -47,7 +47,7 @@
       }
     }
   },
-  "description": "Ships the first proper end-to-end integration test proving the full write loop: send a v1 message to sos:stream → bus consumer picks it up → engram lands in Mirror within 2s. Also normalizes every service's /health endpoint to the same JSON shape: {status, service, version, uptime_seconds, dependencies: [...]}. Adds tests/integration/ scaffold with fixtures for spinning up a redis client + mirror db connection.",
+  "description": "Ships the first proper end-to-end integration test proving the full write loop: send a v1 message to sos:stream \u2192 bus consumer picks it up \u2192 engram lands in Mirror within 2s. Also normalizes every service's /health endpoint to the same JSON shape: {status, service, version, uptime_seconds, dependencies: [...]}. Adds tests/integration/ scaffold with fixtures for spinning up a redis client + mirror db connection.",
   "tags": [
     "sos",
     "e2e",
@@ -80,9 +80,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

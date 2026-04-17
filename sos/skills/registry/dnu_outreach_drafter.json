@@ -95,9 +95,8 @@
     "price_per_call_micros": 300000,
     "currency": "USD",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-error-taxonomy-expansion-v1",
-  "name": "SOS Error Taxonomy — SOS-4xxx/5xxx/6xxx/7xxx",
+  "name": "SOS Error Taxonomy \u2014 SOS-4xxx/5xxx/6xxx/7xxx",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T10:00:00Z",
@@ -69,9 +69,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

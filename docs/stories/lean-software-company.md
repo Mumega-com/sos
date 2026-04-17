@@ -104,7 +104,7 @@ Everyone's Claude Code / Cursor / Codex / Gemini CLI sees the same squads, same 
 
 ### What they earn
 
-If Thresh's `stripe-webhook-debugger` gets good enough to list on the marketplace (verified by 2+ humans, 50+ invocations, 1+ external tenant), other companies pay Thresh per invocation. **Revenue split: 70% to the skill's author (Alex's wallet), 20% to Thresh operator wallet, 10% to the $MIND pool.**
+If Thresh's `stripe-webhook-debugger` gets good enough to list on the marketplace (verified by 2+ humans, 50+ invocations, 1+ external tenant), other companies pay Thresh per invocation. **Revenue split per MARKETPLACE.md: 85% to the skill's creator (Alex's wallet), 15% platform fee (covers review infrastructure, witness rewards, hosting).**
 
 Alex earns from his own code directly. Thresh earns a cut from every external use. The company becomes a tiny skill publisher in addition to their SaaS.
 
@@ -155,7 +155,7 @@ A: 30 seconds per person. One `npx` command.
 A: They will. Each inside their own garden. When Thresh inevitably uses multiple vendors (most teams do within 6 months), the cross-vendor layer is Agent OS. We're the neutral ground.
 
 **Q: On-prem / behind-our-firewall?**
-A: Palantir-path delivery available. Docker Compose, RBAC, audit logs, customer-controlled keys. Same platform, running inside your perimeter.
+A: Mycelium-node delivery available. Docker Compose or Cloudflare Worker, RBAC, audit logs, operator-controlled keys. The node runs inside your perimeter and connects to the broader Mumega junction only for ToRivers settlement + skill marketplace sync. Sovereign operation, not hosting lock-in.
 
 ---
 

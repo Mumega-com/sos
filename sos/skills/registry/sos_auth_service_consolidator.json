@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-auth-service-consolidator-v1",
-  "name": "SOS Auth Service Consolidator — one token source of truth",
+  "name": "SOS Auth Service Consolidator \u2014 one token source of truth",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-17T14:17:00Z",
@@ -75,9 +75,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

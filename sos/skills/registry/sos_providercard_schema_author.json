@@ -41,7 +41,7 @@
       }
     }
   },
-  "description": "Writes sos/contracts/schemas/provider_card_v1.json matching the existing Pydantic ProviderCard in sos/providers/matrix.py. Adds roundtrip contract tests verifying schema ↔ Pydantic parity. Completes the contracts set for the provider routing layer.",
+  "description": "Writes sos/contracts/schemas/provider_card_v1.json matching the existing Pydantic ProviderCard in sos/providers/matrix.py. Adds roundtrip contract tests verifying schema \u2194 Pydantic parity. Completes the contracts set for the provider routing layer.",
   "tags": [
     "sos",
     "contracts",
@@ -73,9 +73,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

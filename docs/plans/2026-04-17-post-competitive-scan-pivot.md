@@ -84,7 +84,7 @@ The agent runtime is commoditized. The coordination + marketplace + earnings lay
 |---|------|------------|-------|
 | P3.1 | **v0.4.2 Observability** — trace graph view wired to the bus, inspired by OpenAI's execution-graph paradigm but operator-facing, not developer-self-serve | P2.3 | Turns Excalidraw map into live trace |
 | P3.2 | **Competitor release feed + protocol-compliance matrix** (MCP ✅, UCP, A2A, AP2, ACP) on Dashboard | P3.1 | Always-current competitive vigilance |
-| P3.3 | **Enterprise on-prem package** (Palantir-path delivery) — SkillHub-class self-hosted distribution: Docker, RBAC, audit logs, customer-controlled keys | P2.1 | First paid enterprise pilot target after demo video lands |
+| P3.3 | **Mycelium-node sovereign deployment** — CF Worker + Docker Compose variants with RBAC, audit logs, operator-controlled keys. Nodes run anywhere (CF edge, VPS, Raspberry Pi, behind firewall) and settle to ToRivers + $MIND. | P2.1 | First sovereign-node pilot target after demo video lands |
 | P3.4 | **Protocol alignment** — add AP2 (Agent Payments Protocol) + ACP (Agentic Commerce Protocol) compat so Mumega plugs into agentic-commerce channels as standards ratify | P3.2 | Optional; depends on what the standards actually land on |
 
 ---

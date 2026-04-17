@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-auth-caller-migration-v1",
-  "name": "Auth Caller Migration — route every service through sos.services.auth",
+  "name": "Auth Caller Migration \u2014 route every service through sos.services.auth",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-18T09:00:00Z",
@@ -76,9 +76,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

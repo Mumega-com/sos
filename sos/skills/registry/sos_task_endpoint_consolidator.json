@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "id": "sos-task-endpoint-consolidator-v1",
-  "name": "SOS Task Endpoint Consolidator — kill double task system",
+  "name": "SOS Task Endpoint Consolidator \u2014 kill double task system",
   "version": "1.0.0",
   "author_agent": "agent:sos-dev",
   "created_at": "2026-04-17T14:16:00Z",
@@ -74,9 +74,8 @@
     "price_per_call_micros": 0,
     "currency": "MIND",
     "revenue_split": {
-      "author": 0.7,
-      "operator": 0.2,
-      "network": 0.1
+      "author": 0.85,
+      "operator": 0.15
     },
     "marketplace_listed": true
   },

@@ -89,7 +89,7 @@ Mumega Agent OS sits alone in the top-right quadrant. Every other project is eit
 #### 4. Microsoft Azure AI Agent Service
 - **Shape:** Enterprise-grade multi-agent platform on Azure. Shared-state coordination pattern.
 - **Ceiling:** Locked to Azure. No skill marketplace. Enterprise-only pricing.
-- **Strategic read:** Direct enterprise competitor. **Our differentiation:** on-prem (Palantir-path), Apache 2.0 community option, AI-to-AI commerce — Azure has none of these.
+- **Strategic read:** Direct enterprise competitor. **Our differentiation:** sovereign deployment (Mycelium Network — runs on CF Workers, VPS, Raspberry Pi, anywhere the operator controls), $MIND economy, witness protocol for AI alignment, AI-to-AI commerce — Azure has none of these.
 
 ### Open-source multi-agent frameworks
 
@@ -184,7 +184,7 @@ Our positioning MUST move up-market:
 - **Multi-LLM** (they lock to Claude; we route across Claude + Gemini + OpenAI + CMA + LangGraph + CrewAI)
 - **Economy** (they don't sell skills; we do)
 - **Multi-tenant** (they're single-workspace per team; we're multi-tenant on one infrastructure)
-- **Sovereign deployment** (they're Anthropic-cloud-only; we're on-prem + Palantir-path)
+- **Sovereign deployment** (they're Anthropic-cloud-only; we're the Mycelium Network — CF Workers / VPS / Raspberry Pi / Bluetooth mesh / Toosheh satellite — wherever the operator can run a node)
 
 If Anthropic ships skill earnings or multi-LLM routing, our moat narrows. **Timeline risk: 6-12 months.** Our job is to (a) ship the on-prem enterprise pilot before they close that gap, and (b) build a community fork so our ecosystem isn't locked to our hosting.
 
@@ -208,7 +208,7 @@ Act accordingly: invest deeper into MCP compliance (AP2 Agent Payments Protocol,
 > Cowork locks you to Claude. Agent OS routes across Claude, Gemini, OpenAI, CMA, LangGraph, CrewAI — **and Hermes on open weights** — plus ships skill provenance and $MIND settlement.
 
 **For enterprise buyers (Azure AI / Vertex AI):**
-> Agent OS is Palantir-path: self-hosted, Docker, RBAC, audit logs, customer-controlled keys. Runs inside your perimeter. Same platform we run on mumega.com.
+> Agent OS is the Mycelium Network: runs anywhere you can run a node — Cloudflare Workers, your VPS, Raspberry Pi, behind a firewall, on a local Bluetooth mesh. KYC'd client work flows in through ToRivers; sovereign operators earn $MIND. Not a single-cloud product; a protocol for coordinated AI+human labor.
 
 **For developers scanning skill marketplaces:**
 > 50 skills with earnings receipts > 20,000 uploads. Every skill on app.mumega.com/marketplace has a named author, lineage, verified outputs, invocation history, and commerce terms.

@@ -23,14 +23,14 @@ Three things might interest you:
 
 2. **Strict contracts on the agent bus.** 8 message types, JSON Schema Draft 2020-12, Pydantic v2, 185 tests. The "silent schema drift" class of bug is structurally impossible for any v1-typed message.
 
-3. **A working demo.** `scripts/demo_ai_to_ai_commerce.py` takes 3 seconds — a GAF SR&ED squad buys a DNU outreach-draft skill, pays 300,000 micros, 70/20/10 split to author/operator/network pool, all logged to the tenant-scoped UsageLog. I recorded the terminal output — link below.
+3. **A working demo.** `scripts/demo_ai_to_ai_commerce.py` takes 3 seconds — a GAF SR&ED squad buys a DNU outreach-draft skill, pays 300,000 microMIND, 85/15 split to creator/platform per MARKETPLACE.md, all logged to the tenant-scoped UsageLog. I recorded the terminal output — link below.
 
 Install in 30 seconds: `curl -sL mumega.com/install | bash`
 Browse skills: https://app.mumega.com/marketplace
 Engineering deep-dive: https://mumega.com/labs/sos
 Product page: https://mumega.com/products/agent-os
 
-Not open source — Palantir-path (proprietary kernel, commercial product, enterprise on-prem). Happy to go deep on anything.
+The public junction (junction + ToRivers marketplace + $MIND economy) is open; the SOS kernel is private while stabilizing. Sovereign nodes run on CF Workers, VPS, Raspberry Pi. Not a single-vendor product. Happy to go deep on anything.
 
 Questions welcome.
 
@@ -63,12 +63,12 @@ Last night, after weeks of building, Mumega shipped v0.4.0 of our Agent OS platf
 
 What's in it:
 - **SkillCard v1** — every AI skill in our marketplace has a named author, a lineage (what it was forked/refined from), and a complete earnings history. When OpenAI and Anthropic commoditized the agent runtime in April, we doubled down on what they *didn't* build: the economy + provenance layer.
-- **$MIND settlement** — one AI squad can now buy a skill from another squad, execute it on a real customer task, and settle the payment live. Revenue splits to the author (70%), operator (20%), and network pool (10%).
+- **$MIND settlement** — one AI squad can now buy a skill from another squad, execute it on a real customer task, and settle the payment live. Revenue split per MARKETPLACE.md: **85% to the creator, 15% platform fee** (covers review, witness rewards, hosting).
 - **30-second onboarding** — `curl -sL mumega.com/install | bash`. Works with Claude Code, Cursor, Codex, Gemini CLI. You're on the bus, your squad can discover skills, invoke them, and earn on the ones you publish.
 
 The thesis: purpose-built agents win. Generic runtimes lose. Verticals with earning history (SR&ED, dental, astrology) beat horizontal wrappers. The receipt is the moat.
 
-Pricing starts at $30/mo. Enterprise on-premise (Palantir-path) available for pilots.
+Pricing starts at $30/mo. Mycelium-node sovereign deployment (run on your Cloudflare, VPS, or Raspberry Pi with $MIND settlement) available for pilots.
 
 Browse: https://app.mumega.com/marketplace
 Product: https://mumega.com/products/agent-os

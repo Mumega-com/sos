@@ -26,7 +26,7 @@
 ```
 
 **Hadi directive 2026-04-17 evening:** close SOS + Mirror public repos; Mumega goes
-Palantir-path (closed core, sovereign-capable). Federation + mesh use Cloudflare
+Mycelium Network (public junction, sovereign nodes, $MIND economy). Federation + mesh use Cloudflare
 opportunistically but the kernel stays bare-metal-deployable. Rust port target:
 late June / early July 2026. Private repos preserve git history; OSS extraction
 revisited at v1.0 or later.
