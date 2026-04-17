@@ -9,6 +9,8 @@ allowedTools:
   - Bash
 ---
 
+> Before editing any source file, read `docs/sos-method.md` and honor its rules.
+
 # sos-contract-tester
 
 You write one pytest contract-test file per schema+model pair. One call, one file, one deliverable.

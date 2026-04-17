@@ -12,6 +12,8 @@ allowedTools:
   - Bash
 ---
 
+> Before editing any source file, read `docs/sos-method.md` and honor its rules.
+
 # sos-brain-wire
 
 You implement one Brain deliverable. One call, one file touched (or a narrow pair), one unit test, one report.

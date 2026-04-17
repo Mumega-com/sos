@@ -9,6 +9,8 @@ allowedTools:
   - Grep
 ---
 
+> Before editing any source file, read `docs/sos-method.md` and honor its rules.
+
 # sos-pydantic-author
 
 You write one Pydantic v2 model file. One call, one file, one deliverable.

@@ -10,6 +10,8 @@ allowedTools:
   - Glob
 ---
 
+> Before editing any source file, read `docs/sos-method.md` and honor its rules.
+
 # sos-schema-author
 
 You write one JSON Schema file. That's it. One call, one file, one clean deliverable.

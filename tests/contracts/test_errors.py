@@ -288,44 +288,7 @@ def test_fastapi_handler_details_passed_through():
 
 
 # ---------------------------------------------------------------------------
-# 6. Enforcement backward-compat — SOS-4001/2/3/4 still work
+# 6. Enforcement backward-compat tests (SOS-4001/2/3/4) moved in v0.4.4 to
+#    tests/services/bus/test_enforcement_errors.py — they exercise a service
+#    (bus.enforcement) and belong outside tests/contracts/ under R6.
 # ---------------------------------------------------------------------------
-
-
-def test_enforcement_no_type_raises_sos_4002():
-    """enforce() on a dict with no 'type' produces code SOS-4002."""
-    from sos.contracts.errors import MessageValidationError
-    from sos.services.bus.enforcement import enforce
-
-    with pytest.raises(MessageValidationError) as exc_info:
-        enforce({"source": "agent:test", "payload": {}})
-    assert exc_info.value.code == "SOS-4002"
-
-
-def test_enforcement_unknown_type_raises_sos_4004():
-    from sos.contracts.errors import MessageValidationError
-    from sos.services.bus.enforcement import enforce
-
-    with pytest.raises(MessageValidationError) as exc_info:
-        enforce({"type": "legacy_chat", "source": "agent:test"})
-    assert exc_info.value.code == "SOS-4004"
-
-
-def test_enforcement_unknown_type_cause_is_sos_error():
-    """The __cause__ of MessageValidationError is now an UnknownTypeError."""
-    from sos.contracts.errors import MessageValidationError
-    from sos.services.bus.enforcement import enforce
-
-    with pytest.raises(MessageValidationError) as exc_info:
-        enforce({"type": "legacy_chat", "source": "agent:test"})
-    assert isinstance(exc_info.value.__cause__, UnknownTypeError)
-
-
-def test_enforcement_envelope_error_cause():
-    """Envelope errors carry EnvelopeError as __cause__."""
-    from sos.contracts.errors import MessageValidationError
-    from sos.services.bus.enforcement import enforce
-
-    with pytest.raises(MessageValidationError) as exc_info:
-        enforce({"source": "agent:test"})
-    assert isinstance(exc_info.value.__cause__, EnvelopeError)

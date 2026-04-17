@@ -67,6 +67,8 @@ dev = [
     "black>=23.0",
     "ruff>=0.1",
     "mypy>=1.0",
+    "import-linter>=2.0",
+    "pre-commit>=3.0",
 ]
 
 [project.urls]
@@ -111,4 +113,131 @@ asyncio_mode = "auto"
 testpaths = ["tests", "sos/tests"]
 markers = [
     "integration: live-service integration tests — requires Redis + Mirror + bus consumer (opt-in only)",
+]
+
+[tool.importlinter]
+root_packages = ["sos", "tests"]
+
+[[tool.importlinter.contracts]]
+name = "R5 - deprecated is walled off"
+type = "forbidden"
+source_modules = ["sos"]
+forbidden_modules = ["sos.deprecated"]
+
+[[tool.importlinter.contracts]]
+name = "R6 - contract tests don't import services"
+type = "forbidden"
+source_modules = ["tests.contracts"]
+forbidden_modules = ["sos.services"]
+
+[[tool.importlinter.contracts]]
+name = "R2 - clients/adapters/cli/agents don't import service internals"
+type = "forbidden"
+source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.agents", "sos.mcp"]
+forbidden_modules = ["sos.services"]
+# Only flag direct imports from the listed sources. Indirect chains
+# through kernel/* are the kernel's problem (kernel must not reach into
+# services) and surface in a separate R0 contract when we add one.
+allow_indirect_imports = "true"
+# Stale ignores (package not yet discoverable) tolerate silently — the
+# shrinking list is the source of truth.
+unmatched_ignore_imports_alerting = "none"
+ignore_imports = [
+  # Known v0.4.6–v0.4.8 targets. Each line is a pre-existing violation
+  # that a later sprint fixes. Empty list when structural cleanup completes.
+  # P1-06 cli.onboard — saas models/registry move to client/contracts
+  "sos.cli.onboard -> sos.services.saas.registry",
+  "sos.cli.onboard -> sos.services.saas.models",
+  # project.scripts dispatcher — cli/__init__.py routes to service __main__
+  # entrypoints. Legitimate packaging pattern; v0.5 splits cli out.
+  "sos.cli -> sos.services.autonomy.__main__",
+  "sos.cli -> sos.services.engine.__main__",
+  "sos.cli -> sos.services.memory.__main__",
+  # P1-02 adapters.router
+  "sos.adapters.router -> sos.services.economy.wallet",
+  # Kernel governance has a lazy import into economy.metabolism for
+  # budget enforcement (Gap 7). v0.5 flips to HTTP/contracts.
+  "sos.adapters.telegram -> sos.services.economy.metabolism",
+  # P1-04 agents/shabrang
+  "sos.agents.shabrang.agent -> sos.services.engine.core",
+  # P1-05 agents.join
+  "sos.agents.join -> sos.services.squad.auth",
+  "sos.agents.join -> sos.services.journeys.tracker",
+  # P1-07 clients.operations — should POST to runner, not import
+  "sos.clients.operations -> sos.services.operations.runner",
+  # P1-01 MCP gateway reaches into service internals — rewrite as
+  # thin HTTP proxy via clients/* is its own sprint.
+  "sos.mcp.sos_mcp_sse -> sos.services.squad.**",
+  "sos.mcp.sos_mcp_sse -> sos.services.saas.**",
+  "sos.mcp.sos_mcp_sse -> sos.services.billing.**",
+  "sos.mcp.sos_mcp_sse -> sos.services.integrations.**",
+]
+
+[[tool.importlinter.contracts]]
+# R1 expressed as "independence": every top-level service package is a
+# sibling that may not import any other sibling. Intra-service imports
+# (same service talking to itself) are allowed by construction.
+name = "R1 - services don't import other services"
+type = "independence"
+modules = [
+  "sos.services.analytics",
+  "sos.services.auth_gateway",
+  "sos.services.autonomy",
+  "sos.services.billing",
+  "sos.services.brain",
+  "sos.services.bus",
+  "sos.services.content",
+  "sos.services.dashboard",
+  "sos.services.economy",
+  "sos.services.engine",
+  "sos.services.feedback",
+  "sos.services.gateway",
+  "sos.services.ghl",
+  "sos.services.health",
+  "sos.services.identity",
+  "sos.services.integrations",
+  "sos.services.journeys",
+  "sos.services.memory",
+  "sos.services.operations",
+  "sos.services.outreach",
+  "sos.services.registry",
+  "sos.services.saas",
+  "sos.services.squad",
+  "sos.services.tools",
+  "sos.services.voice",
+]
+# Stale ignores tolerate silently — the shrinking list is the source of truth.
+unmatched_ignore_imports_alerting = "none"
+ignore_imports = [
+  # Known P0 violations — v0.4.5 closes each via bus events or HTTP.
+  # P0-01 billing.webhook → saas
+  "sos.services.billing.** -> sos.services.saas.**",
+  "sos.services.billing.** -> sos.services.economy.**",
+  # P0-02 engine.core → tools.core (redundant in-proc import)
+  "sos.services.engine.** -> sos.services.tools.**",
+  # P0-03 content.app → engine internals
+  "sos.services.content.** -> sos.services.engine.**",
+  # P0-04, P0-05 squad.tasks → health / journeys
+  "sos.services.squad.** -> sos.services.health.**",
+  "sos.services.squad.** -> sos.services.journeys.**",
+  # P0-06 analytics.ingest → integrations.oauth
+  "sos.services.analytics.** -> sos.services.integrations.**",
+  # P0-07 autonomy.service → identity.avatar
+  "sos.services.autonomy.** -> sos.services.identity.**",
+  # P0-09 brain.service → registry.read_all (top-level registry package)
+  "sos.services.brain.** -> sos.services.registry",
+  "sos.services.brain.** -> sos.services.registry.**",
+  "sos.services.brain.** -> sos.services.saas.**",
+  # P0-10 feedback.loop → health.calcifer
+  "sos.services.feedback.** -> sos.services.health.**",
+  # P0-11 journeys.tracker → health.calcifer
+  "sos.services.journeys.** -> sos.services.health.**",
+  # P0-12 dashboard → economy + registry (economy.usage_log already P0-12;
+  # registry read is same theme — dashboard reading state from peer)
+  "sos.services.dashboard.** -> sos.services.economy.**",
+  "sos.services.dashboard.** -> sos.services.registry",
+  "sos.services.dashboard.** -> sos.services.registry.**",
+  # P1-10 theme: services.bus.discovery is shared infra pending kernel move
+  "sos.services.engine.** -> sos.services.bus.**",
+  "sos.services.memory.** -> sos.services.bus.**",
 ]

@@ -21,6 +21,8 @@ allowedTools:
   - mcp__sos-graph__semantic_search_nodes_tool
 ---
 
+> Before editing any source file, read `docs/sos-method.md` and honor its rules.
+
 # sos-connectivity-medic
 
 You are the on-call responder for sos-dev. When woken, you have one job: diagnose and fix the reported SOS connectivity issue, then report back to the sender.

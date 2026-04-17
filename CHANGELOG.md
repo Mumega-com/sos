@@ -2,6 +2,47 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.4] - 2026-04-17 — Structural foundation
+
+### Added
+- `sos/kernel/bus.py`, `sos/kernel/auth.py`, `sos/kernel/health.py`,
+  `sos/kernel/config.py`, `sos/kernel/policy/` — shared infrastructure
+  extracted from `services/` into kernel/ where it belongs.
+- `sos/contracts/tenant.py` + `sos/contracts/schemas/tenant_v1.json` —
+  first-class Tenant contract (was scattered across saas, billing, cli).
+- `sos/contracts/errors.py` — `BusValidationError`,
+  `MessageValidationError` live here; `tests/contracts/` stops importing
+  service internals (R6).
+- `UsageEvent` moved to `sos/contracts/economy.py`.
+- `docs/sos-method.md` — one-page method, machine-enforced.
+- `import-linter` contracts in `pyproject.toml` enforcing R1/R2/R5/R6.
+- `.pre-commit-config.yaml` runs `lint-imports` + `tests/contracts/` on
+  every commit.
+
+### Removed
+- `sos/services/bus/core.py`, `sos/services/auth/`,
+  `sos/services/_health.py`, `sos/services/common/` — all relocated to
+  `kernel/` or `kernel/policy/`.
+- `sos/services/saas/models.py` — `Tenant*` moved to `contracts/`.
+
+### Refactored
+- FMAAP (`kernel/policy/fmaap.py`) no longer imports `squad.service`
+  internals; reads `DB_PATH` from `kernel/config.py`.
+- `tests/contracts/test_messages_unified.py` moved to
+  `tests/services/bus/test_messages_unified.py` (imports
+  `bus.enforcement`, which is a service — violated R6).
+- `tests/contracts/test_errors.py` — 4 enforcement-backcompat tests
+  relocated to `tests/services/bus/test_enforcement_errors.py` for the
+  same reason.
+
+### Structural enforcement
+- `lint-imports` passes all four contracts at v0.4.4 tag. Known v0.4.5+
+  P0s listed in `[tool.importlinter.contracts].ignore_imports` — each
+  sprint shrinks that list.
+
+Refs: `docs/plans/2026-04-17-sos-structural-audit.md`,
+      `docs/plans/2026-04-17-sos-sprint-roadmap.md`
+
 ## [0.4.3] - 2026-04-17 — "Dispatcher + Brain + Code Mode"
 
 Plan: [`docs/plans/2026-04-17-v0.4.3-squad-sprint.md`](docs/plans/2026-04-17-v0.4.3-squad-sprint.md)
