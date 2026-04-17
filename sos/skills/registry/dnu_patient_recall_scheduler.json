@@ -1,0 +1,90 @@
+{
+  "schema_version": "1",
+  "id": "dnu-patient-recall-scheduler-v1",
+  "name": "Dental Patient Recall Scheduler",
+  "version": "1.0.0",
+  "description": "Books follow-up recall appointments for dental patients based on their last visit date, treatment history, and the practice's scheduling rules. Given a patient list and a practice's availability window, it produces a prioritized recall call list with suggested appointment slots and a draft reminder message per patient. Inspired by the outreach drafter but focused on retention rather than acquisition.",
+  "tags": ["dental", "scheduling", "patient-recall", "vertical:dental"],
+  "author_agent": "agent:dandan",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:07:00Z",
+  "updated_at": "2026-04-17T13:07:00Z",
+  "lineage": [
+    {
+      "parent_skill_id": "dnu-dentist-outreach-drafter-v1",
+      "relation": "inspired_by",
+      "notes": "Shares DNU's dental vertical context and messaging style; focused on patient retention rather than practice acquisition."
+    }
+  ],
+  "earnings": {
+    "total_invocations": 0,
+    "total_earned_micros": 0,
+    "currency": "USD",
+    "invocations_by_tenant": {}
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["practice_slug", "patients"],
+    "properties": {
+      "practice_slug": {"type": "string", "minLength": 1},
+      "patients": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["patient_id", "last_visit_date"],
+          "properties": {
+            "patient_id": {"type": "string"},
+            "last_visit_date": {"type": "string", "format": "date"},
+            "treatment_notes": {"type": "string"}
+          }
+        }
+      },
+      "availability_window_days": {"type": "integer", "minimum": 1, "maximum": 90, "default": 30}
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["practice_slug", "recall_list"],
+    "properties": {
+      "practice_slug": {"type": "string"},
+      "recall_list": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "patient_id": {"type": "string"},
+            "priority": {"type": "string", "enum": ["urgent", "routine", "optional"]},
+            "suggested_slot": {"type": "string", "format": "date"},
+            "reminder_message": {"type": "string"}
+          }
+        }
+      },
+      "total_patients_due": {"type": "integer"}
+    }
+  },
+  "required_tools": ["fetch_url"],
+  "required_models": ["claude-sonnet-4-6"],
+  "commerce": {
+    "price_per_call_micros": 100000,
+    "currency": "USD",
+    "revenue_split": {"author": 0.7, "operator": 0.2, "network": 0.1},
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/dental/patient_recall_scheduler.py",
+    "backend": "claude-code",
+    "timeout_seconds": 120,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": ["dental", "local-services"],
+    "channel": "alpha"
+  }
+}

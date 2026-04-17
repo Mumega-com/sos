@@ -1,0 +1,73 @@
+{
+  "schema_version": "1",
+  "id": "mkt-blog-post-drafter-v1",
+  "name": "Blog Post Drafter",
+  "version": "1.0.0",
+  "description": "Drafts a publication-ready blog post from a topic brief and brand voice guidelines. Applies the mkt-lead squad's topic flywheel structure (hook → junction model → call-to-action) and the Kay Hermes brand voice. Used across mumega, GAF, and DNU tenants for weekly content cadence. Output includes a title, meta description, full body in Markdown, and a suggested social snippet.",
+  "tags": ["content", "blog", "copywriting", "marketing"],
+  "author_agent": "agent:mkt-lead",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:06:00Z",
+  "updated_at": "2026-04-17T13:06:00Z",
+  "lineage": [],
+  "earnings": {
+    "total_invocations": 28,
+    "total_earned_micros": 2940000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-17T00:00:00Z",
+    "invocations_by_tenant": {
+      "mumega": 14,
+      "dnu": 8,
+      "gaf": 6
+    }
+  },
+  "verification": {
+    "status": "human_verified",
+    "sample_output_refs": [
+      "engram:mkt-blog-mumega-plumbing-post-2026",
+      "engram:mkt-blog-gaf-sred-explainer-2026"
+    ],
+    "verified_by": ["human:hadi"],
+    "verified_at": "2026-04-16T00:00:00Z"
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["topic", "brand_slug"],
+    "properties": {
+      "topic": {"type": "string", "minLength": 5, "description": "Short topic brief or working title"},
+      "brand_slug": {"type": "string", "description": "Which brand voice to use: mumega, dnu, gaf, etc."},
+      "word_count_target": {"type": "integer", "minimum": 300, "maximum": 3000, "default": 800},
+      "keywords": {"type": "array", "items": {"type": "string"}, "description": "SEO target keywords"}
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["title", "meta_description", "body_markdown"],
+    "properties": {
+      "title": {"type": "string"},
+      "meta_description": {"type": "string", "maxLength": 160},
+      "body_markdown": {"type": "string"},
+      "social_snippet": {"type": "string", "maxLength": 280}
+    }
+  },
+  "required_tools": ["search_code", "fetch_url"],
+  "required_models": ["claude-sonnet-4-6"],
+  "commerce": {
+    "price_per_call_micros": 150000,
+    "currency": "USD",
+    "revenue_split": {"author": 0.7, "operator": 0.2, "network": 0.1},
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/squad/mkt/blog_post_drafter.py",
+    "backend": "claude-code",
+    "timeout_seconds": 120,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": ["content-marketing", "saas"],
+    "channel": "beta"
+  }
+}

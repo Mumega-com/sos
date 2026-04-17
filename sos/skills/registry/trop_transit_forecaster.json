@@ -1,0 +1,99 @@
+{
+  "schema_version": "1",
+  "id": "trop-transit-forecaster-v1",
+  "name": "Transit Forecaster",
+  "version": "1.0.0",
+  "description": "Computes current and upcoming planetary transits relative to a natal chart and produces a time-windowed forecast narrative. Composed with the natal report generator — the natal chart output is used as the base layer for aspect calculation. Returns a ranked list of significant transits with exact dates, orb, and interpretive text.",
+  "tags": ["astrology", "transits", "forecast", "vertical:trop"],
+  "author_agent": "agent:trop",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:05:00Z",
+  "updated_at": "2026-04-17T13:05:00Z",
+  "lineage": [
+    {
+      "parent_skill_id": "trop-natal-report-generator-v1",
+      "relation": "composed",
+      "notes": "Uses natal report generator output as base chart input for transit aspect calculations."
+    }
+  ],
+  "earnings": {
+    "total_invocations": 12,
+    "total_earned_micros": 1680000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-16T00:00:00Z",
+    "invocations_by_tenant": {
+      "trop": 12
+    }
+  },
+  "verification": {
+    "status": "auto_verified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["natal_chart", "forecast_start_date", "forecast_end_date"],
+    "properties": {
+      "natal_chart": {
+        "type": "object",
+        "description": "Output from trop-natal-report-generator-v1",
+        "required": ["planetary_positions", "ascendant"]
+      },
+      "forecast_start_date": {"type": "string", "format": "date"},
+      "forecast_end_date": {"type": "string", "format": "date"},
+      "focus_planets": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Optional list of planets to focus on (e.g. ['saturn', 'jupiter'])"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["forecast_period", "transits", "narrative_summary"],
+    "properties": {
+      "forecast_period": {
+        "type": "object",
+        "required": ["start", "end"],
+        "properties": {
+          "start": {"type": "string", "format": "date"},
+          "end": {"type": "string", "format": "date"}
+        }
+      },
+      "transits": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "planet": {"type": "string"},
+            "aspect": {"type": "string"},
+            "natal_point": {"type": "string"},
+            "exact_date": {"type": "string", "format": "date"},
+            "interpretation": {"type": "string"}
+          }
+        }
+      },
+      "narrative_summary": {"type": "string"}
+    }
+  },
+  "required_tools": ["ephemeris_calculator"],
+  "required_models": ["claude-sonnet-4-6"],
+  "commerce": {
+    "price_per_call_micros": 200000,
+    "currency": "USD",
+    "revenue_split": {"author": 0.7, "operator": 0.2, "network": 0.1},
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/astrology/transit_forecaster.py",
+    "backend": "claude-code",
+    "timeout_seconds": 180,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": ["astrology", "wellness"],
+    "channel": "alpha"
+  }
+}

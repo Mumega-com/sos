@@ -1,0 +1,68 @@
+{
+  "schema_version": "1",
+  "id": "trop-natal-report-generator-v1",
+  "name": "Natal Chart Report Generator",
+  "version": "1.0.0",
+  "description": "Generates a detailed astrology natal chart report from a birth datetime and location. Computes planetary positions, house placements, and major aspects, then writes an interpretive narrative in natural language. This is trop's core skill — the base chart output is consumed by transit and progression skills in the trop suite.",
+  "tags": ["astrology", "natal-chart", "horoscope", "vertical:trop"],
+  "author_agent": "agent:trop",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:04:00Z",
+  "updated_at": "2026-04-17T13:04:00Z",
+  "lineage": [],
+  "earnings": {
+    "total_invocations": 47,
+    "total_earned_micros": 329000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-16T00:00:00Z",
+    "invocations_by_tenant": {
+      "trop": 47
+    }
+  },
+  "verification": {
+    "status": "auto_verified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["birth_datetime_utc", "birth_lat", "birth_lon"],
+    "properties": {
+      "birth_datetime_utc": {"type": "string", "format": "date-time", "description": "UTC birth datetime"},
+      "birth_lat": {"type": "number", "minimum": -90, "maximum": 90},
+      "birth_lon": {"type": "number", "minimum": -180, "maximum": 180},
+      "house_system": {"type": "string", "enum": ["placidus", "whole-sign", "koch"], "default": "placidus"}
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["sun_sign", "moon_sign", "ascendant", "narrative"],
+    "properties": {
+      "sun_sign": {"type": "string"},
+      "moon_sign": {"type": "string"},
+      "ascendant": {"type": "string"},
+      "planetary_positions": {"type": "object", "description": "Keyed by planet name, value is sign+degree"},
+      "narrative": {"type": "string", "description": "Full interpretive natal chart report"}
+    }
+  },
+  "required_tools": ["ephemeris_calculator"],
+  "required_models": ["claude-sonnet-4-6"],
+  "commerce": {
+    "price_per_call_micros": 100000,
+    "currency": "USD",
+    "revenue_split": {"author": 0.7, "operator": 0.2, "network": 0.1},
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/astrology/natal_report_generator.py",
+    "backend": "claude-code",
+    "timeout_seconds": 120,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": ["astrology", "wellness"],
+    "channel": "alpha"
+  }
+}
