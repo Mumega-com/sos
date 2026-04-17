@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/send_v1.json",
+  "title": "SOS Bus Send Message",
+  "description": "Canonical agent-to-agent chat message on the SOS bus. Most common message type; produced by mcp__sos__send and consumed by the delivery service. Every field is validated at write time by the bus worker before enqueue.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "send",
+      "description": "Discriminator field that identifies this as a send-type bus message."
+    },
+    "source": {
+      "type": "string",
+      "description": "Bus address of the sending agent. Must be a valid agent address in the form agent:<name>.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "string",
+      "description": "Bus address of the intended recipient. Either a named agent (agent:<name>) or a shared channel (sos:channel:<name>).",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC datetime when the message was created by the sender."
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer of the send message schema this record conforms to.",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message. Used for deduplication and reply threading."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Message body carrying the human-readable content and its content type.",
+      "required": [
+        "text",
+        "content_type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The message body text. Plain text or Markdown depending on content_type.",
+          "maxLength": 16384
+        },
+        "content_type": {
+          "type": "string",
+          "description": "MIME type that describes how the text field should be interpreted by the receiver.",
+          "enum": [
+            "text/plain",
+            "text/markdown"
+          ],
+          "default": "text/plain"
+        }
+      }
+    },
+    "reply_to": {
+      "type": "string",
+      "format": "uuid",
+      "description": "message_id of the message this is a direct reply to. Omit when starting a new thread."
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Opaque identifier used to correlate a chain of related messages across agents (e.g. a request/response pair or a workflow run)."
+    },
+    "headers": {
+      "type": "object",
+      "description": "Arbitrary string key-value metadata attached by the sender or bus middleware (e.g. trace IDs, priority hints, tenant context).",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -37,6 +37,7 @@ from sse_starlette.sse import EventSourceResponse
 from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
 from sos.services.squad.auth import _lookup_token as lookup_squad_token
 from sos.services.squad.service import SquadDB
+from sos.services.bus.enforcement import enforce, MessageValidationError
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
     TOOL_MAPPING,
@@ -843,6 +844,13 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             text = args["text"]
             stream = _agent_stream(to, project_scope)
             msg = scoped_sos_msg("chat", f"agent:{agent_scope}", f"agent:{to}", text, project_scope)
+            # v0.4.0: schema enforcement at bus ingress. Legacy-tolerant for now —
+            # "chat" type passes through; future migration to "send" triggers hard validation.
+            try:
+                msg = enforce(msg)
+            except MessageValidationError as ve:
+                log.error(f"bus message rejected: {ve}")
+                return _text(f"error: {ve.code} {ve.message}")
             mid = await r.xadd(stream, msg)
             await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
@@ -926,6 +934,12 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 stream = f"{_prefix(project_scope)}:broadcast"
                 channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
             msg = scoped_sos_msg("broadcast", f"agent:{agent_scope}", channel, text, project_scope)
+            # v0.4.0: schema enforcement (legacy-tolerant on "broadcast" type)
+            try:
+                msg = enforce(msg)
+            except MessageValidationError as ve:
+                log.error(f"bus message rejected: {ve}")
+                return _text(f"error: {ve.code} {ve.message}")
             mid = await r.xadd(stream, msg)
             await r.publish(channel, json.dumps(msg))
             return _text(f"Broadcast to {channel} (id: {mid})")

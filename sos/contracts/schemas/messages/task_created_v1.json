@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task_created_v1.json",
+  "title": "task_created v1",
+  "description": "Event emitted by the squad service (port 8060) when a new task is added to the task board. Published to the SOS bus so interested agents and workers get notified.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task_created",
+      "description": "Message type discriminator. Always 'task_created' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "description": "Bus identity of the emitting agent. Must follow the 'agent:<name>' convention where name is lowercase alphanumeric with dashes.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "string",
+      "description": "Bus channel or agent address this message is routed to. Defaults to the shared task channel.",
+      "default": "sos:channel:tasks",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of when this event was emitted.",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer of the message payload schema. Major bumps are breaking; minor/patch are additive.",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Globally unique identifier for this message envelope. Used for deduplication and tracing.",
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Task-specific data describing the newly created task.",
+      "required": [
+        "task_id",
+        "title",
+        "priority"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Unique identifier for the task within the task board. Alphanumeric, underscores, and dashes only.",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Human-readable title of the task. Must be non-empty and fit within a single display line.",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "priority": {
+          "type": "string",
+          "description": "Urgency level of the task. Determines scheduling order and agent wake policy.",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "description": "Full task description, acceptance criteria, or context. Markdown is accepted.",
+          "maxLength": 16384
+        },
+        "assignee": {
+          "type": "string",
+          "description": "Bus name of the agent assigned to execute this task. Lowercase alphanumeric with dashes. Omit to leave unassigned.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "skill_id": {
+          "type": "string",
+          "description": "Skill identifier required to execute this task. Used by the conductor for agent matching."
+        },
+        "project": {
+          "type": "string",
+          "description": "Project or tenant scope this task belongs to. Matches the project slug in the agent registry."
+        },
+        "labels": {
+          "type": "array",
+          "description": "Arbitrary string labels for filtering and grouping tasks. Each label must be unique within the array.",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "token_budget": {
+          "type": "integer",
+          "description": "Maximum number of tokens the assigned agent may spend on this task. Zero means no explicit cap.",
+          "minimum": 0
+        },
+        "bounty_cents": {
+          "type": "integer",
+          "description": "MIND-denominated bounty in cents awarded to the agent upon task completion. Zero means no bounty.",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
