@@ -6,12 +6,24 @@ existing adapters in sos/adapters/.
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# ---------------------------------------------------------------------------
+# Schema loader
+# ---------------------------------------------------------------------------
+
+_SCHEMA_PATH = Path(__file__).parent.parent / "contracts" / "schemas" / "provider_card_v1.json"
+
+
+def load_schema() -> dict[str, Any]:
+    """Return the parsed JSON Schema dict for ProviderCard v1."""
+    return json.loads(_SCHEMA_PATH.read_text())
 
 # ---------------------------------------------------------------------------
 # Config models

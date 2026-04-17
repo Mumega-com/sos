@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sos.mumega.com/contracts/provider_card/v1",
+  "title": "ProviderCard v1",
+  "description": "Canonical schema for one row in the SOS provider matrix. A ProviderCard names a backend adapter, its tier role (primary/fallback/cheap/premium/local), the model to invoke, optional circuit-breaker thresholds, and a cost estimate. The matrix YAML is validated against this schema at load time so misconfigured providers are rejected before any request is attempted.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "backend",
+    "tier",
+    "model"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "ProviderCard schema version this instance conforms to. Required so v1 and future v1.x / v2 instances are distinguishable at read time.",
+      "enum": ["1"]
+    },
+    "id": {
+      "type": "string",
+      "description": "Globally unique provider identifier. Must start with a lowercase letter followed by lowercase letters, digits, or hyphens.",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable provider name.",
+      "minLength": 1
+    },
+    "backend": {
+      "type": "string",
+      "description": "Which SOS adapter backend executes calls routed to this provider.",
+      "enum": [
+        "claude-adapter",
+        "claude-managed-agents",
+        "openai-adapter",
+        "openai-agents-sdk",
+        "gemini-adapter",
+        "langgraph",
+        "local"
+      ]
+    },
+    "tier": {
+      "type": "string",
+      "description": "Role this provider fills in the selection matrix. Used by select_provider() to filter candidates.",
+      "enum": ["primary", "fallback", "cheap", "premium", "local"]
+    },
+    "model": {
+      "type": "string",
+      "description": "Provider-specific model identifier passed through to the adapter, e.g. 'claude-sonnet-4-6'.",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "description": "Optional custom API endpoint URL. When absent the adapter uses its default base URL."
+    },
+    "health_probe_url": {
+      "type": "string",
+      "description": "Optional URL the health-check subsystem may GET to verify this provider is reachable."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "description": "Per-call timeout in seconds. Minimum 1, maximum 3600.",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "circuit_breaker": {
+      "type": "object",
+      "description": "Static thresholds for the runtime circuit breaker protecting this provider.",
+      "additionalProperties": false,
+      "properties": {
+        "failure_threshold": {
+          "type": "integer",
+          "description": "Number of consecutive failures before the circuit opens.",
+          "minimum": 0
+        },
+        "recovery_window_seconds": {
+          "type": "integer",
+          "description": "Seconds to wait in the open state before transitioning to half-open.",
+          "minimum": 0
+        },
+        "half_open_max_requests": {
+          "type": "integer",
+          "description": "Maximum probe requests allowed in the half-open state.",
+          "minimum": 0
+        }
+      }
+    },
+    "cost_per_call_estimate_micros": {
+      "type": "integer",
+      "description": "Estimated per-call cost in integer micros (1e-6 currency units). Used for budget tracking and tier routing decisions.",
+      "minimum": 0
+    }
+  }
+}
