@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -9,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from sos import __version__
+from sos.services._health import health_response
 from sos.contracts.squad import (
     LoadingLevel,
     PipelineSpec,
@@ -32,6 +34,8 @@ from sos.services.squad import PipelineService, SquadService, SquadSkillService,
 
 
 app = FastAPI(title="SOS Squad Service", version=__version__)
+
+_START_TIME = time.time()
 
 squads = SquadService()
 tasks = SquadTaskService()
@@ -200,7 +204,7 @@ def _to_task(payload: SquadTaskIn) -> SquadTask:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "squad", "version": __version__}
+    return health_response("squad", _START_TIME)
 
 
 @app.post("/squads")

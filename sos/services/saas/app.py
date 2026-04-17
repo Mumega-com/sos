@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,7 @@ from sos.services.saas.logging_config import setup_logging
 from sos.services.saas.models import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
 from sos.services.saas.notifications import get_router as get_notification_router
 from sos.services.saas.registry import TenantRegistry
+from sos.services._health import health_response
 
 # Configure structured logging
 setup_logging("saas")
@@ -31,6 +33,7 @@ setup_logging("saas")
 log = logging.getLogger("sos.saas")
 
 app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
+_START_TIME = time.time()
 registry = TenantRegistry()
 billing = SaaSBilling(registry)
 
@@ -128,7 +131,7 @@ def landing():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "saas", "tenants": len(registry.list())}
+    return health_response("saas", _START_TIME)
 
 
 @app.post("/tenants")

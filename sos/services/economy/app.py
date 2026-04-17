@@ -13,6 +13,7 @@ from sos.observability.logging import get_logger
 from sos.services.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
+from sos.services._health import health_response
 
 SERVICE_NAME = "economy"
 _START_TIME = time.time()
@@ -46,12 +47,7 @@ class TransactionRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    return {
-        "status": "ok",
-        "version": __version__,
-        "service": SERVICE_NAME,
-        "uptime_seconds": time.time() - _START_TIME,
-    }
+    return health_response(SERVICE_NAME, _START_TIME)
 
 @app.get("/balance/{user_id}", response_model=BalanceResponse)
 async def get_balance(user_id: str):

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,13 @@ from fastapi import Cookie, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from sos.services.auth import verify_bearer as _auth_verify_bearer
+from sos.services._health import health_response, redis_dep, mirror_dep
 
 logger = logging.getLogger("dashboard")
 
 app = FastAPI(title="Mumega Dashboard", docs_url=None, redoc_url=None)
+
+_START_TIME = time.time()
 
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 SQUAD_URL = os.environ.get("SQUAD_URL", "http://localhost:8060")
@@ -593,7 +597,14 @@ async def api_status(request: Request) -> Response:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "dashboard", "port": 8090})
+    _redis_url = (
+        f"redis://:{REDIS_PASSWORD}@localhost:6379/0" if REDIS_PASSWORD else "redis://localhost:6379/0"
+    )
+    deps = [
+        await redis_dep(_redis_url),
+        await mirror_dep(MIRROR_URL),
+    ]
+    return JSONResponse(health_response("dashboard", _START_TIME, deps=deps))
 
 
 # ---------------------------------------------------------------------------
