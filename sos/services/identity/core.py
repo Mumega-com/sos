@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from sos.kernel import Config
 from sos.kernel.identity import UserIdentity, Guild, IdentityType
 from sos.kernel.capability import CapabilityAction, create_capability
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.observability.logging import get_logger
 
 log = get_logger("identity_core")

@@ -20,7 +20,7 @@ from typing import Optional, Dict, List, Any
 
 import httpx
 from sos.kernel import Message, MessageType
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.services.bus.discovery import get_service_info
 
 # Configure logging

@@ -13,7 +13,7 @@ from sos.agents.definitions import KASRA
 from sos.agents.onboarding import OnboardingService, OnboardingRequest
 from sos.services.identity.qnft import QNFTMinter
 from sos.clients.mirror import MirrorClient
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.observability.logging import get_logger
 
 log = get_logger("onboard_claude_desktop")

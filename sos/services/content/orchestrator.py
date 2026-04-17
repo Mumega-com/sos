@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from sos.kernel import Message, MessageType
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.services.content.calendar import ContentCalendar, PostStatus
 from sos.services.content.publisher import get_publisher
 from sos.services.content.strategy import ContentStrategy, MUMEGA_STRATEGY

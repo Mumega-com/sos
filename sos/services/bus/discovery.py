@@ -4,7 +4,7 @@ import json
 import asyncio
 import logging
 from typing import Optional, Dict, Any
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 
 log = logging.getLogger("sos.discovery")
 

@@ -24,7 +24,7 @@ from sos.observability.tracing import (
 from sos.contracts.engine import ChatRequest, ChatResponse
 from sos.services.engine.core import SOSEngine
 from sos.services.engine.middleware import capability_guard_middleware
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.services.engine.openai_router import router as openai_router
 from sos.services._health import health_response
 

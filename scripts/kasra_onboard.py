@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sos.services.bus.core import MessageBus
+from sos.kernel.bus import MessageBus
 from sos.kernel import Config, Message, MessageType
 
 

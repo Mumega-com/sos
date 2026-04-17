@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 from sos.kernel import Message, MessageType
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.observability.logging import get_logger
 from sos.contracts.governance import (
     Council,

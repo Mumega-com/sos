@@ -120,7 +120,7 @@ async def startup_event():
 
 async def run_council_listener(orchestrator: ContentOrchestrator):
     """Background task to listen for Council results."""
-    from sos.services.bus.core import get_bus
+    from sos.kernel.bus import get_bus
     bus = get_bus()
     await bus.connect()
     
