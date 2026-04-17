@@ -42,3 +42,22 @@ One source of truth per concept.
 
 Before: v1 bus types used underscore names (`task_created`, `task_claimed`, `task_completed`).
 After: dot-separated everywhere; kernel `SQUAD_EVENTS` wins.
+
+## SkillCard and SkillDescriptor
+
+- **Canonical execution contract:** `sos/contracts/squad.py::SkillDescriptor` — id, input/output schemas, entrypoint, trust_tier, loading_level, fuel_grade, version. This is what the squad service + Brain use to invoke.
+- **Provenance + commerce overlay:** `sos/contracts/skill_card.py::SkillCard` — author_agent, lineage, earnings, verification, commerce terms, marketplace listing. References SkillDescriptor by `skill_descriptor_id`.
+- **JSON Schema:** `sos/contracts/schemas/skill_card_v1.json`
+- **Rule:** fields describing HOW the skill runs belong on SkillDescriptor. Fields describing WHO authored / WHAT it earned / commerce terms belong on SkillCard. Never duplicate.
+- **Marketplace reads SkillCard + resolves SkillDescriptor.** Squad service reads SkillDescriptor directly.
+- **input_schema / output_schema on SkillCard** are optional echo fields for display only; source of truth is the referenced SkillDescriptor.
+
+_Added in island #2 — 2026-04-18-coherence-plus-us-market.md_
+
+## AgentCard and AgentIdentity
+- **Canonical identity + soul:** `sos/kernel/identity.py::AgentIdentity` + `AgentDNA` (physics, economics, learning_strategy, beliefs, tools). This is WHO the agent is.
+- **Runtime operational view:** `sos/contracts/agent_card.py::AgentCard` — what the agent's runtime looks like NOW (session, pid, host, cache state, heartbeat, warm_policy). References AgentIdentity by `identity_id`.
+- **Types enum expanded:** tmux, openclaw, remote, webhook, service, **hermes**, **codex**, **cma**, **human** — covers the multi-vendor substrate + human squad members per coherence plan.
+- **Rule:** soul fields (public_key, dna, verification_status, capabilities) live on AgentIdentity. Runtime operational fields (session, pid, cache) live on AgentCard. `name`, `model` are echoed on AgentCard for display; source of truth is AgentIdentity.
+
+_Added in island #3 — 2026-04-18-coherence-plus-us-market.md_

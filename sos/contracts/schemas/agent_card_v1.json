@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mumega.com/schemas/sos/agent_card_v1.json",
   "title": "SOS Agent Card",
-  "description": "Published self-description of an agent on the SOS bus. Written to sos:registry:{agent} on first-connect and refreshed via heartbeat. Auto-expires via Redis TTL if the agent stops heartbeating. Version is SemVer; schema bumps require CHANGELOG entry.",
+  "description": "Runtime operational registry view of an agent on the SOS bus. AgentCard is an OVERLAY on the canonical AgentIdentity defined in sos/kernel/identity.py. References the soul-level identity via identity_id (pattern: agent:<slug>). Soul fields (public_key, dna, verification_status, capabilities) live on AgentIdentity. Echo fields (name, model, role, etc.) are denormalized here for display convenience. Written to sos:registry:{agent} on first-connect and refreshed via heartbeat. Auto-expires via Redis TTL if the agent stops heartbeating. Version is SemVer; schema bumps require CHANGELOG entry.",
   "type": "object",
   "required": [
+    "identity_id",
     "agent_card_version",
     "name",
     "tool",
@@ -14,6 +15,11 @@
     "last_seen"
   ],
   "properties": {
+    "identity_id": {
+      "type": "string",
+      "description": "Reference to the canonical AgentIdentity in sos/kernel/identity.py. Pattern mirrors AgentIdentity.id. Source of truth for soul fields (dna, public_key, verification_status, capabilities).",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
     "agent_card_version": {
       "type": "string",
       "description": "SemVer of the Agent Card schema this record conforms to.",
@@ -43,8 +49,8 @@
     },
     "type": {
       "type": "string",
-      "description": "How the agent receives wake signals.",
-      "enum": ["tmux", "openclaw", "remote", "webhook", "service"]
+      "description": "How the agent receives wake signals. Expanded in island #3 (2026-04-18) to cover multi-vendor substrates + human squad members per the coherence plan.",
+      "enum": ["tmux", "openclaw", "remote", "webhook", "service", "hermes", "codex", "cma", "human"]
     },
     "role": {
       "type": "string",

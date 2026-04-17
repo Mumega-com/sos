@@ -1,4 +1,13 @@
-"""Agent Card — schema-validated self-description of an agent on the SOS bus.
+"""Agent Card — runtime operational registry view of an agent on the SOS bus.
+
+AgentCard is the OVERLAY on top of the canonical AgentIdentity defined in
+sos/kernel/identity.py. It carries operational/heartbeat state (session, pid,
+host, cwd, cache, warm_policy) and references the soul-level identity via
+identity_id (pattern: agent:<slug>).
+
+Soul fields (public_key, dna, verification_status, capabilities) live on
+AgentIdentity. Echo fields (name, model, role, etc.) are denormalized here for
+display convenience — the source of truth is the resolved AgentIdentity.
 
 See sos/contracts/schemas/agent_card_v1.json for the canonical schema.
 Pydantic model here is the Python binding; the JSON Schema is the cross-language
@@ -9,9 +18,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+if TYPE_CHECKING:
+    from sos.kernel.identity import Identity
 
 
 AGENT_CARD_VERSION = "1.0.0"
@@ -22,7 +34,12 @@ ToolName = Literal[
     "claude-code", "codex", "gemini-cli", "openclaw",
     "hermes", "custom-http", "sdk", "cron", "service",
 ]
-AgentType = Literal["tmux", "openclaw", "remote", "webhook", "service"]
+# Expanded to cover multi-vendor substrates + human squad members
+# per the 2026-04-18 coherence plan.
+AgentType = Literal[
+    "tmux", "openclaw", "remote", "webhook", "service",
+    "hermes", "codex", "cma", "human",
+]
 AgentRole = Literal[
     "coordinator", "executor", "specialist",
     "oracle", "medic", "service", "human",
@@ -32,18 +49,28 @@ PlanTier = Optional[Literal["starter", "growth", "scale", "enterprise"]]
 
 
 class AgentCard(BaseModel):
+    # ---- identity pointer ------------------------------------------------
+    # Required. Points to the canonical AgentIdentity in sos/kernel/identity.py.
+    # Source of truth for soul fields (dna, public_key, verification_status,
+    # capabilities). Pattern mirrors AgentIdentity.id convention.
+    identity_id: str = Field(pattern=r"^agent:[a-z][a-z0-9-]*$")
+
+    # ---- echo fields (denormalized from AgentIdentity for display) --------
+    # These are convenience copies. Source of truth = resolve_identity().
     agent_card_version: str = AGENT_CARD_VERSION
     name: str = Field(pattern=r"^[a-z][a-z0-9-]*$", min_length=2, max_length=64)
-    tool: ToolName
-    type: AgentType
     role: AgentRole
     model: Optional[str] = None
-    session: Optional[str] = None
     skills: list[str] = Field(default_factory=list)
     squads: list[str] = Field(default_factory=list)
     project: Optional[str] = None
     tenant_subdomain: Optional[str] = None
     plan: PlanTier = None
+
+    # ---- runtime/operational fields (unique to AgentCard) ----------------
+    tool: ToolName
+    type: AgentType
+    session: Optional[str] = None
     warm_policy: WarmPolicy = "cold"
     cache_ttl_s: int = Field(default=300, ge=0, le=86400)
     last_cache_hit_rate: Optional[float] = Field(default=None, ge=0, le=1)
@@ -108,6 +135,19 @@ class AgentCard(BaseModel):
             else:
                 parsed[key] = val
         return cls(**parsed)
+
+    def resolve_identity(self) -> "Identity":
+        """Return the canonical AgentIdentity for this card.
+
+        TODO: implement via sos.services.registry (Registry wiring island).
+        The registry will look up self.identity_id in Redis / the identity
+        store and return the fully hydrated AgentIdentity (with DNA, public_key,
+        verification_status, capabilities).
+        """
+        raise NotImplementedError(
+            "resolve_identity() is a stub — wire sos.services.registry first. "
+            f"identity_id={self.identity_id!r}"
+        )
 
     @staticmethod
     def now_iso() -> str:

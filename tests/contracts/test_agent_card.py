@@ -12,6 +12,7 @@ from sos.contracts.agent_card import AgentCard, AGENT_CARD_VERSION
 
 def _valid_card_kwargs() -> dict:
     return {
+        "identity_id": "agent:sos-medic",
         "name": "sos-medic",
         "tool": "claude-code",
         "type": "tmux",
@@ -85,6 +86,7 @@ def test_timestamp_must_be_iso():
 def test_tenant_agent_card_shape():
     """The shape I registered for trop today should validate."""
     trop = AgentCard(
+        identity_id="agent:trop",
         name="trop",
         tool="claude-code",
         type="tmux",
@@ -105,11 +107,13 @@ def test_tenant_agent_card_shape():
     assert h["project"] == "trop"
     assert h["plan"] == "growth"
     assert h["tenant_subdomain"] == "trop.mumega.com"
+    assert h["identity_id"] == "agent:trop"
 
 
 def test_coordinator_agent_card_shape():
     """The shape I registered for kasra today should validate."""
     kasra = AgentCard(
+        identity_id="agent:kasra",
         name="kasra",
         tool="claude-code",
         type="tmux",
@@ -125,6 +129,7 @@ def test_coordinator_agent_card_shape():
     )
     assert kasra.role == "coordinator"
     assert kasra.warm_policy == "warm"
+    assert kasra.identity_id == "agent:kasra"
 
 
 def test_schema_file_parses():
@@ -135,3 +140,55 @@ def test_schema_file_parses():
     assert schema["$id"].endswith("agent_card_v1.json")
     assert schema["type"] == "object"
     assert "name" in schema["required"]
+    assert "identity_id" in schema["required"]
+
+
+# ---- Island #3: identity_id + expanded type enum --------------------------
+
+def test_identity_id_required():
+    """AgentCard without identity_id must raise ValidationError."""
+    import pytest
+    kwargs = {k: v for k, v in _valid_card_kwargs().items() if k != "identity_id"}
+    with pytest.raises(ValueError):
+        AgentCard(**kwargs)
+
+
+def test_identity_id_pattern_enforced():
+    """identity_id must match ^agent:[a-z][a-z0-9-]*$."""
+    import pytest
+    with pytest.raises(ValueError):
+        AgentCard(**{**_valid_card_kwargs(), "identity_id": "user:river"})
+    with pytest.raises(ValueError):
+        AgentCard(**{**_valid_card_kwargs(), "identity_id": "agent:River"})
+    with pytest.raises(ValueError):
+        AgentCard(**{**_valid_card_kwargs(), "identity_id": "agent:"})
+    # Valid pattern should pass
+    card = AgentCard(**{**_valid_card_kwargs(), "identity_id": "agent:river-2"})
+    assert card.identity_id == "agent:river-2"
+
+
+def test_hermes_type_accepted():
+    """type='hermes' must be a valid AgentCard type."""
+    card = AgentCard(**{**_valid_card_kwargs(), "type": "hermes"})
+    assert card.type == "hermes"
+
+
+def test_codex_type_accepted():
+    """type='codex' must be a valid AgentCard type."""
+    card = AgentCard(**{**_valid_card_kwargs(), "type": "codex"})
+    assert card.type == "codex"
+
+
+def test_human_type_accepted():
+    """type='human' supports mixed human+AI squad members per coherence plan."""
+    card = AgentCard(**{**_valid_card_kwargs(), "type": "human", "role": "human"})
+    assert card.type == "human"
+    assert card.role == "human"
+
+
+def test_resolve_identity_stub_raises():
+    """resolve_identity() must raise NotImplementedError until registry is wired."""
+    import pytest
+    card = AgentCard(**_valid_card_kwargs())
+    with pytest.raises(NotImplementedError):
+        card.resolve_identity()
