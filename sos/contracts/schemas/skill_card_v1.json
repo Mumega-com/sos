@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sos.mumega.com/contracts/skill_card/v1",
+  "title": "SkillCard v1",
+  "description": "Canonical schema for skills in the SOS / ToRivers skill registry. A SkillCard binds an executable skill to its provenance (who authored it, what it's derived from), earnings history (what it has earned across invocations), verification status (has anyone checked the outputs), and commerce terms (price + revenue split). The registry's defensibility is provenance-grade — not skill count.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "version",
+    "author_agent",
+    "created_at",
+    "input_schema",
+    "output_schema"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "SkillCard schema version this instance conforms to. Required so v1 and future v1.x / v2 instances are distinguishable at read time.",
+      "enum": ["1"]
+    },
+    "id": {
+      "type": "string",
+      "description": "Globally unique skill identifier: UUID v4, or a registry-assigned slug matching the constrained pattern.",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable skill name.",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "version": {
+      "type": "string",
+      "description": "Semver string, e.g. '1.0.0' or '1.0.0-beta.1'.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "description": {
+      "type": "string",
+      "description": "What this skill does, in one paragraph.",
+      "maxLength": 4000
+    },
+    "tags": {
+      "type": "array",
+      "description": "Free-form tags for discovery / categorization.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "maxItems": 20
+    },
+
+    "author_agent": {
+      "type": "string",
+      "description": "Agent URI of the author (human-authored or AI-authored). agent:<name>.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "authored_by_ai": {
+      "type": "boolean",
+      "description": "True if authored by an AI agent (provenance differentiator vs human-only registries).",
+      "default": false
+    },
+    "lineage": {
+      "type": "array",
+      "description": "Chain of skills this was derived from. Empty for original skills; non-empty for forks / refinements.",
+      "items": {
+        "type": "object",
+        "required": ["parent_skill_id", "relation"],
+        "additionalProperties": false,
+        "properties": {
+          "parent_skill_id": {
+            "type": "string",
+            "description": "id of the upstream skill"
+          },
+          "relation": {
+            "type": "string",
+            "enum": ["forked", "refined", "composed", "inspired_by"]
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "maxItems": 20
+    },
+
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "earnings": {
+      "type": "object",
+      "description": "Running totals of what this skill has earned across all invocations. Source of truth lives in the UsageLog + WorkLedger; this is a materialized view.",
+      "additionalProperties": false,
+      "properties": {
+        "total_invocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_earned_micros": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Integer micros (1e-6 currency units) of lifetime earnings. Gross. Net-author-split is computable from commerce.revenue_split."
+        },
+        "currency": {
+          "type": "string",
+          "description": "Currency code. Upper-case alphanumeric, 2-10 chars. Common: USD, MIND, EUR. Operator-defined codes allowed (e.g. 'CREDITS', 'SR1').",
+          "pattern": "^[A-Z0-9]{2,10}$",
+          "default": "USD"
+        },
+        "last_invocation_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "invocations_by_tenant": {
+          "type": "object",
+          "description": "Per-tenant invocation count. Keys are tenant slugs.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+
+    "verification": {
+      "type": "object",
+      "description": "Proof that outputs from this skill have been checked. The registry's credibility is the depth of this field.",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["unverified", "auto_verified", "human_verified", "disputed"],
+          "default": "unverified"
+        },
+        "sample_output_refs": {
+          "type": "array",
+          "description": "Stable references to verified example outputs (mirror engram id, URL, hash).",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 50
+        },
+        "verified_by": {
+          "type": "array",
+          "description": "agent: or human: URIs of verifiers. Identifier MUST start with a letter, matching author_agent / Agent Card agent_id pattern.",
+          "items": {
+            "type": "string",
+            "pattern": "^(agent|human):[a-z][a-z0-9-]*$"
+          }
+        },
+        "verified_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "dispute_reason": {
+          "type": "string",
+          "description": "If status == disputed, why.",
+          "maxLength": 2000
+        }
+      }
+    },
+
+    "input_schema": {
+      "description": "JSON Schema describing what the skill accepts as input. Must itself carry a '$schema' or 'type' declaration to be a valid schema document.",
+      "type": "object",
+      "anyOf": [
+        {"required": ["$schema"]},
+        {"required": ["type"]}
+      ]
+    },
+    "output_schema": {
+      "description": "JSON Schema describing what the skill returns. Must itself carry a '$schema' or 'type' declaration.",
+      "type": "object",
+      "anyOf": [
+        {"required": ["$schema"]},
+        {"required": ["type"]}
+      ]
+    },
+
+    "required_tools": {
+      "type": "array",
+      "description": "MCP tool names this skill needs to execute.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required_models": {
+      "type": "array",
+      "description": "LLM models this skill is known to work with. Each matches a key in the provider PRICING catalog.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+
+    "commerce": {
+      "type": "object",
+      "description": "How this skill is sold on ToRivers / the marketplace.",
+      "additionalProperties": false,
+      "properties": {
+        "price_per_call_micros": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Flat per-call price in integer micros. Free skills set 0."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{2,10}$",
+          "default": "USD"
+        },
+        "revenue_split": {
+          "type": "object",
+          "description": "Fractional split of price. Pydantic model_validator enforces the three fields (author, operator, network) sum to 1.0 ±0.001 at the boundary.",
+          "additionalProperties": false,
+          "properties": {
+            "author": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "operator": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "network": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "marketplace_listed": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this skill is listed on the public ToRivers marketplace. When true, runtime.entry_point is required (enforced at Pydantic boundary)."
+        }
+      }
+    },
+
+    "runtime": {
+      "type": "object",
+      "description": "Where and how the skill executes.",
+      "additionalProperties": false,
+      "properties": {
+        "entry_point": {
+          "type": "string",
+          "description": "Reference to the skill's implementation: file path, URL, or registry key.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["claude-code", "cma", "openai-agents-sdk", "langgraph", "crewai", "local-python", "custom"],
+          "description": "Which agent runtime executes this skill."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "memory_mb": {
+          "type": "integer",
+          "minimum": 64
+        }
+      }
+    },
+
+    "metadata": {
+      "type": "object",
+      "description": "Free-form metadata bag for registry / integration concerns.",
+      "additionalProperties": true
+    }
+  }
+}
