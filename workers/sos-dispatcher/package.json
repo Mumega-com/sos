@@ -1,0 +1,22 @@
+{
+  "name": "sos-dispatcher",
+  "version": "0.1.0",
+  "description": "SOS Dispatcher — Cloudflare Worker implementation. Protocol spec at docs/plans/2026-04-17-dispatcher-protocol.md",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 6071",
+    "deploy": "wrangler deploy",
+    "deploy:canary": "wrangler deploy --env canary",
+    "logs": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.69.0"
+  }
+}

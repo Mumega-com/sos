@@ -1,0 +1,6 @@
+# Local dev environment variables for wrangler dev.
+# Copy to .dev.vars (gitignored) and fill in.
+
+UPSTREAM_HOST=127.0.0.1
+UPSTREAM_PORT=6070
+DISPATCHER_SOURCE=dispatcher-cf-local
