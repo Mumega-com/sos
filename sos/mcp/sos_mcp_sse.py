@@ -38,6 +38,7 @@ from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
 from sos.services.squad.auth import _lookup_token as lookup_squad_token
 from sos.services.squad.service import SquadDB
 from sos.services.bus.enforcement import enforce, MessageValidationError
+from sos.contracts.messages import SendMessage
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
     TOOL_MAPPING,
@@ -843,14 +844,28 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             to = _require_same_tenant_agent(auth, args.get("to"))
             text = args["text"]
             stream = _agent_stream(to, project_scope)
-            msg = scoped_sos_msg("chat", f"agent:{agent_scope}", f"agent:{to}", text, project_scope)
-            # v0.4.0: schema enforcement at bus ingress. Legacy-tolerant for now —
-            # "chat" type passes through; future migration to "send" triggers hard validation.
+            # v0.4.0-beta.1: v1 "send" message with structured payload. Builds via
+            # Pydantic model so all schema invariants (source pattern, target pattern,
+            # ISO timestamp, UUID message_id, payload.text max length, content_type
+            # enum) are enforced on construction — before any XADD.
             try:
-                msg = enforce(msg)
-            except MessageValidationError as ve:
-                log.error(f"bus message rejected: {ve}")
-                return _text(f"error: {ve.code} {ve.message}")
+                sendmsg = SendMessage(
+                    source=f"agent:{agent_scope}",
+                    target=f"agent:{to}",
+                    timestamp=SendMessage.now_iso(),
+                    message_id=str(uuid4()),
+                    payload={"text": text, "content_type": "text/plain"},
+                )
+            except Exception as ve:
+                log.error(f"SendMessage construction failed: {ve}")
+                return _text(f"error: SOS-4001 {ve}")
+            msg = sendmsg.to_redis_fields()
+            if project_scope:
+                msg["project"] = project_scope
+            # Pydantic already validated on construction above — no second enforce()
+            # pass because the Redis-field shape (payload as JSON string) is not
+            # re-parseable by Pydantic without from_redis_fields() (which would be
+            # wasted cycles). Validation happened at SendMessage(...) ingress.
             mid = await r.xadd(stream, msg)
             await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
