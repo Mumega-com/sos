@@ -157,6 +157,85 @@ async def _fetch_memory(project: str | None, bus_token: str | None = None) -> di
     return {"count": 0, "latest": None}
 
 
+def _tenant_skills_and_usage(project: str | None) -> dict[str, Any]:
+    """Tenant-scoped moat data for the customer dashboard.
+
+    Reads the SkillCard registry + UsageLog and returns three summaries:
+      - skills_invoked: skills this tenant has used (from invocations_by_tenant)
+      - skills_authored: skills whose author_agent == agent:<slug>, with earnings
+      - recent_usage: last 10 UsageLog events tenant-scoped
+    Empty-state tolerant: any missing data returns a harmless empty list.
+    """
+    out: dict[str, Any] = {
+        "skills_invoked": [],
+        "skills_authored": [],
+        "recent_usage": [],
+        "total_spent_micros": 0,
+        "total_earned_micros": 0,
+    }
+    if not project:
+        return out
+
+    # Skills registry
+    try:
+        from sos.skills.registry import Registry
+        reg = Registry()
+        cards = reg.list()
+        author_uri = f"agent:{project}"
+        for card in cards:
+            earnings = card.earnings
+            # Did this tenant invoke it?
+            if earnings and earnings.invocations_by_tenant:
+                if project in earnings.invocations_by_tenant:
+                    out["skills_invoked"].append({
+                        "id": card.id,
+                        "name": card.name,
+                        "author": card.author_agent,
+                        "invocations": earnings.invocations_by_tenant[project],
+                        "verification": card.verification.status if card.verification else "unverified",
+                    })
+            # Did this tenant author it?
+            if card.author_agent == author_uri:
+                out["skills_authored"].append({
+                    "id": card.id,
+                    "name": card.name,
+                    "total_invocations": earnings.total_invocations if earnings else 0,
+                    "total_earned_micros": earnings.total_earned_micros if earnings else 0,
+                    "unique_tenants": len(earnings.invocations_by_tenant or {}) if earnings else 0,
+                    "marketplace_listed": bool(card.commerce and card.commerce.marketplace_listed),
+                })
+                if earnings and earnings.total_earned_micros:
+                    out["total_earned_micros"] += earnings.total_earned_micros
+    except Exception:
+        logger.debug("Registry read failed", exc_info=True)
+
+    # UsageLog — tenant-scoped
+    try:
+        from sos.services.economy.usage_log import UsageLog
+        log = UsageLog()
+        events = log.read_all(tenant=project, limit=10)
+        for e in events[::-1]:  # newest first
+            out["recent_usage"].append({
+                "occurred_at": e.occurred_at,
+                "model": e.model,
+                "endpoint": e.endpoint,
+                "cost_micros": e.cost_micros,
+            })
+            out["total_spent_micros"] += e.cost_micros
+    except Exception:
+        logger.debug("UsageLog read failed", exc_info=True)
+
+    return out
+
+
+def _fmt_micros(micros: int) -> str:
+    """Format integer micros as $X.XX (1 cent = 10_000 micros)."""
+    if micros <= 0:
+        return "$0.00"
+    cents = micros / 10_000
+    return f"${cents / 100:,.2f}"
+
+
 def _agent_status(project: str | None) -> dict[str, Any]:
     try:
         r = _get_redis()
@@ -232,9 +311,10 @@ button:hover{background:#4F46E5}
 </html>"""
 
 
-def _dashboard_html(tenant: dict[str, Any], agents: dict[str, Any], tasks: list[dict[str, Any]], memory: dict[str, Any]) -> str:
+def _dashboard_html(tenant: dict[str, Any], agents: dict[str, Any], tasks: list[dict[str, Any]], memory: dict[str, Any], moat: dict[str, Any] | None = None) -> str:
     label = tenant.get("label", tenant.get("project", "Tenant"))
     project = tenant.get("project", "")
+    moat = moat or {"skills_invoked": [], "skills_authored": [], "recent_usage": [], "total_spent_micros": 0, "total_earned_micros": 0}
 
     # Agent cards
     agent_rows = ""
@@ -345,8 +425,92 @@ header .meta{{color:#94A3B8;font-size:0.8rem}}
   </div>
 </div>
 
+<!-- Moat panels (SkillCard v1 + UsageLog — P1.1 customer surface) -->
+<h2 style="font-size:1.1rem;color:#94A3B8;margin:32px 0 16px 0;text-transform:uppercase;letter-spacing:0.05em;font-weight:500">
+  Your activity on Agent OS
+</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>Your Skills</h3>
+    <p class="muted">Skills you've invoked</p>
+    <div class="stat">{len(moat['skills_invoked'])}</div>
+    {_moat_skills_invoked_html(moat['skills_invoked'])}
+    <p class="muted" style="margin-top:12px;font-size:0.8rem">
+      Total spent: <strong style="color:#F8FAFC">{_fmt_micros(moat['total_spent_micros'])}</strong>
+    </p>
+    <p class="preview" style="margin-top:8px;font-size:0.8rem">
+      <a href="/marketplace" style="color:#A5B4FC;text-decoration:none">Browse more skills →</a>
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Your Earnings</h3>
+    <p class="muted">Skills you've authored</p>
+    <div class="stat" style="color:#34D399">{_fmt_micros(moat['total_earned_micros'])}</div>
+    {_moat_skills_authored_html(moat['skills_authored'])}
+  </div>
+
+  <div class="card">
+    <h3>Recent Usage</h3>
+    <p class="muted">Last 10 calls</p>
+    {_moat_recent_usage_html(moat['recent_usage'])}
+  </div>
+
+</div>
+
 </body>
 </html>"""
+
+
+def _moat_skills_invoked_html(skills: list[dict[str, Any]]) -> str:
+    if not skills:
+        return '<p class="muted" style="margin-top:8px;font-size:0.85rem">No skill invocations yet. Browse the marketplace to start.</p>'
+    rows = ""
+    for s in skills[:5]:
+        ver = s.get("verification", "unverified")
+        ver_color = {"human_verified": "#34D399", "auto_verified": "#FBBF24", "disputed": "#F87171"}.get(ver, "#64748B")
+        rows += f'<li><span style="color:{ver_color}">&#9679;</span> <strong>{s["name"]}</strong> <span class="muted">× {s["invocations"]}</span></li>'
+    return f'<ul style="margin-top:12px">{rows}</ul>'
+
+
+def _moat_skills_authored_html(skills: list[dict[str, Any]]) -> str:
+    if not skills:
+        return '<p class="muted" style="margin-top:8px;font-size:0.85rem">You haven\'t authored any skills yet. Publish to the marketplace to earn.</p>'
+    rows = ""
+    for s in skills[:5]:
+        listed = "📢" if s.get("marketplace_listed") else ""
+        rows += (
+            f'<li><strong>{s["name"]}</strong> {listed} '
+            f'<span class="muted">&middot; {s["total_invocations"]} calls '
+            f'across {s["unique_tenants"]} tenants</span></li>'
+        )
+    return f'<ul style="margin-top:12px">{rows}</ul>'
+
+
+def _moat_recent_usage_html(events: list[dict[str, Any]]) -> str:
+    if not events:
+        return '<p class="muted" style="margin-top:8px;font-size:0.85rem">No calls yet. Your first invocation shows up here.</p>'
+    rows = ""
+    for e in events[:10]:
+        # parse occurred_at to friendly
+        ts = e.get("occurred_at", "")
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            ts = dt.strftime("%b %d, %H:%M")
+        except Exception:
+            pass
+        cost = _fmt_micros(e.get("cost_micros", 0))
+        model = e.get("model", "?")
+        # truncate long model names
+        if len(model) > 40:
+            model = model[:37] + "..."
+        rows += (
+            f'<li style="font-size:0.8rem"><span class="muted">{ts}</span> '
+            f'<code style="color:#A78BFA;font-size:0.75rem">{model}</code> '
+            f'<strong style="color:#34D399">{cost}</strong></li>'
+        )
+    return f'<ul style="margin-top:8px">{rows}</ul>'
 
 
 # ---------------------------------------------------------------------------
@@ -405,8 +569,9 @@ async def dashboard(request: Request) -> Response:
     agents = _agent_status(project)
     tasks = await _fetch_tasks(project)
     memory = await _fetch_memory(project, bus_token=bus_token)
+    moat = _tenant_skills_and_usage(project)
 
-    html = _dashboard_html(tenant, agents, tasks, memory)
+    html = _dashboard_html(tenant, agents, tasks, memory, moat=moat)
     return HTMLResponse(html)
 
 
