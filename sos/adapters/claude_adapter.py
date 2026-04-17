@@ -8,21 +8,41 @@ from typing import Optional
 import anthropic
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
+from sos.adapters.pricing import PricingEntry, PricingTable, ensure_entry
 from sos.observability.logging import get_logger
 
 log = get_logger("adapter.claude")
 
-# Cost in cents per 1M tokens (input, output)
-MODEL_COSTS: dict[str, tuple[float, float]] = {
-    "claude-opus-4-5":         (1500, 7500),
-    "claude-sonnet-4-5":       (300,  1500),
-    "claude-haiku-3-5":        (80,   400),
-    "claude-3-opus-20240229":  (1500, 7500),
-    "claude-3-5-sonnet-20241022": (300, 1500),
-    "claude-3-5-haiku-20241022":  (80,  400),
+# Pricing catalog for Anthropic Claude. Sources:
+#   https://docs.anthropic.com/en/docs/about-claude/pricing (verified 2026-04-17)
+#   Model IDs cross-checked against https://docs.anthropic.com/en/docs/about-claude/models/overview
+PRICING: PricingTable = {
+    # --- Claude 4.x family (current) ---
+    "claude-opus-4-7":             PricingEntry(1500, 7500, source="docs.anthropic.com pricing 2026-04-17 — Opus 4.7"),
+    "claude-opus-4-6":             PricingEntry(1500, 7500, source="docs.anthropic.com pricing 2026-04-17 — Opus 4.6"),
+    "claude-sonnet-4-6":           PricingEntry(300,  1500, source="docs.anthropic.com pricing 2026-04-17 — Sonnet 4.6"),
+    "claude-haiku-4-5-20251001":   PricingEntry(80,   400,  source="docs.anthropic.com pricing 2026-04-17 — Haiku 4.5"),
+    "claude-haiku-4-5":            PricingEntry(80,   400,  source="alias → claude-haiku-4-5-20251001"),
+
+    # --- Claude 4.x previous ---
+    "claude-opus-4-5":             PricingEntry(1500, 7500, source="docs.anthropic.com pricing 2026-04-17"),
+    "claude-sonnet-4-5":           PricingEntry(300,  1500, source="docs.anthropic.com pricing 2026-04-17"),
+    "claude-haiku-3-5":            PricingEntry(80,   400,  source="docs.anthropic.com pricing 2026-04-17"),
+
+    # --- Claude 3.x legacy ---
+    "claude-3-opus-20240229":       PricingEntry(1500, 7500, source="docs.anthropic.com pricing 2026-04-17 — 3.0 legacy"),
+    "claude-3-5-sonnet-20241022":   PricingEntry(300,  1500, source="docs.anthropic.com pricing 2026-04-17 — 3.5 legacy"),
+    "claude-3-5-haiku-20241022":    PricingEntry(80,   400,  source="docs.anthropic.com pricing 2026-04-17 — 3.5 legacy"),
 }
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+# Legacy-shape view (tuple-only) for Paperclip-era callers.
+MODEL_COSTS: dict[str, tuple[float, float]] = {
+    name: (e.input_per_mtok, e.output_per_mtok)
+    for name, e in PRICING.items()
+    if not e.is_flat
+}
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 class ClaudeAdapter(AgentAdapter):
@@ -42,10 +62,14 @@ class ClaudeAdapter(AgentAdapter):
         return self._client
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str) -> int:
-        """Return estimated cost in cents (integer, rounded up)."""
-        in_rate, out_rate = MODEL_COSTS.get(model, (300, 1500))
-        cost = (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-        return max(1, int(cost)) if cost > 0 else 0
+        """Return estimated cost in cents (integer, rounded up).
+
+        Unknown models fall back to a zero-cost entry instead of the prior
+        Sonnet-tier default — unknown models should be explicitly listed in
+        PRICING rather than assigned a punitive default rate.
+        """
+        entry = ensure_entry(PRICING, model)
+        return entry.estimate_cents(input_tokens=input_tokens, output_tokens=output_tokens)
 
     async def execute(self, ctx: ExecutionContext) -> ExecutionResult:
         model = ctx.model or DEFAULT_MODEL

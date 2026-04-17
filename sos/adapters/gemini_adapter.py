@@ -9,24 +9,66 @@ import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
+from sos.adapters.pricing import PricingEntry, PricingTable, ensure_entry
 from sos.observability.logging import get_logger
 
 log = get_logger("adapter.gemini")
 
-# Cost in cents per 1M tokens (input, output)
-# Gemini pricing as of 2025 (context <= 128k tier)
+# Pricing catalog for Google Gemini + Imagen. Entries use `PricingEntry` so
+# per-token (Gemini text/multimodal) and flat-per-call (Imagen) shapes coexist.
+#
+# Sources: https://ai.google.dev/pricing (verified 2026-04-17)
+#          https://ai.google.dev/gemini-api/docs/models
+# Callers should read from `PRICING` (the new canonical table). `MODEL_COSTS`
+# is retained as a legacy-shape alias: entries are auto-projected to the
+# (input_per_mtok, output_per_mtok) tuple Paperclip-era callers expect.
+PRICING: PricingTable = {
+    # --- Gemini 3 family (preview, 2026-04) ---
+    "gemini-3-flash-preview":      PricingEntry(30,  125,  source="ai.google.dev pricing 2026-04-17 — preview tier"),
+    "gemini-3.1-flash-lite-preview": PricingEntry(10,  40,  source="ai.google.dev pricing 2026-04-17 — preview tier"),
+
+    # --- Gemini 2.5 family (stable) ---
+    "gemini-2.5-pro":              PricingEntry(125, 1000, source="ai.google.dev pricing 2026-04-17"),
+    "gemini-2.5-flash":            PricingEntry(30,  250,  source="ai.google.dev pricing 2026-04-17"),
+    "gemini-2.5-flash-lite":       PricingEntry(10,  40,   source="ai.google.dev pricing 2026-04-17"),
+    "gemini-flash-latest":         PricingEntry(30,  250,  source="alias → gemini-2.5-flash"),
+    "gemini-flash-lite-latest":    PricingEntry(10,  40,   source="alias → gemini-2.5-flash-lite"),
+    # Image generation via Gemini (flat per image on 1:1 square output)
+    "gemini-2.5-flash-image":      PricingEntry(flat_cents_per_call=4,
+                                               source="ai.google.dev image-gen 2026-04-17 — $0.04 per image"),
+
+    # --- Gemini 2.0 family (stable) ---
+    "gemini-2.0-flash":            PricingEntry(10,  40,   source="ai.google.dev pricing 2026-04-17"),
+    "gemini-2.0-flash-lite":       PricingEntry(8,   30,   source="ai.google.dev pricing 2026-04-17"),
+
+    # --- Gemini 1.5 family (still available, being phased out) ---
+    "gemini-1.5-pro":              PricingEntry(125, 500,  source="ai.google.dev pricing 2026-04-17"),
+    "gemini-1.5-flash":            PricingEntry(8,   30,   source="ai.google.dev pricing 2026-04-17"),
+    "gemini-1.5-flash-8b":         PricingEntry(4,   15,   source="ai.google.dev pricing 2026-04-17"),
+
+    # --- Imagen 4 family (flat-per-call; trop #97 specifically flagged these) ---
+    "imagen-4.0-fast-generate-001":  PricingEntry(flat_cents_per_call=2,
+                                                  source="ai.google.dev Imagen 4 2026-04-17 — $0.02/image"),
+    "imagen-4.0-generate-001":       PricingEntry(flat_cents_per_call=4,
+                                                  source="ai.google.dev Imagen 4 2026-04-17 — $0.04/image"),
+    "imagen-4.0-ultra-generate-001": PricingEntry(flat_cents_per_call=6,
+                                                  source="ai.google.dev Imagen 4 2026-04-17 — $0.06/image"),
+
+    # --- Gemma open-weight family (free via Google AI Studio) ---
+    "gemma-4-31b":                 PricingEntry(0, 0, source="open weights, zero direct cost"),
+    "gemma-4-26b-moe":             PricingEntry(0, 0, source="open weights, zero direct cost"),
+    "gemma-4-e4b":                 PricingEntry(0, 0, source="open weights, zero direct cost"),
+    "gemma-4-e2b":                 PricingEntry(0, 0, source="open weights, zero direct cost"),
+}
+
+# Legacy-shape view for callers that expect (input_per_mtok, output_per_mtok).
+# Flat-per-call entries are omitted here because the tuple shape can't
+# represent them — callers using MODEL_COSTS must migrate to `PRICING` before
+# they can handle image models.
 MODEL_COSTS: dict[str, tuple[float, float]] = {
-    "gemini-2.5-pro":          (125,  1000),
-    "gemini-2.0-flash":        (10,   40),
-    "gemini-2.0-flash-lite":   (8,    30),
-    "gemini-1.5-pro":          (125,  500),
-    "gemini-1.5-flash":        (8,    30),
-    "gemini-1.5-flash-8b":     (4,    15),
-    # Gemma 4 — Released April 2, 2026 via Google AI Studio
-    "gemma-4-31b":             (0,    0), # Free tier available
-    "gemma-4-26b-moe":         (0,    0),
-    "gemma-4-e4b":             (0,    0),
-    "gemma-4-e2b":             (0,    0),
+    name: (e.input_per_mtok, e.output_per_mtok)
+    for name, e in PRICING.items()
+    if not e.is_flat
 }
 
 DEFAULT_MODEL = "gemini-2.0-flash"
@@ -48,11 +90,15 @@ class GeminiAdapter(AgentAdapter):
             genai.configure(api_key=self._api_key)
             self._configured = True
 
-    def estimate_cost(self, input_tokens: int, output_tokens: int, model: str) -> int:
-        """Return estimated cost in cents (integer, rounded up)."""
-        in_rate, out_rate = MODEL_COSTS.get(model, (125, 500))
-        cost = (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-        return max(1, int(cost)) if cost > 0 else 0
+    def estimate_cost(self, input_tokens: int, output_tokens: int, model: str, image_count: int = 0) -> int:
+        """Return estimated cost in cents (integer, rounded up).
+
+        Unknown models now fall back to a zero-cost entry — the old Pro-tier
+        default (125, 500) overestimated unknown models by up to 10×. If you
+        need a conservative upper bound, add the model to PRICING explicitly.
+        """
+        entry = ensure_entry(PRICING, model)
+        return entry.estimate_cents(input_tokens=input_tokens, output_tokens=output_tokens, image_count=image_count)
 
     async def execute(self, ctx: ExecutionContext) -> ExecutionResult:
         model_name = ctx.model or DEFAULT_MODEL

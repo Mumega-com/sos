@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sos import __version__
 from sos.observability.logging import get_logger
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
+from sos.services.economy.usage_log import UsageEvent, UsageLog
 
 SERVICE_NAME = "economy"
 _START_TIME = time.time()
 
 log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
+
+_TOKENS_PATH = Path(__file__).resolve().parent.parent.parent / "bus" / "tokens.json"
+_usage_log = UsageLog()
 
 app = FastAPI(title="SOS Economy Service", version=__version__)
 
@@ -109,3 +116,136 @@ async def debit(req: TransactionRequest):
         raise HTTPException(status_code=402, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Usage ingest (trop issue #98)
+# ---------------------------------------------------------------------------
+#
+# POST /usage — edge tenants (Cloudflare Workers / Pages Functions) report
+# model-call telemetry here. Tenant-scoped via Bearer auth against tokens.json;
+# tenants can only write events for their own scope.
+#
+# The endpoint is SOS (protocol): canonical UsageEvent shape, tenant scoping,
+# append-only log. Commercial concerns (USD billing, Stripe invoicing, volume
+# tier negotiation) belong to Mumega and layer on top of this log.
+
+
+def _load_tokens() -> list[dict[str, Any]]:
+    try:
+        return json.loads(_TOKENS_PATH.read_text())
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        log.warning("tokens.json is malformed", path=str(_TOKENS_PATH))
+        return []
+
+
+def _verify_bearer(authorization: Optional[str]) -> dict[str, Any]:
+    """Return the token record or raise 401. Supports token_hash (sha256) and legacy raw token."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    raw = authorization.split(" ", 1)[1].strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="empty bearer token")
+    sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    for entry in _load_tokens():
+        if not entry.get("active", True):
+            continue
+        if entry.get("token_hash") == sha:
+            return entry
+        if entry.get("token") and entry["token"] == raw:
+            return entry
+    raise HTTPException(status_code=401, detail="invalid or inactive token")
+
+
+def _resolve_tenant(entry: dict[str, Any]) -> str | None:
+    """Extract tenant scope from a token record. Prefers `project` over `tenant`."""
+    return entry.get("project") or entry.get("tenant") or None
+
+
+class UsageEventRequest(BaseModel):
+    """Incoming usage event. Mirrors `UsageEvent` but with explicit constraints."""
+    tenant: str = Field(..., min_length=1, description="Tenant slug — must match the bearer token's scope.")
+    provider: str = Field(..., min_length=1, description="Provider key, e.g. 'google', 'anthropic', 'openai'.")
+    model: str = Field(..., min_length=1, description="Provider model id.")
+    endpoint: str = Field("", description="Tenant-side endpoint that triggered the call.")
+    input_tokens: int = Field(0, ge=0)
+    output_tokens: int = Field(0, ge=0)
+    image_count: int = Field(0, ge=0)
+    cost_micros: int = Field(0, ge=0, description="Cost in integer micros (1e-6 currency unit).")
+    cost_currency: str = Field("USD", min_length=1, description="'USD' | 'MIND' | operator-defined.")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: Optional[str] = Field(None, description="ISO 8601 UTC; server fills if omitted.")
+
+
+class UsageEventResponse(BaseModel):
+    id: str
+    received_at: str
+
+
+@app.post("/usage", response_model=UsageEventResponse, status_code=201)
+async def ingest_usage(
+    req: UsageEventRequest,
+    authorization: Optional[str] = Header(None),
+) -> UsageEventResponse:
+    """Accept one usage event from a tenant. Tenant scope is enforced — a token
+    scoped to tenant X cannot write events for tenant Y.
+
+    System-scoped tokens (no `project`/`tenant` field) may write for any tenant
+    — this is the admin/trusted-service path used by internal adapters.
+    """
+    entry = _verify_bearer(authorization)
+    scope = _resolve_tenant(entry)
+
+    if scope is not None and scope != req.tenant:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token is scoped to tenant '{scope}', cannot write events for '{req.tenant}'",
+        )
+
+    event = UsageEvent(
+        tenant=req.tenant,
+        provider=req.provider,
+        model=req.model,
+        endpoint=req.endpoint,
+        input_tokens=req.input_tokens,
+        output_tokens=req.output_tokens,
+        image_count=req.image_count,
+        cost_micros=req.cost_micros,
+        cost_currency=req.cost_currency,
+        metadata=req.metadata,
+        occurred_at=req.occurred_at or "",
+    )
+    # Let UsageEvent fill occurred_at/received_at defaults if they were empty.
+    if not event.occurred_at:
+        event.occurred_at = event.received_at
+    stored = _usage_log.append(event)
+    log.info(
+        "usage event ingested",
+        id=stored.id,
+        tenant=stored.tenant,
+        provider=stored.provider,
+        model=stored.model,
+        cost_micros=stored.cost_micros,
+    )
+    return UsageEventResponse(id=stored.id, received_at=stored.received_at)
+
+
+@app.get("/usage")
+async def list_usage(
+    tenant: Optional[str] = None,
+    limit: int = 100,
+    authorization: Optional[str] = Header(None),
+) -> dict[str, Any]:
+    """Read back usage events. Tenant-scoped unless the caller is system-scoped."""
+    entry = _verify_bearer(authorization)
+    scope = _resolve_tenant(entry)
+    filter_tenant = tenant or scope
+    if scope is not None and filter_tenant != scope:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token is scoped to tenant '{scope}', cannot read events for '{filter_tenant}'",
+        )
+    events = _usage_log.read_all(tenant=filter_tenant, limit=max(1, min(1000, limit)))
+    return {"events": [e.to_dict() for e in events], "count": len(events)}
