@@ -7,12 +7,15 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from sos.services.saas.audit import get_audit, log_admin
@@ -31,6 +34,89 @@ app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
 registry = TenantRegistry()
 billing = SaaSBilling(registry)
 
+# --- Auth ---
+
+_bearer = HTTPBearer(auto_error=False)
+
+def _get_admin_key() -> str:
+    """Return the expected admin API key from environment."""
+    key = os.environ.get("SOS_SAAS_ADMIN_KEY") or os.environ.get("MUMEGA_MASTER_KEY", "")
+    if not key:
+        log.warning("No admin key configured (SOS_SAAS_ADMIN_KEY / MUMEGA_MASTER_KEY)")
+    return key
+
+def require_admin(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
+    """FastAPI dependency — enforce Bearer token on admin endpoints."""
+    expected = _get_admin_key()
+    if not expected:
+        raise HTTPException(503, detail="Admin key not configured on server")
+    if credentials is None or credentials.credentials != expected:
+        raise HTTPException(401, detail="unauthorized")
+
+
+_TOKENS_PATH = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+
+
+def require_customer(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> str:
+    """FastAPI dependency — validate tenant MCP token, return tenant_slug.
+
+    Accepts: Authorization: Bearer sk-{slug}-{hex}
+    Strategy:
+      1. Hash the token and look it up in tokens.json (scope=customer).
+         The project field gives the slug candidate.
+      2. If registry.get(slug_candidate) exists, return it.
+      3. Otherwise fall back: find tenant whose bus_token == submitted token directly.
+         This handles cases where tokens.json project != tenant slug.
+    """
+    if credentials is None:
+        raise HTTPException(401, detail="unauthorized")
+
+    token = credentials.credentials
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    if not _TOKENS_PATH.exists():
+        raise HTTPException(401, detail="unauthorized")
+
+    try:
+        tokens: list[dict] = json.loads(_TOKENS_PATH.read_text())
+    except Exception:
+        raise HTTPException(401, detail="unauthorized")
+
+    slug_candidate: str | None = None
+    for entry in tokens:
+        if (
+            entry.get("token_hash") == token_hash
+            and entry.get("active", True)
+            and entry.get("scope") == "customer"
+        ):
+            slug_candidate = entry.get("project")
+            break
+
+    if slug_candidate is None:
+        raise HTTPException(401, detail="unauthorized")
+
+    # Fast path: project field matches tenant slug directly
+    if registry.get(slug_candidate):
+        return slug_candidate
+
+    # Fallback: find tenant whose bus_token matches the submitted token
+    # (handles tokens.json project field being the full name slug, not the short slug)
+    try:
+        conn = sqlite3.connect(
+            f"file:{Path.home() / '.sos' / 'data' / 'squads.db'}?mode=ro", uri=True
+        )
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT slug FROM tenants WHERE bus_token = ?", (token,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return str(row["slug"])
+    except Exception:
+        pass
+
+    raise HTTPException(401, detail="unauthorized")
+
 
 @app.get("/", response_class=HTMLResponse)
 def landing():
@@ -46,7 +132,7 @@ def health():
 
 
 @app.post("/tenants")
-async def create_tenant(req: TenantCreate):
+async def create_tenant(req: TenantCreate, _: None = Depends(require_admin)):
     existing = registry.get(req.slug)
     if existing:
         raise HTTPException(409, f"Tenant {req.slug} already exists")
@@ -57,13 +143,13 @@ async def create_tenant(req: TenantCreate):
 
 
 @app.get("/tenants")
-def list_tenants(status: Optional[str] = None):
+def list_tenants(status: Optional[str] = None, _: None = Depends(require_admin)):
     tenants = registry.list(status=status)
     return {"tenants": [t.model_dump() for t in tenants], "count": len(tenants)}
 
 
 @app.get("/tenants/{slug}")
-def get_tenant(slug: str):
+def get_tenant(slug: str, _: None = Depends(require_admin)):
     tenant = registry.get(slug)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -71,16 +157,21 @@ def get_tenant(slug: str):
 
 
 @app.put("/tenants/{slug}")
-def update_tenant(slug: str, req: TenantUpdate):
+def update_tenant(slug: str, req: TenantUpdate, _: None = Depends(require_admin)):
     tenant = registry.update(slug, req)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
     return tenant.model_dump()
 
 
+class ActivateRequest(BaseModel):
+    squad_id: str
+    bus_token: str
+
+
 @app.post("/tenants/{slug}/activate")
-def activate_tenant(slug: str, squad_id: str, bus_token: str):
-    tenant = registry.activate(slug, squad_id, bus_token)
+def activate_tenant(slug: str, req: ActivateRequest, _: None = Depends(require_admin)):
+    tenant = registry.activate(slug, req.squad_id, req.bus_token)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
     log_admin("tenant.activated", tenant=slug)
@@ -88,7 +179,7 @@ def activate_tenant(slug: str, squad_id: str, bus_token: str):
 
 
 @app.post("/tenants/{slug}/suspend")
-def suspend_tenant(slug: str):
+def suspend_tenant(slug: str, _: None = Depends(require_admin)):
     tenant = registry.update(slug, TenantUpdate(status=TenantStatus.SUSPENDED))
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -100,7 +191,7 @@ def suspend_tenant(slug: str):
 
 
 @app.post("/tenants/{slug}/seats")
-def create_seat(slug: str, req: CreateSeatRequest):
+def create_seat(slug: str, req: CreateSeatRequest, _: None = Depends(require_admin)):
     """Create a new seat (additional MCP token) for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -139,7 +230,7 @@ def create_seat(slug: str, req: CreateSeatRequest):
 
 
 @app.get("/tenants/{slug}/seats")
-def list_seats(slug: str):
+def list_seats(slug: str, _: None = Depends(require_admin)):
     """List all seats (team members) for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -157,7 +248,7 @@ def list_seats(slug: str):
 
 
 @app.delete("/tenants/{slug}/seats/{token_id}")
-def revoke_seat(slug: str, token_id: str):
+def revoke_seat(slug: str, token_id: str, _: None = Depends(require_admin)):
     """Revoke a seat by revoking its MCP token."""
     tenant = registry.get(slug)
     if not tenant:
@@ -180,13 +271,13 @@ def resolve_hostname(hostname: str):
 
 
 @app.post("/tenants/{slug}/usage")
-def record_usage(slug: str, metric: str, quantity: int):
+def record_usage(slug: str, metric: str, quantity: int, _: None = Depends(require_admin)):
     billing.record_usage(slug, metric, quantity)
     return {"ok": True}
 
 
 @app.get("/tenants/{slug}/usage")
-def get_usage(slug: str, period: Optional[str] = None):
+def get_usage(slug: str, period: Optional[str] = None, _: None = Depends(require_admin)):
     return billing.get_usage(slug, period)
 
 
@@ -197,6 +288,7 @@ def record_transaction(
     amount_cents: int,
     description: str = "",
     stripe_id: str = "",
+    _: None = Depends(require_admin),
 ):
     tx_id = billing.record_transaction(
         slug, tx_type, amount_cents, description, stripe_id
@@ -205,17 +297,17 @@ def record_transaction(
 
 
 @app.get("/tenants/{slug}/invoice")
-def get_invoice(slug: str):
+def get_invoice(slug: str, _: None = Depends(require_admin)):
     return billing.get_tenant_invoice(slug)
 
 
 @app.get("/revenue")
-def platform_revenue(period: Optional[str] = None):
+def platform_revenue(period: Optional[str] = None, _: None = Depends(require_admin)):
     return billing.get_revenue(period=period)
 
 
 @app.get("/tenants/{slug}/audit")
-def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100):
+def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100, _: None = Depends(require_admin)):
     """Query audit log for a tenant."""
     return {"events": get_audit().query(tenant_slug=slug, event_type=event_type, limit=limit)}
 
@@ -233,7 +325,7 @@ class NotificationPreferencesRequest(BaseModel):
 
 
 @app.post("/tenants/{slug}/notifications")
-def set_notification_prefs(slug: str, req: NotificationPreferencesRequest):
+def set_notification_prefs(slug: str, req: NotificationPreferencesRequest, _: None = Depends(require_admin)):
     """Configure notification preferences for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -254,7 +346,7 @@ def set_notification_prefs(slug: str, req: NotificationPreferencesRequest):
 
 
 @app.get("/tenants/{slug}/notifications")
-def get_notification_prefs(slug: str):
+def get_notification_prefs(slug: str, _: None = Depends(require_admin)):
     """Get notification preferences for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -286,7 +378,7 @@ class OnboardRequest(BaseModel):
 
 
 @app.post("/onboard")
-async def onboard_customer(req: OnboardRequest):
+async def onboard_customer(req: OnboardRequest, _: None = Depends(require_admin)):
     """Full onboarding: questionnaire -> tenant -> squad -> build -> live site."""
     # Generate slug from business name
     slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
@@ -542,13 +634,13 @@ build_queue = BuildQueue()
 
 
 @app.post("/builds/enqueue/{slug}")
-def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0):
+def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0, _: None = Depends(require_admin)):
     build_queue.enqueue(slug, trigger, priority)
     return {"queued": True, "queue_length": build_queue.queue_length()}
 
 
 @app.get("/builds/status")
-def build_status():
+def build_status(_: None = Depends(require_admin)):
     return build_queue.get_status()
 
 
@@ -560,13 +652,13 @@ domain_mgr = DomainManager(registry)
 
 
 @app.post("/tenants/{slug}/domain")
-async def set_custom_domain(slug: str, domain: str):
+async def set_custom_domain(slug: str, domain: str, _: None = Depends(require_admin)):
     result = await domain_mgr.provision_custom_domain(slug, domain)
     return result
 
 
 @app.delete("/tenants/{slug}/domain")
-async def remove_custom_domain(slug: str):
+async def remove_custom_domain(slug: str, _: None = Depends(require_admin)):
     result = await domain_mgr.remove_custom_domain(slug)
     return result
 
@@ -730,6 +822,33 @@ async def signup(req: SignupRequest):
     # 4. Generate minimal starter content for signup
     _generate_signup_content(slug, req.name)
 
+    # 4b. Sync tenant to Cloudflare edge D1 (best-effort, fire-and-forget)
+    async def _sync_to_edge() -> None:
+        edge_url = os.environ.get("MUMEGA_EDGE_URL", "https://mumega-edge.workers.dev")
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                sync_secret = os.environ.get("VPS_SYNC_SECRET", "")
+                headers = {"x-sync-secret": sync_secret} if sync_secret else {}
+                resp = await client.post(
+                    f"{edge_url}/sync-tenant",
+                    json={
+                        "slug": slug,
+                        "label": req.name,
+                        "email": req.email,
+                        "plan": req.plan,
+                        "bus_token": token,
+                    },
+                    headers=headers,
+                )
+                if resp.status_code == 200:
+                    log.info("Edge sync OK for tenant %s", slug)
+                else:
+                    log.warning("Edge sync returned %s for tenant %s", resp.status_code, slug)
+        except Exception as exc:
+            log.warning("Edge sync failed for tenant %s (non-blocking): %s", slug, exc)
+
+    asyncio.create_task(_sync_to_edge())
+
     # 5. Trigger initial site build via queue (fire-and-forget)
     try:
         build_queue.enqueue(slug, trigger="signup", priority=5)
@@ -844,6 +963,664 @@ async def signup(req: SignupRequest):
         }
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Customer-facing /my/* endpoints
+# All authenticated with the tenant's MCP token via require_customer.
+# ---------------------------------------------------------------------------
+
+_SQUADS_DB = Path.home() / ".sos" / "data" / "squads.db"
+_SQUAD_SERVICE_URL = "http://localhost:8060"
+
+
+def _squads_db(writable: bool = False) -> sqlite3.Connection:
+    """Open squads.db. Read-only by default, writable for wallet operations."""
+    if writable:
+        conn = sqlite3.connect(_SQUADS_DB)
+    else:
+        conn = sqlite3.connect(f"file:{_SQUADS_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _get_squad_service_header() -> dict[str, str]:
+    """Return the Authorization header for Squad Service calls."""
+    # Squad Service uses SOS_SYSTEM_TOKEN (defaults to sk-sos-system).
+    key = os.environ.get("SOS_SYSTEM_TOKEN", "sk-sos-system")
+    return {"Authorization": f"Bearer {key}"}
+
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "medium"  # critical | high | medium | low
+    squad_id: str = ""
+
+
+@app.get("/my/connect")
+def my_connect(tenant_slug: str = Depends(require_customer)):
+    """Return MCP connection configs so the customer can always find their connect instructions."""
+    tenant = registry.get(tenant_slug)
+    if not tenant:
+        raise HTTPException(404, detail="Tenant not found")
+
+    # Reconstruct mcp_url from the tenant's stored bus_token
+    bus_token = tenant.bus_token or ""
+    mcp_url = f"https://mcp.mumega.com/sse/{bus_token}" if bus_token else "token not found — contact support"
+
+    return {
+        "tenant": tenant_slug,
+        "mcp_url": mcp_url,
+        "connect": {
+            "claude_code": f'claude mcp add mumega --transport sse --url "{mcp_url}"',
+            "claude_desktop": {"mcpServers": {"mumega": {"url": mcp_url}}},
+            "cursor": {"mcpServers": {"mumega": {"url": mcp_url}}},
+            "chatgpt": f"Use Custom GPT with action URL: {mcp_url.replace('/sse/', '/api/')}",
+            "generic": {"transport": "sse", "url": mcp_url},
+        },
+    }
+
+
+@app.get("/my/dashboard")
+def my_dashboard(tenant_slug: str = Depends(require_customer)):
+    """Return tenant info + KPIs: wallet balance, task counts, content count."""
+    tenant = registry.get(tenant_slug)
+    if not tenant:
+        raise HTTPException(404, detail="Tenant not found")
+
+    try:
+        conn = _squads_db()
+        # Wallet
+        wallet_row = conn.execute(
+            "SELECT balance_cents, total_earned_cents, total_spent_cents FROM squad_wallets WHERE squad_id = ?",
+            (tenant_slug,),
+        ).fetchone()
+        wallet = dict(wallet_row) if wallet_row else {"balance_cents": 0, "total_earned_cents": 0, "total_spent_cents": 0}
+
+        # Task counts by status
+        task_counts_rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM squad_tasks WHERE project = ? GROUP BY status",
+            (tenant_slug,),
+        ).fetchall()
+        task_counts = {row["status"]: row["cnt"] for row in task_counts_rows}
+        total_tasks = sum(task_counts.values())
+
+        # Content count (markdown files generated for this tenant)
+        content_dir = Path.home() / ".sos" / "data" / "tenant-content" / tenant_slug
+        content_count = len(list(content_dir.glob("*.md"))) if content_dir.exists() else 0
+
+        conn.close()
+    except Exception as exc:
+        log.error("Dashboard DB error for %s: %s", tenant_slug, exc)
+        wallet = {"balance_cents": 0, "total_earned_cents": 0, "total_spent_cents": 0}
+        task_counts = {}
+        total_tasks = 0
+        content_count = 0
+
+    return {
+        "tenant": tenant.model_dump(),
+        "kpis": {
+            "wallet_balance_cents": wallet["balance_cents"],
+            "total_earned_cents": wallet["total_earned_cents"],
+            "total_spent_cents": wallet["total_spent_cents"],
+            "tasks": {
+                "total": total_tasks,
+                "by_status": task_counts,
+            },
+            "content_pages": content_count,
+        },
+    }
+
+
+@app.get("/my/wallet")
+def my_wallet(tenant_slug: str = Depends(require_customer)):
+    """Return wallet balance and totals for this tenant."""
+    try:
+        conn = _squads_db()
+        row = conn.execute(
+            "SELECT balance_cents, total_earned_cents, total_spent_cents, updated_at FROM squad_wallets WHERE squad_id = ?",
+            (tenant_slug,),
+        ).fetchone()
+        conn.close()
+    except Exception as exc:
+        log.error("Wallet DB error for %s: %s", tenant_slug, exc)
+        raise HTTPException(500, detail="Database error")
+
+    if not row:
+        return {"balance_cents": 0, "total_earned_cents": 0, "total_spent_cents": 0, "updated_at": None}
+
+    return dict(row)
+
+
+@app.get("/my/transactions")
+def my_transactions(
+    tenant_slug: str = Depends(require_customer),
+    limit: int = Query(50, ge=1, le=200),
+    type: Optional[str] = Query(None, description="earn | spend"),
+):
+    """Return transaction history for this tenant."""
+    try:
+        conn = _squads_db()
+        if type:
+            rows = conn.execute(
+                "SELECT * FROM squad_transactions WHERE tenant_id = ? AND type = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_slug, type, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM squad_transactions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_slug, limit),
+            ).fetchall()
+        conn.close()
+    except Exception as exc:
+        log.error("Transactions DB error for %s: %s", tenant_slug, exc)
+        raise HTTPException(500, detail="Database error")
+
+    return {"transactions": [dict(r) for r in rows], "count": len(rows)}
+
+
+@app.get("/my/tasks")
+def my_tasks(
+    tenant_slug: str = Depends(require_customer),
+    status: Optional[str] = Query(None, description="backlog | claimed | done"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Return tasks for this tenant."""
+    try:
+        conn = _squads_db()
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM squad_tasks WHERE project = ? AND status = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_slug, status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM squad_tasks WHERE project = ? ORDER BY created_at DESC LIMIT ?",
+                (tenant_slug, limit),
+            ).fetchall()
+        conn.close()
+    except Exception as exc:
+        log.error("Tasks DB error for %s: %s", tenant_slug, exc)
+        raise HTTPException(500, detail="Database error")
+
+    return {"tasks": [dict(r) for r in rows], "count": len(rows)}
+
+
+@app.post("/my/tasks")
+async def create_my_task(req: CreateTaskRequest, tenant_slug: str = Depends(require_customer)):
+    """Create a task for this tenant via the Squad Service."""
+    squad_id = req.squad_id or tenant_slug  # default to tenant's own squad
+
+    payload = {
+        "id": f"{tenant_slug}-{secrets.token_hex(4)}",
+        "squad_id": squad_id,
+        "title": req.title,
+        "description": req.description,
+        "priority": req.priority,
+        "project": tenant_slug,
+        "status": "backlog",
+        "labels": [],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_SQUAD_SERVICE_URL}/tasks",
+                json=payload,
+                headers=_get_squad_service_header(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        log.error("Squad Service task creation failed for %s: %s", tenant_slug, exc)
+        raise HTTPException(exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        log.error("Squad Service unreachable for %s: %s", tenant_slug, exc)
+        raise HTTPException(503, detail="Squad Service unavailable")
+
+
+@app.get("/my/squads")
+def my_squads(tenant_slug: str = Depends(require_customer)):
+    """Return squads that serve this tenant."""
+    try:
+        conn = _squads_db()
+        rows = conn.execute(
+            "SELECT * FROM squads WHERE project = ? OR project = '*' ORDER BY created_at",
+            (tenant_slug,),
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        log.error("Squads DB error for %s: %s", tenant_slug, exc)
+        raise HTTPException(500, detail="Database error")
+
+    return {"squads": [dict(r) for r in rows], "count": len(rows)}
+
+
+@app.get("/my/activity")
+def my_activity(tenant_slug: str = Depends(require_customer)):
+    """Return recent completed tasks + events for this tenant (last 20 items)."""
+    try:
+        conn = _squads_db()
+
+        # Recent completed tasks
+        tasks = conn.execute(
+            """
+            SELECT 'task' as item_type, id, title as detail, completed_at as ts
+            FROM squad_tasks
+            WHERE project = ? AND status = 'done' AND completed_at IS NOT NULL
+            ORDER BY completed_at DESC LIMIT 10
+            """,
+            (tenant_slug,),
+        ).fetchall()
+
+        # Recent squad events for this tenant's squads
+        events = conn.execute(
+            """
+            SELECT 'event' as item_type, id as id, event_type as detail, timestamp as ts
+            FROM squad_events
+            WHERE tenant_id = ?
+            ORDER BY timestamp DESC LIMIT 10
+            """,
+            (tenant_slug,),
+        ).fetchall()
+
+        conn.close()
+    except Exception as exc:
+        log.error("Activity DB error for %s: %s", tenant_slug, exc)
+        raise HTTPException(500, detail="Database error")
+
+    # Merge and sort by timestamp, return top 20
+    items = [dict(r) for r in tasks] + [dict(r) for r in events]
+    items.sort(key=lambda x: x.get("ts") or "", reverse=True)
+
+    return {"activity": items[:20], "count": len(items[:20])}
+
+
+# ── Team Invite ──────────────────────────────────────────────────────────────
+
+
+class InviteRequest(BaseModel):
+    email: str
+    role: str = "member"  # member, manager, viewer
+
+
+@app.post("/my/invite")
+async def invite_team_member(req: InviteRequest, tenant_slug: str = Depends(require_customer)):
+    """Invite a team member by email. Creates a seat token and sends invite email."""
+    tenant = registry.get(tenant_slug)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    # Check seat limits
+    seat_limits = {"starter": 1, "growth": 5, "scale": -1}
+    plan_key = tenant.plan.value.lower() if hasattr(tenant.plan, "value") else str(tenant.plan).lower()
+    limit = seat_limits.get(plan_key, 1)
+    current = _count_seats(tenant_slug)
+    if limit != -1 and current >= limit:
+        raise HTTPException(403, f"Plan allows {limit} seats. Current: {current}. Upgrade to add more.")
+
+    # Generate seat token
+    token = f"sk-{tenant_slug}-{secrets.token_hex(16)}"
+    _register_bus_token_with_label(tenant_slug, token, f"Invite: {req.email}", role=req.role)
+
+    # Send invite email via Resend
+    try:
+        resend_key = os.environ.get("RESEND_API_KEY", "")
+        if resend_key:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+                    json={
+                        "from": "Mumega <hello@mumega.com>",
+                        "to": [req.email],
+                        "subject": f"You're invited to {tenant.label or tenant_slug}",
+                        "html": f"<p>You've been invited as a {req.role}.</p><p>Use this token to connect: <code>{token}</code></p>",
+                    },
+                )
+    except Exception as exc:
+        log.warning(f"Invite email failed: {exc}")
+
+    return {"ok": True, "email": req.email, "role": req.role}
+
+
+# ── Glass Commerce → Wallet Earning ──────────────────────────────────────────
+
+class GlassWebhookPayload(BaseModel):
+    tenant_slug: str
+    amount_cents: int
+    platform_fee_cents: int
+    transaction_id: str
+    description: str = ""
+
+
+@app.post("/webhooks/glass")
+async def glass_commerce_webhook(payload: GlassWebhookPayload):
+    """Glass Commerce calls this when a tenant earns revenue.
+    Credits the tenant's squad wallet with earnings (minus platform fee)."""
+    tenant_earning = payload.amount_cents - payload.platform_fee_cents
+    try:
+        conn = _squads_db(writable=True)
+        # Credit the tenant's wallet
+        conn.execute(
+            """UPDATE squad_wallets
+               SET balance_cents = balance_cents + ?,
+                   total_earned_cents = total_earned_cents + ?,
+                   updated_at = ?
+               WHERE squad_id = ? OR squad_id IN (
+                   SELECT id FROM squads WHERE project = ?
+               )""",
+            (tenant_earning, tenant_earning,
+             datetime.now(timezone.utc).isoformat(),
+             payload.tenant_slug, payload.tenant_slug),
+        )
+        # Record earn transaction
+        import uuid
+        conn.execute(
+            """INSERT INTO squad_transactions
+               (id, squad_id, tenant_id, type, amount_cents, counterparty, reason, created_at)
+               VALUES (?, ?, ?, 'earn', ?, 'glass_commerce', ?, ?)""",
+            (str(uuid.uuid4())[:8], payload.tenant_slug, payload.tenant_slug,
+             tenant_earning,
+             f"Glass Commerce: {payload.description} (tx:{payload.transaction_id})",
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        log.error(f"Glass webhook failed for {payload.tenant_slug}: {exc}")
+        raise HTTPException(500, detail="Wallet credit failed")
+
+    log.info(f"Glass Commerce: {payload.tenant_slug} earned {tenant_earning}c (fee: {payload.platform_fee_cents}c)")
+    return {"credited": tenant_earning, "tenant": payload.tenant_slug}
+
+
+# ── Customer Chat (proxy to MCP) ────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    message: str
+
+
+@app.post("/my/chat")
+async def my_chat(req: ChatMessage, tenant_slug: str = Depends(require_customer)):
+    """Customer sends a message to their AI squad via chat.
+    Proxies to the MCP SSE server's tools or to a configured model."""
+    # For v1: create a task from the chat message and return acknowledgment
+    # The sovereign loop picks it up and dispatches to an agent
+    try:
+        headers = _get_squad_service_header()
+        headers["Content-Type"] = "application/json"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "http://localhost:8060/tasks",
+                headers=headers,
+                json={
+                    "id": f"{tenant_slug}-chat-{secrets.token_hex(4)}",
+                    "squad_id": tenant_slug,
+                    "title": req.message[:100],
+                    "description": req.message,
+                    "priority": "medium",
+                    "project": tenant_slug,
+                    "labels": ["chat", "customer-request"],
+                    "assignee": None,
+                },
+            )
+        task_data = resp.json() if resp.status_code == 200 else {}
+        task_id = task_data.get("task", {}).get("id", "unknown")
+    except Exception as exc:
+        log.warning(f"Chat task creation failed: {exc}")
+        task_id = None
+
+    # Also store as memory in Mirror
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                "http://localhost:8844/store",
+                json={
+                    "agent": tenant_slug,
+                    "text": f"Customer request: {req.message}",
+                    "tags": ["chat", "customer"],
+                },
+                headers={"Authorization": f"Bearer {os.environ.get('MUMEGA_MASTER_KEY', '')}"},
+            )
+    except Exception:
+        pass  # Mirror store is best-effort
+
+    return {
+        "reply": f"Got it. I've created a task for your request. Your squad will work on it.",
+        "task_id": task_id,
+        "status": "queued",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints — PUBLIC (no require_admin or require_customer)
+# ---------------------------------------------------------------------------
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+def _find_tenant_by_email(email: str):
+    """Look up the most-recently created tenant matching the given email."""
+    try:
+        conn = sqlite3.connect(str(Path.home() / ".sos" / "data" / "squads.db"))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT slug FROM tenants WHERE email = ? ORDER BY created_at DESC LIMIT 1",
+            (email,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        return registry.get(str(row["slug"]))
+    except Exception as exc:
+        log.error("_find_tenant_by_email error: %s", exc)
+        return None
+
+
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest):
+    """Email + password login (v0.5: email lookup only, bcrypt in v1).
+
+    Returns: { user: { id, email, name, tenant } } or 401.
+    """
+    tenant = _find_tenant_by_email(req.email)
+    if not tenant:
+        raise HTTPException(401, detail="Invalid credentials")
+
+    return {
+        "user": {
+            "id": tenant.slug,
+            "email": tenant.email,
+            "name": tenant.label,
+            "tenant": tenant.slug,
+        }
+    }
+
+
+@app.get("/auth/tenant")
+def auth_tenant(email: str = Query(...)):
+    """Look up tenant by email — used by Auth.js callback to map email → tenant + bus_token.
+
+    Returns: { tenant_slug, bus_token, plan, domain } or 404.
+    """
+    tenant = _find_tenant_by_email(email)
+    if not tenant:
+        raise HTTPException(404, detail="No tenant found for this email")
+
+    return {
+        "tenant_slug": tenant.slug,
+        "bus_token": tenant.bus_token or "",
+        "plan": tenant.plan.value if hasattr(tenant.plan, "value") else str(tenant.plan),
+        "domain": tenant.domain or tenant.subdomain,
+    }
+
+
+@app.post("/auth/register")
+async def auth_register(req: RegisterRequest):
+    """Create account with email + password (v0.5: delegates to signup flow).
+
+    Returns: { user: { id, email, name, tenant } }.
+    """
+    # Delegate to the existing signup flow
+    signup_req = SignupRequest(email=req.email, name=req.name, plan="starter")
+    result = await signup(signup_req)
+
+    tenant_slug = result.get("tenant", "")
+    return {
+        "user": {
+            "id": tenant_slug,
+            "email": req.email,
+            "name": req.name,
+            "tenant": tenant_slug,
+        }
+    }
+
+
+@app.post("/auth/forgot-password")
+async def auth_forgot_password(req: ForgotPasswordRequest):
+    """Send password reset / magic link email via Resend.
+
+    Returns: { ok: true, message: "Check your email" }.
+    """
+    tenant = _find_tenant_by_email(req.email)
+    if not tenant:
+        # Don't reveal whether email exists — always return ok
+        return {"ok": True, "message": "If that email is registered, you'll receive a reset link."}
+
+    # Generate a short-lived magic link token (store in KV or simple in-memory for v0.5)
+    token = secrets.token_urlsafe(32)
+    reset_url = f"https://mumega.com/dashboard/reset?token={token}&email={req.email}"
+
+    try:
+        from sos.services.saas.email import send_magic_link
+        asyncio.create_task(send_magic_link(req.email, reset_url))
+    except Exception as exc:
+        log.warning("Forgot-password email task creation failed (non-blocking): %s", exc)
+
+    return {"ok": True, "message": "Check your email for a login link."}
+
+
+@app.post("/billing/webhook")
+async def stripe_billing_webhook(request: Request):
+    """Receive Stripe webhook events.
+
+    Verifies the signature using STRIPE_WEBHOOK_SECRET when set.
+    Handles: checkout.session.completed, customer.subscription.updated,
+    customer.subscription.deleted, invoice.paid, invoice.payment_failed.
+    """
+    raw_body = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    stripe_secret = os.environ.get("STRIPE_SECRET_KEY", "")
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+
+    event = None
+
+    if stripe_secret and webhook_secret and not webhook_secret.startswith("whsec_REPLACE"):
+        try:
+            import stripe as stripe_lib
+            stripe_lib.api_key = stripe_secret
+            event = stripe_lib.Webhook.construct_event(raw_body, sig_header, webhook_secret)
+        except Exception as exc:
+            log.warning("Stripe webhook signature verification failed: %s", exc)
+            raise HTTPException(400, "Invalid webhook signature")
+    else:
+        # Webhook secret not configured — accept without verification and log only
+        try:
+            import json as _json
+            event = _json.loads(raw_body)
+            log.warning(
+                "Stripe webhook received WITHOUT signature verification "
+                "(STRIPE_WEBHOOK_SECRET not configured). Set it in .env to enable verification."
+            )
+        except Exception as exc:
+            log.error("Failed to parse Stripe webhook body: %s", exc)
+            raise HTTPException(400, "Invalid JSON body")
+
+    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", "unknown")
+    log.info("Stripe webhook event received: %s", event_type)
+
+    try:
+        data_obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else event.data.object
+
+        if event_type == "checkout.session.completed":
+            slug = (
+                data_obj.get("metadata", {}).get("slug")
+                if isinstance(data_obj, dict)
+                else getattr(getattr(data_obj, "metadata", None), "slug", None)
+            )
+            if slug:
+                tenant = registry.get(slug)
+                if tenant:
+                    registry.activate(slug, squad_id=slug, bus_token=tenant.bus_token or "")
+                    log.info("Tenant %s activated via checkout.session.completed", slug)
+                else:
+                    log.warning("checkout.session.completed: tenant %s not found", slug)
+
+        elif event_type in ("customer.subscription.updated", "customer.subscription.deleted"):
+            customer_id = (
+                data_obj.get("customer")
+                if isinstance(data_obj, dict)
+                else getattr(data_obj, "customer", None)
+            )
+            status = (
+                data_obj.get("status")
+                if isinstance(data_obj, dict)
+                else getattr(data_obj, "status", None)
+            )
+            if customer_id:
+                tenant = registry.find_by_stripe_customer(customer_id)
+                if tenant:
+                    if event_type == "customer.subscription.deleted" or status == "canceled":
+                        registry.suspend(tenant.slug)
+                        log.info("Tenant %s suspended (subscription %s)", tenant.slug, event_type)
+                    else:
+                        log.info("Tenant %s subscription updated: status=%s", tenant.slug, status)
+
+        elif event_type == "invoice.paid":
+            customer_id = (
+                data_obj.get("customer")
+                if isinstance(data_obj, dict)
+                else getattr(data_obj, "customer", None)
+            )
+            if customer_id:
+                tenant = registry.find_by_stripe_customer(customer_id)
+                if tenant:
+                    log.info("Invoice paid for tenant %s", tenant.slug)
+
+        elif event_type == "invoice.payment_failed":
+            customer_id = (
+                data_obj.get("customer")
+                if isinstance(data_obj, dict)
+                else getattr(data_obj, "customer", None)
+            )
+            if customer_id:
+                tenant = registry.find_by_stripe_customer(customer_id)
+                if tenant:
+                    log.warning("Invoice payment failed for tenant %s", tenant.slug)
+
+    except Exception as exc:
+        log.error("Error processing Stripe webhook event %s: %s", event_type, exc)
+        # Return 200 to Stripe so it doesn't retry — log error internally
+        return {"ok": False, "error": str(exc)}
+
+    return {"ok": True, "event": event_type}
 
 
 if __name__ == "__main__":

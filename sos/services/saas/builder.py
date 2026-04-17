@@ -30,8 +30,9 @@ from sos.services.saas.registry import TenantRegistry
 log = logging.getLogger("sos.saas.builder")
 
 INKWELL_SOURCE = Path.home() / "inkwell"
-CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
-CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
+
+# NOTE: CF credentials are read dynamically in _upload_to_kv so they pick up
+# env vars loaded after module import (e.g. from systemd EnvironmentFile).
 
 # Directories to skip when copying the Inkwell source tree
 _COPY_EXCLUDE = {"node_modules", "dist", ".git", ".astro", "graphify-out", ".cache"}
@@ -264,22 +265,29 @@ export type InkwellConfig = typeof config
         Each file is stored as ``{tenant_slug}:page:{relative_path}``.
         Returns the number of files successfully uploaded.
         """
-        if not CF_API_TOKEN or not CF_ACCOUNT_ID:
+        # Read credentials dynamically so they're always current (not stale module-level vars)
+        cf_api_token = (
+            os.environ.get("CF_API_TOKEN", "")
+            or os.environ.get("CLOUDFLARE_API_TOKEN", "")
+        )
+        cf_account_id = os.environ.get("CF_ACCOUNT_ID", "")
+        kv_namespace_id = os.environ.get("CF_KV_CONTENT_ID", "")
+
+        if not cf_api_token or not cf_account_id:
             log.warning(
                 "CF credentials not set — skipping KV upload, files at %s", dist_dir
             )
             return 0
 
-        kv_namespace_id = os.environ.get("CF_KV_CONTENT_ID", "")
         if not kv_namespace_id:
             log.warning("CF_KV_CONTENT_ID not set — skipping KV upload")
             return 0
 
         base_url = (
             f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{CF_ACCOUNT_ID}/storage/kv/namespaces/{kv_namespace_id}/values"
+            f"{cf_account_id}/storage/kv/namespaces/{kv_namespace_id}/values"
         )
-        headers = {"Authorization": f"Bearer {CF_API_TOKEN}"}
+        headers = {"Authorization": f"Bearer {cf_api_token}"}
 
         uploaded = 0
         async with httpx.AsyncClient(timeout=30) as client:

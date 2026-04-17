@@ -186,7 +186,7 @@ class NotificationRouter:
                 }
             )
             # Sign with tenant slug as secret (proper secret management later)
-            signature = hmac.new(
+            signature = hmac.HMAC(
                 tenant_slug.encode(), payload.encode(), hashlib.sha256
             ).hexdigest()
             async with httpx.AsyncClient(timeout=10) as client:

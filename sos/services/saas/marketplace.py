@@ -9,6 +9,8 @@ import json
 import logging
 import secrets
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -16,6 +18,10 @@ from typing import Optional
 log = logging.getLogger("sos.saas.marketplace")
 
 DB_PATH = Path.home() / ".sos" / "data" / "squads.db"
+
+# Squad Service integration
+SQUAD_SERVICE_URL = "http://localhost:8060"
+SQUAD_SERVICE_KEY = "sk-squad-mumega-2fd7f842c27062fbb614efe68585f26c"
 
 
 class Marketplace:
@@ -175,6 +181,61 @@ class Marketplace:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def _create_squad_task(self, listing: sqlite3.Row, buyer_tenant: str) -> str | None:
+        """Create a task in Squad Service for the subscribed listing. Returns task id or None."""
+        task_id = f"mkt-{secrets.token_hex(8)}"
+        payload = json.dumps({
+            "id": task_id,
+            "squad_id": buyer_tenant,
+            "title": listing["title"],
+            "description": listing["description"],
+            "status": "backlog",
+            "priority": "medium",
+            "project": buyer_tenant,
+            "labels": ["marketplace", listing["category"]],
+            "inputs": {
+                "listing_id": listing["id"],
+                "listing_type": listing["listing_type"],
+                "price_cents": listing["price_cents"],
+                "price_model": listing["price_model"],
+            },
+        }).encode()
+        req = urllib.request.Request(
+            f"{SQUAD_SERVICE_URL}/tasks",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {SQUAD_SERVICE_KEY}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+                log.info("Squad task created: %s for tenant %s (listing %s)", task_id, buyer_tenant, listing["id"])
+                return task_id
+        except urllib.error.HTTPError as exc:
+            log.warning("Squad Service returned %s creating task for %s: %s", exc.code, buyer_tenant, exc.read())
+            return None
+        except Exception as exc:
+            log.warning("Squad Service unreachable when creating task for %s: %s", buyer_tenant, exc)
+            return None
+
+    def _record_transaction(self, buyer_tenant: str, listing: sqlite3.Row) -> None:
+        """Record a billing transaction for a new marketplace subscription."""
+        try:
+            from sos.services.saas.billing import SaaSBilling
+            b = SaaSBilling()
+            tx_id = b.record_transaction(
+                buyer_tenant,
+                tx_type="marketplace_subscription",
+                amount_cents=listing["price_cents"],
+                description=f"Subscribed to {listing['title']} ({listing['price_model']})",
+            )
+            log.info("Transaction recorded: id=%s tenant=%s listing=%s amount=%d", tx_id, buyer_tenant, listing["id"], listing["price_cents"])
+        except Exception as exc:
+            log.warning("Failed to record transaction for %s/%s: %s", buyer_tenant, listing["id"], exc)
+
     def subscribe(self, buyer_tenant: str, listing_id: str) -> dict:
         """Subscribe a tenant to a marketplace listing."""
         with self._conn() as conn:
@@ -205,10 +266,26 @@ class Marketplace:
                    WHERE id = ?""",
                 (listing_id,),
             )
+
+        # Create a Squad task for the subscribed skill (best-effort)
+        task_id = self._create_squad_task(listing, buyer_tenant)
+
+        # Record a billing transaction
+        self._record_transaction(buyer_tenant, listing)
+
+        log.info(
+            "Subscription complete: tenant=%s listing=%s price=%d task=%s",
+            buyer_tenant,
+            listing_id,
+            listing["price_cents"],
+            task_id or "not_created",
+        )
+
         return {
             "success": True,
             "listing": dict(listing),
             "message": f"Subscribed to {listing['title']}",
+            "task_id": task_id,
         }
 
     def my_subscriptions(self, tenant: str) -> list[dict]:

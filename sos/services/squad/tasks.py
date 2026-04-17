@@ -49,6 +49,127 @@ def row_to_task(row: sqlite3.Row) -> SquadTask:
     )
 
 
+# ── Deterministic Cost Estimation ─────────────────────────────────────────
+# Ported from cli/mumega/core/task_hierarchy.py — every task gets a budget
+# BEFORE it runs. No surprises.
+
+# Token estimates by priority (proxy for complexity)
+PRIORITY_TOKEN_BUDGET = {
+    "critical": 20000,  # advanced — needs Opus
+    "high":     8000,   # complex — needs Sonnet
+    "medium":   3000,   # moderate — Flash is fine
+    "low":      1500,   # simple — Haiku
+}
+
+# Model selection by priority (cheapest that can do the job)
+PRIORITY_MODEL = {
+    "critical": "opus",
+    "high":     "sonnet",
+    "medium":   "flash",
+    "low":      "haiku",
+}
+
+# Real API cost per 1M tokens
+MODEL_COST_PER_M = {
+    "opus":    {"input": 15.00, "output": 75.00},
+    "sonnet":  {"input": 3.00,  "output": 15.00},
+    "haiku":   {"input": 0.25,  "output": 1.25},
+    "flash":   {"input": 0.10,  "output": 0.40},
+    "gpt-5.4": {"input": 2.50,  "output": 10.00},
+}
+
+# Fuel grade = which model tier
+FUEL_GRADE_MODEL = {
+    "diesel":   "flash",    # $0.009/task
+    "regular":  "haiku",    # $0.025/task
+    "premium":  "sonnet",   # $0.30/task
+    "aviation": "opus",     # $1.50/task
+    "codex":    "gpt-5.4",  # $0.225/task
+}
+
+# Internal cost (what it costs US in tokens)
+FUEL_COST_CENTS = {
+    "diesel":   0,     # free (Gemini Flash)
+    "regular":  3,     # ~$0.025
+    "premium":  30,    # ~$0.30
+    "aviation": 150,   # ~$1.50
+    "codex":    23,    # ~$0.225
+}
+
+# ── Agent Billable Rates ──────────────────────────────────────────────────────
+# What we CHARGE the customer per task. Not token cost — VALUE of the work.
+# Rate = expertise + codebase knowledge + reliability + model cost
+# Pay-per-use: customer pays per completed task, not monthly subscription.
+
+AGENT_RATE_CENTS_PER_TASK = {
+    # Elders — deep codebase knowledge, architectural decisions
+    "kasra":      2500,    # $25/task — architect, built the system, knows every file
+    "athena":     3000,    # $30/task — queen, root gatekeeper, quality gate
+    "codex":      2000,    # $20/task — infra + security specialist
+
+    # Specialists — domain expertise
+    "sol":        1500,    # $15/task — content quality, cosmic voice
+    "mumega":     2000,    # $20/task — platform orchestrator
+
+    # Workers — commodity execution
+    "worker":      500,    # $5/task — cheap task execution (Haiku)
+    "gemma":       200,    # $2/task — free model, bulk work
+    "dandan":      500,    # $5/task — project lead (cheap model)
+
+    # New agents — building expertise
+    "trop":       1000,    # $10/task — learning the codebase
+    "river":      1500,    # $15/task — oracle, strategy
+
+    # Human
+    "hadi":      20000,    # $200/task — founder, final decisions
+}
+
+# Margin: billable rate - fuel cost = gross margin per task
+# Example: kasra does a critical task
+#   fuel cost: $1.50 (opus)
+#   billable:  $25.00
+#   margin:    $23.50 (94%)
+
+# Agent markup multiplier on token cost
+# billable = internal_cost * MARKUP
+# 10x across the board — simple, consistent, easy to explain
+AGENT_MARKUP_DEFAULT = 10
+
+# Override only where truly different
+AGENT_MARKUP = {
+    "hadi": 100,    # founder time is 100x token cost
+}
+
+def get_markup(agent: str) -> int:
+    return AGENT_MARKUP.get(agent, AGENT_MARKUP_DEFAULT)
+
+
+def estimate_task_budget(priority: str, fuel_grade: str | None = None) -> dict:
+    """Estimate token budget and cost for a task BEFORE execution."""
+    priority = priority.lower()
+    tokens = PRIORITY_TOKEN_BUDGET.get(priority, 3000)
+    model = PRIORITY_MODEL.get(priority, "flash")
+
+    if fuel_grade:
+        model = FUEL_GRADE_MODEL.get(fuel_grade, model)
+
+    rates = MODEL_COST_PER_M.get(model, MODEL_COST_PER_M["flash"])
+    # Assume 70% input, 30% output split
+    input_tokens = int(tokens * 0.7)
+    output_tokens = int(tokens * 0.3)
+    cost_usd = (input_tokens / 1_000_000 * rates["input"]) + (output_tokens / 1_000_000 * rates["output"])
+    cost_cents = max(1, int(cost_usd * 100))
+
+    return {
+        "token_budget": tokens,
+        "model": model,
+        "fuel_grade": fuel_grade or PRIORITY_MODEL.get(priority, "diesel"),
+        "estimated_cost_cents": cost_cents,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
 class SquadTaskService:
     def __init__(self, db: SquadDB | None = None, bus: SquadBus | None = None):
         self.db = db or SquadDB()
@@ -59,6 +180,15 @@ class SquadTaskService:
         if not task.created_at:
             task.created_at = timestamp
         task.updated_at = timestamp
+
+        # Auto-estimate budget if not set
+        if task.token_budget <= 0:
+            fuel = task.inputs.get("fuel_grade")
+            budget = estimate_task_budget(task.priority.value, fuel)
+            task.token_budget = budget["token_budget"]
+            task.inputs["fuel_grade"] = budget["fuel_grade"]
+            task.inputs["estimated_cost_cents"] = budget["estimated_cost_cents"]
+            task.inputs["model"] = budget["model"]
         with self.db.connect() as conn:
             conn.execute(
                 """
@@ -260,7 +390,7 @@ class SquadTaskService:
                     "text": f"Task done: {task.title}",
                 }))
             except Exception as e:
-                log.warning("Delivery notification failed for %s: %s", project, e)
+                log.warning(f"Delivery notification failed for {project}: {e}")
 
         # Wire 4: Bounty completion → Treasury payout
         if task.bounty and task.bounty.get("reward"):
@@ -280,7 +410,7 @@ class SquadTaskService:
                     async def _payout():
                         await board.submit_solution(bounty_id, proof_url=task.result.get("summary", "completed"))
                         payout_msg = await board.approve_and_pay(bounty_id)
-                        log.info("Wire 4 payout for %s: %s", task.id, payout_msg)
+                        log.info(f"Wire 4 payout for {task.id}: {payout_msg}")
 
                         # Wire 6: Update conductance after payout
                         try:
@@ -333,7 +463,7 @@ class SquadTaskService:
                         task.id, reward, agent_addr,
                     )
             except Exception as exc:
-                log.warning("Wire 4 bounty payout failed (non-blocking) for %s: %s", task.id, exc)
+                log.warning(f"Wire 4 bounty payout failed (non-blocking) for {task.id}: {exc}")
 
         # Journey: Auto-evaluate milestones on task completion
         agent_name = task.assignee or actor
@@ -348,7 +478,78 @@ class SquadTaskService:
                         agent_name, c["path"], c["milestone"], c["reward_mind"], c["badge"],
                     )
             except Exception as exc:
-                log.debug("Journey evaluation skipped: %s", exc)
+                log.debug(f"Journey evaluation skipped: {exc}")
+
+        # ── Economy: wallet charge + conductance update + transaction log ──
+        # Two costs tracked: internal (fuel) and billable (customer-facing)
+        try:
+            squad_id = task.squad_id
+            fuel_grade = task.inputs.get("fuel_grade") or result.get("fuel_grade", "diesel")
+            agent_name = task.assignee or actor or "worker"
+
+            # Internal cost (what it costs us in tokens)
+            internal_cost_cents = FUEL_COST_CENTS.get(fuel_grade, 0)
+
+            # Billable = internal cost × 10x markup
+            # If internal cost is 0 (free model), use flat per-task rate instead
+            markup = get_markup(agent_name)
+            if internal_cost_cents > 0:
+                billable_cents = internal_cost_cents * markup
+            else:
+                # Free model — use flat rate from AGENT_RATE_CENTS_PER_TASK
+                billable_cents = AGENT_RATE_CENTS_PER_TASK.get(agent_name, 200)
+
+            margin_cents = billable_cents - internal_cost_cents
+            cost_cents = billable_cents
+            _tid = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+
+            with self.db.connect() as conn:
+                # Charge wallet
+                if cost_cents > 0:
+                    conn.execute(
+                        "UPDATE squad_wallets SET balance_cents = balance_cents - ?, total_spent_cents = total_spent_cents + ?, updated_at = ? WHERE squad_id = ? AND tenant_id = ?",
+                        (cost_cents, cost_cents, timestamp, squad_id, _tid),
+                    )
+
+                # Record transaction (billable amount)
+                import uuid as _uuid
+                conn.execute(
+                    "INSERT INTO squad_transactions (id, squad_id, tenant_id, type, amount_cents, counterparty, reason, task_id, created_at) VALUES (?, ?, ?, 'spend', ?, ?, ?, ?, ?)",
+                    (str(_uuid.uuid4())[:8], squad_id, _tid, billable_cents,
+                     agent_name, f"Task: {task.title[:60]} | fuel:{fuel_grade} internal:{internal_cost_cents}c margin:{margin_cents}c",
+                     task.id, timestamp),
+                )
+
+                # Update conductance — dG/dt = |F|^γ - αG
+                for label in (task.labels or []):
+                    squad_row = conn.execute(
+                        "SELECT conductance_json FROM squads WHERE id = ? AND tenant_id = ?",
+                        (squad_id, _tid),
+                    ).fetchone()
+                    if squad_row:
+                        conductance = json.loads(squad_row[0] or "{}")
+                        G = conductance.get(label, 0.1)
+                        gamma = 0.5  # non-linearity: sqrt of value
+                        value = max(cost_cents, 1)  # flow = value of work done
+                        G_new = min(G + abs(value) ** gamma / 100, 1.0)  # cap at 1.0
+                        conductance[label] = round(G_new, 4)
+                        conn.execute(
+                            "UPDATE squads SET conductance_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+                            (json.dumps(conductance), timestamp, squad_id, _tid),
+                        )
+
+                # Update goal progress
+                conn.execute(
+                    """UPDATE squad_goals SET
+                        progress = MIN(1.0, progress + 0.05),
+                        updated_at = ?
+                    WHERE squad_id = ? AND tenant_id = ? AND status = 'active'""",
+                    (timestamp, squad_id, _tid),
+                )
+
+            log.info(f"Economy: squad={squad_id} agent={agent_name} billable={billable_cents}c internal={internal_cost_cents}c margin={margin_cents}c")
+        except Exception as exc:
+            log.debug(f"Economy update skipped: {exc}")
 
         return task
 

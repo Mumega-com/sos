@@ -147,6 +147,8 @@ class TenantRegistry:
             updates["telegram_chat_id"] = req.telegram_chat_id
         if req.inkwell_config is not None:
             updates["inkwell_config"] = json.dumps(req.inkwell_config)
+        if req.stripe_customer_id is not None:
+            updates["stripe_customer_id"] = req.stripe_customer_id
         if not updates:
             return tenant
         updates["updated_at"] = self._now()
@@ -168,6 +170,27 @@ class TenantRegistry:
                 (squad_id, bus_token, now, slug),
             )
         return self.get(slug)
+
+    def suspend(self, slug: str) -> Optional[Tenant]:
+        """Suspend a tenant (e.g. on subscription cancellation)."""
+        now = self._now()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE tenants SET status = 'suspended', updated_at = ? WHERE slug = ?",
+                (now, slug),
+            )
+        return self.get(slug)
+
+    def find_by_stripe_customer(self, stripe_customer_id: str) -> Optional[Tenant]:
+        """Find a tenant by their Stripe customer ID."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM tenants WHERE stripe_customer_id = ?",
+                (stripe_customer_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._row_to_tenant(row)
 
     def resolve_domain(self, hostname: str) -> Optional[Tenant]:
         """Resolve tenant from hostname (subdomain or custom domain)."""
