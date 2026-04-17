@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -13,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from sos import __version__
 from sos.observability.logging import get_logger
+from sos.services.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 
@@ -21,7 +19,6 @@ _START_TIME = time.time()
 
 log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
 
-_TOKENS_PATH = Path(__file__).resolve().parent.parent.parent / "bus" / "tokens.json"
 _usage_log = UsageLog()
 
 app = FastAPI(title="SOS Economy Service", version=__version__)
@@ -131,32 +128,36 @@ async def debit(req: TransactionRequest):
 # tier negotiation) belong to Mumega and layer on top of this log.
 
 
-def _load_tokens() -> list[dict[str, Any]]:
-    try:
-        return json.loads(_TOKENS_PATH.read_text())
-    except FileNotFoundError:
-        return []
-    except json.JSONDecodeError:
-        log.warning("tokens.json is malformed", path=str(_TOKENS_PATH))
-        return []
+def _auth_ctx_to_entry(ctx: Any) -> dict[str, Any]:
+    """Convert an AuthContext to the legacy ``entry`` dict shape.
+
+    ``_resolve_tenant`` reads ``entry.get("project")`` — that key is preserved.
+    """
+    return {
+        "project": ctx.project,
+        "tenant_slug": ctx.tenant_slug,
+        "agent": ctx.agent,
+        "label": ctx.label,
+        "is_system": ctx.is_system,
+        "is_admin": ctx.is_admin,
+        "active": True,
+    }
 
 
 def _verify_bearer(authorization: Optional[str]) -> dict[str, Any]:
-    """Return the token record or raise 401. Supports token_hash (sha256) and legacy raw token."""
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-    raw = authorization.split(" ", 1)[1].strip()
-    if not raw:
-        raise HTTPException(status_code=401, detail="empty bearer token")
-    sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    for entry in _load_tokens():
-        if not entry.get("active", True):
-            continue
-        if entry.get("token_hash") == sha:
-            return entry
-        if entry.get("token") and entry["token"] == raw:
-            return entry
-    raise HTTPException(status_code=401, detail="invalid or inactive token")
+    """Return the token record or raise 401.
+
+    Thin wrapper delegating to sos.services.auth.verify_bearer.  Any call-site
+    that missed this migration continues to work unchanged because the public
+    function signature is preserved.  Internals no longer read tokens.json
+    directly — all verification goes through the canonical auth module.
+    """
+    ctx = _auth_verify_bearer(authorization)
+    if ctx is None:
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="missing bearer token")
+        raise HTTPException(status_code=401, detail="invalid or inactive token")
+    return _auth_ctx_to_entry(ctx)
 
 
 def _resolve_tenant(entry: dict[str, Any]) -> str | None:

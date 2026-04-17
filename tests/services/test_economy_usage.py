@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def tokens_file(tmp_path, monkeypatch):
-    """Patch the tokens.json the economy app reads."""
+    """Patch the tokens.json the economy app reads (via sos.services.auth)."""
     tokens = [
         {"label": "trop-tenant", "token": "tk_trop_raw", "project": "therealmofpatterns", "active": True},
         {"label": "trop-hashed", "token_hash": hashlib.sha256(b"tk_trop_hashed").hexdigest(),
@@ -33,10 +33,10 @@ def tokens_file(tmp_path, monkeypatch):
     ]
     p = tmp_path / "tokens.json"
     p.write_text(json.dumps(tokens))
-    # The module reads _TOKENS_PATH at call time (not import time via _load_tokens).
-    # We monkey-patch the module-level constant.
-    import sos.services.economy.app as app_mod
-    monkeypatch.setattr(app_mod, "_TOKENS_PATH", p)
+    # Economy now delegates to sos.services.auth — patch TOKENS_PATH there.
+    import sos.services.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "TOKENS_PATH", p)
+    auth_mod._cache.invalidate()
     return p
 
 

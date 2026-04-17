@@ -48,6 +48,7 @@ from sos.mcp.customer_tools import (
 )
 from sos.services.saas.rate_limiter import check_rate_limit
 from sos.services.saas.marketplace import Marketplace
+from sos.services.auth import verify_bearer as _auth_verify_bearer
 from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
 _marketplace = Marketplace()
@@ -397,14 +398,45 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
 
 
 def _resolve_token_context(token: str) -> MCPAuthContext | None:
+    """Resolve a raw token string to an MCPAuthContext.
+
+    For the bus-token path, this now delegates to sos.services.auth.verify_bearer
+    (single source of truth).  The URL-based /sse/<token> flow constructs a
+    synthetic ``Authorization: Bearer <token>`` header and calls verify_bearer,
+    which handles env-var system tokens, sha256 token_hash, bcrypt, and raw token
+    fallback — without any direct tokens.json reads here.
+
+    Lookup order:
+      1. MCP_ACCESS_TOKENS / SQUAD_SYSTEM_TOKEN env vars (system path, no file I/O)
+      2. sos.services.auth.verify_bearer (bus tokens via canonical auth module)
+      3. Squad API keys DB (squad_api_keys table)
+      4. Cloudflare KV (edge-provisioned tokens)
+    """
     if not token:
         return None
+    # 1. Env-var system tokens checked first — fast path, no file I/O.
     if token in _system_tokens():
         return MCPAuthContext(token=token, tenant_id=None, is_system=True, source="system")
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    local_bus = _load_bus_tokens().get(token_hash)
-    if local_bus:
-        return local_bus
+    # 2. Bus tokens via canonical auth module — replaces direct _load_bus_tokens() lookup.
+    auth_ctx = _auth_verify_bearer(f"Bearer {token}")
+    if auth_ctx is not None:
+        # Map AuthContext → MCPAuthContext, preserving all attributes read by handlers.
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        # Try to pull richer metadata (scope, plan, role) from the local cache built
+        # by _TokenCacheWithHotReload so we don't lose those fields.
+        local_bus = _load_bus_tokens().get(token_hash)
+        if local_bus:
+            return local_bus
+        # Fallback: construct MCPAuthContext from AuthContext alone.
+        return MCPAuthContext(
+            token=token,
+            tenant_id=auth_ctx.project,
+            is_system=auth_ctx.is_system,
+            source="bus_tokens",
+            agent_name=auth_ctx.agent or "",
+            role="admin" if auth_ctx.is_admin else "viewer",
+        )
+    # 3. Squad API keys.
     squad_auth = lookup_squad_token(token, _squad_db)
     if squad_auth:
         return MCPAuthContext(
@@ -413,6 +445,7 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             is_system=squad_auth.is_system,
             source="squad_api_keys",
         )
+    # 4. Cloudflare KV.
     return _lookup_cloudflare_token(token)
 
 

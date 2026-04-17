@@ -1,11 +1,10 @@
 """Mumega Tenant Dashboard — customer-facing web UI.
 
 Shows agent status, recent tasks, memory entries, analytics, and billing.
-Runs on port 8090. Auth via bus tokens from tokens.json.
+Runs on port 8090. Auth via sos.services.auth — single source of truth.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -19,17 +18,12 @@ import redis
 from fastapi import Cookie, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-try:
-    import bcrypt
-    _HAS_BCRYPT = True
-except ImportError:
-    _HAS_BCRYPT = False
+from sos.services.auth import verify_bearer as _auth_verify_bearer
 
 logger = logging.getLogger("dashboard")
 
 app = FastAPI(title="Mumega Dashboard", docs_url=None, redoc_url=None)
 
-TOKENS_PATH = Path(__file__).resolve().parent.parent.parent / "bus" / "tokens.json"
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 SQUAD_URL = os.environ.get("SQUAD_URL", "http://localhost:8060")
 MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
@@ -40,38 +34,36 @@ COOKIE_NAME = "mum_dash"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_tokens() -> list[dict[str, Any]]:
-    try:
-        return json.loads(TOKENS_PATH.read_text())
-    except Exception:
-        logger.exception("Failed to load tokens")
-        return []
+
+def _auth_ctx_to_entry(token: str) -> dict[str, Any] | None:
+    """Convert an AuthContext into the legacy dict shape the templates expect.
+
+    Preserves the ``token`` key so the cookie round-trip and _tenant_from_cookie
+    keep working without changes. Delegates all token verification to the
+    canonical sos.services.auth module.
+    """
+    ctx = _auth_verify_bearer(f"Bearer {token}")
+    if ctx is None:
+        return None
+    return {
+        "token": token,
+        "project": ctx.project,
+        "tenant_slug": ctx.tenant_slug,
+        "agent": ctx.agent,
+        "label": ctx.label,
+        "is_system": ctx.is_system,
+        "is_admin": ctx.is_admin,
+        "active": True,
+    }
 
 
 def _verify_token(token: str) -> dict[str, Any] | None:
-    if not token:
-        return None
-    sha_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    token_bytes = token.encode("utf-8")
-    for entry in _load_tokens():
-        if not entry.get("active", True):
-            continue
-        # Post-SEC-001: raw tokens are never stored. Check token_hash (sha256)
-        # and hash (bcrypt). Keep raw-token fallback for unmigrated entries.
-        stored_token = entry.get("token") or ""
-        if stored_token and stored_token == token:
-            return entry
-        token_hash = entry.get("token_hash") or ""
-        if token_hash and token_hash == sha_hash:
-            return entry
-        bcrypt_hash = entry.get("hash") or ""
-        if bcrypt_hash and _HAS_BCRYPT and bcrypt_hash.startswith(("$2a$", "$2b$", "$2y$")):
-            try:
-                if bcrypt.checkpw(token_bytes, bcrypt_hash.encode("utf-8")):
-                    return entry
-            except ValueError:
-                continue
-    return None
+    """Thin wrapper — delegates to sos.services.auth.verify_bearer.
+
+    Kept for backwards compatibility: any caller that missed this migration
+    still works unchanged. Internals now go through the canonical auth module.
+    """
+    return _auth_ctx_to_entry(token)
 
 
 def _get_redis() -> redis.Redis:  # type: ignore[type-arg]
