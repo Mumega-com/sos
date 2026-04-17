@@ -12,7 +12,8 @@
 ```
   v0.4.0-alpha.2  ✅ shipped 2026-04-17  Agent Card + 8 message schemas + enforcement
   v0.4.0-beta.1   ✅ shipped 2026-04-17  MCP send migrated to v1 "send" type
-  v0.4.0          🟡 in flight           finish legacy producer migration + error taxonomy + OpenAPI
+  v0.4.0          ✅ shipped 2026-04-17  all legacy producers → v1 + strict enforcement (SOS-4004)
+  v0.4.0.x        🟡 deferred            error-taxonomy completion + OpenAPI generation (shaped but not filed)
   v0.4.1  Provider Matrix    — LLM routing independence, closes OpenClaw-risk class
   v0.4.2  Observability      — external watchdog on 2nd VPS (CF Worker path dropped per Hadi; Mesh remains available for mesh membership)
   v0.4.3  Dispatcher         — Python on VPS (CF Worker deferred — SOS stays CF-agnostic at kernel layer)
@@ -52,17 +53,22 @@ Every Mumega phase gate is an SOS version gate. This is why v0.4 isn't optional 
 
 ## What each version ships
 
-### v0.4.0 "Contracts" — typed reality (sprint in flight, ~5 weeks remaining)
+### v0.4.0 "Contracts" — typed reality ✅ **shipped 2026-04-17** (commit `0e3afefb`)
 
-**Problem it solves:** Silent schema drift. "Works most of the time" fields. The SEC-001 regression class. Flat identity. Free-text errors.
+**Problem it solved:** Silent schema drift. "Works most of the time" fields. The SEC-001 regression class. Flat identity. Free-text errors.
 
-**Deliverables:**
-1. Agent Card v1 JSON Schema + Pydantic + contract tests — **shipped (commit `2c0469c1`, 10/10 tests green)**
-2. Message schema registry (8+ types) with `source` structurally required
-3. OpenAPI 3.1 per service (8 services: squad, mirror, saas, dashboard, bus-gateway, engine, memory, content)
-4. Cross-service contract tests in CI
-5. Error taxonomy (SOS-XXXX codes)
-6. CHANGELOG catch-up + `v0.4.0` tag
+**Delivered:**
+1. ✅ Agent Card v1 JSON Schema + Pydantic + contract tests (commit `2c0469c1`, 10/10)
+2. ✅ Message schema registry — 8 types (announce, send, wake, ask, task_created, task_claimed, task_completed, agent_joined) with `source` structurally required
+3. ✅ Pydantic `BusMessage` base + 8 subclasses + `to_redis_fields()` / `from_redis_fields()` round-trip
+4. ✅ Enforcement module with 4 error codes (SOS-4001/4002/4003/4004)
+5. ✅ All 4 bus producers migrated to v1 (bridge, sos_mcp, sos_mcp_sse, redis_bus)
+6. ✅ 56 contract tests green
+7. ✅ `v0.4.0` tag + CHANGELOG current
+
+**Deferred to v0.4.0.x (not blocking Provider Matrix):**
+- OpenAPI 3.1 per service (8 services) — needed for cross-service contract tests but not runtime correctness
+- Complete SOS-XXXX error taxonomy beyond the 4xxx bus-validation codes already shipped
 
 **Squad:** Haiku executors (sos-schema-author, sos-pydantic-author, sos-openapi-author, sos-contract-tester) + Opus advisor (Athena) at commit gates. Sprint budget ~$3.
 
