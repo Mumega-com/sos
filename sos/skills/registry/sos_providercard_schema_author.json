@@ -1,0 +1,93 @@
+{
+  "schema_version": "1",
+  "id": "sos-providercard-schema-author-v1",
+  "name": "ProviderCard v1 JSON Schema + contract tests",
+  "version": "1.0.0",
+  "description": "Writes sos/contracts/schemas/provider_card_v1.json matching the existing Pydantic ProviderCard in sos/providers/matrix.py. Adds roundtrip contract tests verifying schema \u2194 Pydantic parity. Completes the contracts set for the provider routing layer.",
+  "tags": [
+    "sos",
+    "contracts",
+    "providers",
+    "schema",
+    "internal"
+  ],
+  "author_agent": "agent:sos-dev",
+  "authored_by_ai": true,
+  "created_at": "2026-04-18T09:01:00Z",
+  "updated_at": "2026-04-18T09:01:00Z",
+  "lineage": [],
+  "earnings": {
+    "total_invocations": 0,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "invocations_by_tenant": {}
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "pydantic_source": {
+        "type": "string",
+        "default": "sos/providers/matrix.py"
+      },
+      "schema_target": {
+        "type": "string",
+        "default": "sos/contracts/schemas/provider_card_v1.json"
+      },
+      "test_target": {
+        "type": "string",
+        "default": "tests/contracts/test_provider_card_v1.py"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "tests_passing": {
+        "type": "integer"
+      },
+      "schema_file": {
+        "type": "string"
+      }
+    }
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.7,
+      "operator": 0.2,
+      "network": 0.1
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-providercard-schema-author.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ],
+    "version_target": "v0.4.1"
+  }
+}
