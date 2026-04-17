@@ -74,7 +74,7 @@ The agent runtime is commoditized. The coordination + marketplace + earnings lay
 
 | # | Item | Depends on | Notes |
 |---|------|------------|-------|
-| P2.1 | **AI-to-AI commerce proof** — one TROP squad buys a skill from a GAF squad, executes it against a real customer request, settles in $MIND, full UsageLog trace, Dashboard flow map shows it live | P1.1, P1.4 | Demo video material. Nobody else has shipped this. Marketing gold. |
+| P2.1 | **AI-to-AI commerce proof** — a GAF squad purchases a skill from a DNU squad (or reverse), executes it against a real customer request, settles in $MIND between the two squad wallets, full UsageLog trace, Dashboard flow map shows it live. TROP is a **customer** of Mumega squads — it consumes, doesn't sell; so TROP isn't one side of this transaction. Cross-squad, cross-tenant commerce between Mumega-operated squads is the demo. | P1.1, P1.4 | Demo video material. Nobody else has shipped this. Marketing gold. |
 | P2.2 | **SR&ED vertical depth sprint** — pick SR&ED (GAF has 6 live clients, Hossein in loop, Digid's own unfiled claim = dogfood). Deepen the squad coverage to where horizontal LangGraph can't replicate. | — | The dogfood angle is the credibility. Beta 2 reactivation wave. |
 | P2.3 | **Dashboard Phase 2** — Money pulse + Skill-moat panel (earnings per skill, cross-tenant reuse, AI-to-AI transaction count) | P1.1, P1.4 | Moat metrics visible first in any customer/investor conversation |
 
