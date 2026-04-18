@@ -2,6 +2,52 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.8] - 2026-04-18 — Repo hygiene
+
+Pure `git mv` + path updates. Zero behavior change. `lint-imports`:
+**4 kept, 0 broken.** Package tree separated from data + docs +
+ops utilities before the v0.4.6 / v0.4.7 / v0.5.0 refactors.
+
+### Moves
+
+- **Marketing data out of the package.** `sos/squads/marketing/`
+  (Remotion video pipeline, 532MB of assets, skill-graph docs) →
+  `data/squads/marketing/`. `sos/squads/trop/` stays — it's still
+  a live Python module imported as `sos.squads.trop`. Refs in
+  `setup.sh`, `CHANGELOG.md`, `.mkt-lead-claude.md` updated.
+- **Top-level docs to `docs/`.** Moved 7 files: `AGENT_TEMPLATE`,
+  `ARCHITECTURE`, `PORTING_GEMINI_V1`, `SOVEREIGN_MEMORY`, `TASKS`,
+  `TECH-RADAR`, `WHITEPAPER`. Root keeps tool-expected files
+  (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `README.md`).
+- **Root utilities to `scripts/`.** `create_agent.py`,
+  `organ_daemon.py` — doc refs in `organs/README.md` and
+  `docs/AGENT_TEMPLATE.md` updated.
+- **Agent-seed scripts to `sos/agents/seeds/`.** `bootstrap_river`,
+  `onboard_athena`, `onboard_claude_final`, `kasra_onboard`.
+- **Dispatcher archive to `.archive/`.** `sos/services/dispatcher.archive/`
+  → `.archive/sos-services-dispatcher/`. Keeps `sos/services/`
+  siblings list to live services only.
+- **Examples dir.** `scripts/demo_ai_to_ai_commerce.py` →
+  `examples/demo_ai_to_ai_commerce.py`.
+
+### Hygiene
+
+- **Deprecation banners** on `sos/deprecated/redis_bus.py` and
+  `sos/deprecated/sos_mcp.py` (top of file, above module docstring).
+  No live imports — R5 stays KEPT.
+- **`.gitignore`** adds `graphify-out/`, `graphify-out-*/`,
+  `.wrangler/`, `.remember/`, `.code-review-graph/`.
+
+### Acceptance
+
+- `sos/squads/trop` still imports cleanly (`python3 -c 'import sos.squads.trop'`)
+- `lint-imports` 4 kept, 0 broken
+- Pre-existing failures unrelated to moves (missing `base58` dep,
+  schema-count drift test) — none introduced by this sprint
+
+---
+
 ## [0.4.5] - 2026-04-18 — P0 decoupling sweep
 
 Closes every P0 R1 violation tracked by `pyproject.toml` import-linter
