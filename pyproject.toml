@@ -229,4 +229,5 @@ ignore_imports = [
   "sos.services.memory.** -> sos.services.bus.**",
   "sos.services.integrations.** -> sos.services.bus.**",
   "sos.services.registry.** -> sos.services.bus.**",
+  "sos.services.operations.** -> sos.services.bus.**",
 ]
