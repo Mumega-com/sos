@@ -137,15 +137,19 @@ async def test_brain_e2e_score_dispatch_dashboard(
     )
 
     # ------------------------------------------------------------------
-    # 2. Monkeypatch registry_read_all to return hermes-test
+    # 2. Mock AsyncRegistryClient.list_agents to return hermes-test
+    # (P0-09 — Brain reaches the registry over HTTP; no real service needed)
     # ------------------------------------------------------------------
     hermes = AgentIdentity(name="hermes-test")
     hermes.capabilities.extend(["wordpress", "media"])
 
+    async def _list_agents():
+        return [hermes]
+
     monkeypatch.setattr(
-        brain_service_module,
-        "registry_read_all",
-        lambda: [hermes],
+        brain_service_module._registry_client,
+        "list_agents",
+        _list_agents,
     )
 
     # ------------------------------------------------------------------
