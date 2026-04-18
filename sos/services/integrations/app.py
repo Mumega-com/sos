@@ -96,6 +96,40 @@ def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) ->
             )
 
 
+async def _emit_integrations_deny(
+    *,
+    action: str,
+    target: str,
+    reason: str,
+    tenant: str,
+) -> None:
+    """Audit a pre-gate rejection so it hits the unified spine.
+
+    Integrations bails with 401 on missing bearer *before* ``can_execute``
+    runs — without an anonymous bearer the gate would silently fall through
+    to allow. This helper closes that audit gap, mirroring the v0.5.6.1
+    identity fix. Never raises.
+    """
+    try:
+        from sos.contracts.audit import AuditDecision, AuditEventKind
+        from sos.kernel.audit import append_event, new_event
+
+        await append_event(
+            new_event(
+                agent="anonymous",
+                tenant=tenant,
+                kind=AuditEventKind.POLICY_DECISION,
+                action=action,
+                target=target,
+                decision=AuditDecision.DENY,
+                reason=reason,
+                policy_tier="integrations_pregate",
+            )
+        )
+    except Exception:
+        pass
+
+
 class GhlCallbackRequest(BaseModel):
     code: str
 
@@ -127,6 +161,12 @@ async def get_oauth_credentials(
     owner of that class, so the boundary rule does not apply.
     """
     if not authorization:
+        await _emit_integrations_deny(
+            action="oauth_credentials_read",
+            target=f"{tenant}/{provider}",
+            reason="missing bearer token",
+            tenant=tenant,
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     decision = await can_execute(
@@ -164,6 +204,12 @@ async def post_ghl_callback(
     the stored credentials dict.
     """
     if not authorization:
+        await _emit_integrations_deny(
+            action="oauth_ghl_callback",
+            target=tenant,
+            reason="missing bearer token",
+            tenant=tenant,
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     decision = await can_execute(
@@ -192,6 +238,12 @@ async def post_google_callback(
     ``service`` must be one of analytics, search_console, ads.
     """
     if not authorization:
+        await _emit_integrations_deny(
+            action="oauth_google_callback",
+            target=f"{tenant}/{req.service}",
+            reason="missing bearer token",
+            tenant=tenant,
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     if req.service not in _GOOGLE_SERVICES:
