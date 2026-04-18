@@ -22,76 +22,20 @@ from sos.observability.logging import get_logger
 log = get_logger("identity_core")
 
 class IdentityCore:
+    """Identity service persistence layer (SQLite).
+
+    Schema is owned by Alembic — run ``scripts/migrate-db.sh identity``
+    (or ``alembic -c sos/services/identity/alembic.ini upgrade head``)
+    before first use. Baseline revision lives at
+    ``sos/services/identity/alembic/versions/0001_initial.py``.
+    """
+
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
+        self.config.paths.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.config.paths.data_dir / "identity.db"
         self.bus = get_bus()
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize SQLite schema."""
-        self.config.paths.data_dir.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            # Users Table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    bio TEXT,
-                    avatar_url TEXT,
-                    level INTEGER DEFAULT 1,
-                    xp INTEGER DEFAULT 0,
-                    metadata TEXT,
-                    created_at TEXT
-                )
-            """)
-            # Guilds Table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS guilds (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    owner_id TEXT,
-                    description TEXT,
-                    metadata TEXT,
-                    created_at TEXT
-                )
-            """)
-            # Memberships Table (Many-to-Many)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS memberships (
-                    guild_id TEXT,
-                    user_id TEXT,
-                    role TEXT,
-                    joined_at TEXT,
-                    PRIMARY KEY (guild_id, user_id)
-                )
-            """)
-            # Pairing Requests Table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pairings (
-                    code TEXT PRIMARY KEY,
-                    channel TEXT,
-                    sender_id TEXT,
-                    agent_id TEXT,
-                    issued_at TEXT,
-                    expires_at TEXT,
-                    status TEXT,
-                    approved_by TEXT,
-                    approved_at TEXT
-                )
-            """)
-            # Allowlist Table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS allowlists (
-                    channel TEXT,
-                    sender_id TEXT,
-                    agent_id TEXT,
-                    added_at TEXT,
-                    added_by TEXT,
-                    PRIMARY KEY (channel, sender_id, agent_id)
-                )
-            """)
-            log.info(f"Identity DB initialized at {self.db_path}")
+        log.info(f"Identity DB at {self.db_path}")
 
     # --- USER PROFILE OPERATIONS ---
 

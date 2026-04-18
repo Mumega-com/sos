@@ -46,185 +46,22 @@ def _loads(value: str | None, fallback: Any) -> Any:
 
 
 class SquadDB:
+    """Thin SQLite wrapper for the Squad service.
+
+    Schema is owned by Alembic — run ``scripts/migrate-db.sh squad``
+    (or ``alembic -c sos/services/squad/alembic.ini upgrade head``)
+    before first use. This class no longer runs DDL at init time;
+    see ``sos/services/squad/alembic/versions/0001_initial.py``.
+    """
+
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
-
-    def _init_db(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS squads (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    name TEXT NOT NULL,
-                    project TEXT NOT NULL,
-                    objective TEXT NOT NULL,
-                    tier TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    roles_json TEXT NOT NULL,
-                    members_json TEXT NOT NULL,
-                    kpis_json TEXT NOT NULL,
-                    budget_cents_monthly INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS squad_tasks (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    squad_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    priority TEXT NOT NULL,
-                    assignee TEXT,
-                    skill_id TEXT,
-                    project TEXT NOT NULL,
-                    labels_json TEXT NOT NULL,
-                    blocked_by_json TEXT NOT NULL,
-                    blocks_json TEXT NOT NULL,
-                    inputs_json TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    token_budget INTEGER NOT NULL,
-                    bounty_json TEXT NOT NULL,
-                    external_ref TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    completed_at TEXT,
-                    claimed_at TEXT,
-                    attempt INTEGER NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_squad_tasks_squad_status
-                    ON squad_tasks (squad_id, status);
-
-                CREATE TABLE IF NOT EXISTS squad_skills (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    labels_json TEXT NOT NULL,
-                    keywords_json TEXT NOT NULL,
-                    entrypoint TEXT NOT NULL,
-                    required_inputs_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    fuel_grade TEXT NOT NULL,
-                    version TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS squad_state (
-                    squad_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    project TEXT NOT NULL,
-                    data_json TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS squad_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    squad_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    actor TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    timestamp TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_squad_events_squad_timestamp
-                    ON squad_events (squad_id, timestamp DESC);
-
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    token_hash TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL,
-                    identity_type TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
-            # --- Living Graph: wallet, goals, conductance ---
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS squad_wallets (
-                    squad_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    balance_cents INTEGER NOT NULL DEFAULT 0,
-                    total_earned_cents INTEGER NOT NULL DEFAULT 0,
-                    total_spent_cents INTEGER NOT NULL DEFAULT 0,
-                    fuel_budget_json TEXT NOT NULL DEFAULT '{}',
-                    updated_at TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE TABLE IF NOT EXISTS squad_transactions (
-                    id TEXT PRIMARY KEY,
-                    squad_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    type TEXT NOT NULL CHECK (type IN ('earn', 'spend', 'transfer', 'mint')),
-                    amount_cents INTEGER NOT NULL,
-                    counterparty TEXT DEFAULT 'system',
-                    reason TEXT NOT NULL,
-                    task_id TEXT,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_squad_transactions_squad
-                    ON squad_transactions (squad_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS squad_goals (
-                    id TEXT PRIMARY KEY,
-                    squad_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    target TEXT NOT NULL,
-                    markers_json TEXT NOT NULL DEFAULT '[]',
-                    coherence_threshold REAL NOT NULL DEFAULT 0.6,
-                    deadline TEXT,
-                    status TEXT NOT NULL DEFAULT 'active'
-                        CHECK (status IN ('active', 'achieved', 'abandoned')),
-                    progress REAL NOT NULL DEFAULT 0.0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_squad_goals_squad
-                    ON squad_goals (squad_id, status);
-                """
-            )
-            # Squad profile columns (16D DNA + conductance)
-            self._ensure_column(conn, "squads", "dna_vector", "TEXT DEFAULT '[]'")
-            self._ensure_column(conn, "squads", "coherence", "REAL DEFAULT 0.5")
-            self._ensure_column(conn, "squads", "receptivity", "REAL DEFAULT 0.5")
-            self._ensure_column(conn, "squads", "conductance_json", "TEXT DEFAULT '{}'")
-
-            self._ensure_column(conn, "squads", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column(conn, "squad_tasks", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column(conn, "squad_skills", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column(conn, "squad_state", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column(conn, "squad_events", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            conn.executescript(
-                """
-                CREATE INDEX IF NOT EXISTS idx_squads_tenant
-                    ON squads (tenant_id, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_squad_tasks_tenant
-                    ON squad_tasks (tenant_id, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_squad_skills_tenant
-                    ON squad_skills (tenant_id, name ASC);
-                CREATE INDEX IF NOT EXISTS idx_squad_state_tenant
-                    ON squad_state (tenant_id, updated_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_squad_events_tenant
-                    ON squad_events (tenant_id, timestamp DESC);
-                """
-            )
-
-    @staticmethod
-    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 class SquadBus:

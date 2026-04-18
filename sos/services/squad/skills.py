@@ -101,32 +101,17 @@ def _validate_payload(schema: dict[str, Any], payload: dict[str, Any], phase: st
 
 
 class SquadSkillService:
+    """Skill registry on top of ``squad_skills``.
+
+    Schema is owned by Alembic — the full column set (including
+    ``input_schema_json`` / ``output_schema_json`` / ``trust_tier`` /
+    ``loading_level`` / ``skill_dir`` / ``deprecated_at``) is created
+    by the Squad service's baseline revision. Run migrations first.
+    """
+
     def __init__(self, db: SquadDB | None = None, bus: SquadBus | None = None):
         self.db = db or SquadDB()
         self.bus = bus or SquadBus()
-        self._ensure_schema()
-
-    def _ensure_schema(self) -> None:
-        columns = {
-            "input_schema_json": ("TEXT", "'{}'"),
-            "output_schema_json": ("TEXT", "'{}'"),
-            "trust_tier": ("INTEGER", "4"),
-            "loading_level": ("INTEGER", "2"),
-            "skill_dir": ("TEXT", "''"),
-            "deprecated_at": ("TEXT", "NULL"),
-        }
-        with self.db.connect() as conn:
-            existing = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(squad_skills)").fetchall()
-            }
-            for column, (column_type, default) in columns.items():
-                if column in existing:
-                    continue
-                if default == "NULL":
-                    conn.execute(f"ALTER TABLE squad_skills ADD COLUMN {column} {column_type}")
-                else:
-                    conn.execute(f"ALTER TABLE squad_skills ADD COLUMN {column} {column_type} DEFAULT {default}")
 
     def register(
         self,

@@ -77,73 +77,21 @@ def _run_step(cmd: str, cwd: Path, timeout: int = STEP_TIMEOUT) -> tuple[int, st
 
 
 class _PipelineDB:
+    """Thin SQLite wrapper for the pipeline tables.
+
+    Schema is owned by Alembic — the ``pipeline_specs`` and
+    ``pipeline_runs`` tables are created by the Squad service's
+    baseline revision (``0001_initial``). Run migrations before use.
+    """
+
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
-
-    def _init_db(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS pipeline_specs (
-                    squad_id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    repo TEXT NOT NULL,
-                    workdir TEXT NOT NULL,
-                    default_branch TEXT NOT NULL,
-                    feature_branch_prefix TEXT NOT NULL,
-                    pr_mode TEXT NOT NULL,
-                    build_cmd TEXT NOT NULL,
-                    test_cmd TEXT NOT NULL,
-                    deploy_cmd TEXT NOT NULL,
-                    smoke_cmd TEXT NOT NULL,
-                    deploy_mode TEXT NOT NULL,
-                    deploy_on_task_labels TEXT NOT NULL,
-                    rollback_cmd TEXT NOT NULL,
-                    enabled INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS pipeline_runs (
-                    id TEXT PRIMARY KEY,
-                    tenant_id TEXT NOT NULL DEFAULT 'default',
-                    squad_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    commit_sha TEXT NOT NULL,
-                    branch TEXT NOT NULL,
-                    pr_url TEXT NOT NULL,
-                    logs TEXT NOT NULL,
-                    error TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_pipeline_runs_squad
-                    ON pipeline_runs (squad_id, created_at DESC);
-                """
-            )
-            self._ensure_column(conn, "pipeline_specs", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column(conn, "pipeline_runs", "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
-            conn.executescript(
-                """
-                CREATE INDEX IF NOT EXISTS idx_pipeline_specs_tenant
-                    ON pipeline_specs (tenant_id, squad_id);
-                CREATE INDEX IF NOT EXISTS idx_pipeline_runs_tenant
-                    ON pipeline_runs (tenant_id, squad_id, created_at DESC);
-                """
-            )
-
-    @staticmethod
-    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def _row_to_spec(row: sqlite3.Row) -> PipelineSpec:

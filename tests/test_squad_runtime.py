@@ -14,6 +14,23 @@ def test_squad_dataclass_living_graph_defaults():
     assert squad.conductance == {}
 
 
+def _apply_squad_migrations(db_path) -> None:
+    """Run the Squad service's Alembic migrations against db_path.
+
+    The service no longer creates tables at import time (v0.6.0 Step 2.2);
+    tests must run migrations explicitly like production will.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(repo_root / "sos" / "services" / "squad" / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    command.upgrade(cfg, "head")
+
+
 def test_squad_db_initializes_living_graph_schema(tmp_path, monkeypatch):
     from sos.services.squad import service as squad_service
 
@@ -26,7 +43,9 @@ def test_squad_db_initializes_living_graph_schema(tmp_path, monkeypatch):
 
     monkeypatch.setattr(squad_service.redis, "Redis", lambda **kwargs: _RedisStub())
 
-    db = squad_service.SquadDB(tmp_path / "squads.db")
+    db_path = tmp_path / "squads.db"
+    _apply_squad_migrations(db_path)
+    db = squad_service.SquadDB(db_path)
 
     with db.connect() as conn:
         tables = {
