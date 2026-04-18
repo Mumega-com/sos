@@ -1,13 +1,25 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+import os
+from dataclasses import fields as _dc_fields
+from typing import Any, Dict, List, Optional
 
 from sos.clients.base import BaseHTTPClient
+from sos.contracts.economy import UsageEvent
 
 
 class EconomyClient(BaseHTTPClient):
-    def __init__(self, base_url: str = "http://localhost:6062", **kwargs):
-        super().__init__(base_url, **kwargs)
+    def __init__(
+        self,
+        base_url: str = "http://localhost:6062",
+        token: Optional[str] = None,
+        **kwargs,
+    ):
+        headers = kwargs.pop("headers", None) or {}
+        token = token or os.environ.get("SOS_ECONOMY_TOKEN") or os.environ.get("SOS_SYSTEM_TOKEN")
+        if token:
+            headers.setdefault("Authorization", f"Bearer {token}")
+        super().__init__(base_url, headers=headers, **kwargs)
 
     def health(self) -> Dict[str, Any]:
         return self._request("GET", "/health").json()
@@ -30,3 +42,20 @@ class EconomyClient(BaseHTTPClient):
         """
         payload = {"metadata_uri": metadata_uri}
         return self._request("POST", "/mint_proof", json=payload).json()
+
+    def list_usage(self, tenant: Optional[str] = None, limit: int = 100) -> List[UsageEvent]:
+        """Read usage events from economy.
+
+        Returns typed ``UsageEvent`` instances — the dashboard's money/tenants
+        routes walk attribute access (e.cost_micros, e.metadata, etc.), so we
+        deserialize at the client boundary rather than forcing callers to
+        convert dicts.
+        """
+        from urllib.parse import urlencode
+        query = {"limit": str(limit)}
+        if tenant is not None:
+            query["tenant"] = tenant
+        resp = self._request("GET", f"/usage?{urlencode(query)}")
+        data = resp.json()
+        known = {f.name for f in _dc_fields(UsageEvent)}
+        return [UsageEvent(**{k: v for k, v in ev.items() if k in known}) for ev in data.get("events", [])]

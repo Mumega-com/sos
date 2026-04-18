@@ -225,11 +225,6 @@ ignore_imports = [
   "sos.services.feedback.** -> sos.services.health.**",
   # P0-11 journeys.tracker → health.calcifer
   "sos.services.journeys.** -> sos.services.health.**",
-  # P0-12 dashboard → economy + registry (economy.usage_log already P0-12;
-  # registry read is same theme — dashboard reading state from peer)
-  "sos.services.dashboard.** -> sos.services.economy.**",
-  "sos.services.dashboard.** -> sos.services.registry",
-  "sos.services.dashboard.** -> sos.services.registry.**",
   # P1-10 theme: services.bus.discovery is shared infra pending kernel move
   "sos.services.engine.** -> sos.services.bus.**",
   "sos.services.memory.** -> sos.services.bus.**",

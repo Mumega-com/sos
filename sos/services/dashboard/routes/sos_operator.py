@@ -359,11 +359,13 @@ async def sos_agents(request: Request) -> Response:
     now_str = datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
     cutoff = datetime.now(timezone.utc).timestamp() - 300
 
-    from sos.services import registry as agent_registry
+    from sos.clients.registry import RegistryClient
+    import os
 
     agents: list[dict[str, Any]] = []
     try:
-        idents = agent_registry.read_all()
+        client = RegistryClient(base_url=os.environ.get("SOS_REGISTRY_URL", "http://localhost:6067"))
+        idents = client.list_agents()
         for ident in idents:
             ls = ident.metadata.get("last_seen", "")
             rel_time = _relative_time(ls)
@@ -533,9 +535,10 @@ async def sos_money(request: Request) -> Response:
 
     # --- Load all events ---
     try:
-        from sos.services.economy.usage_log import UsageLog
-        ul = UsageLog()
-        all_events = ul.read_all()
+        from sos.clients.economy import EconomyClient
+        import os
+        client = EconomyClient(base_url=os.environ.get("SOS_ECONOMY_URL", "http://localhost:6062"))
+        all_events = client.list_usage(limit=1000)
     except Exception:
         all_events = []
 

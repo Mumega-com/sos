@@ -17,13 +17,16 @@ logger = logging.getLogger("dashboard")
 def _agent_status(project: str | None) -> dict[str, Any]:
     """Return agent summary sourced from AgentIdentity objects via the registry API.
 
-    All reads go through sos.services.registry so the shape is always typed.
+    Reads go through sos.clients.registry (HTTP client) so the dashboard stays
+    on the clients→kernel/contracts side of the R2 boundary.
     The returned dict is backward-compatible: {agents: [{name, status, last_seen}], online}.
     """
     try:
-        from sos.services import registry as agent_registry
+        from sos.clients.registry import RegistryClient
+        import os
 
-        idents = agent_registry.read_all(project)
+        client = RegistryClient(base_url=os.environ.get("SOS_REGISTRY_URL", "http://localhost:6067"))
+        idents = client.list_agents(project=project)
         agents = []
         for ident in idents:
             agents.append({
@@ -166,11 +169,12 @@ def _tenant_skills_and_usage(project: str | None) -> dict[str, Any]:
     except Exception:
         logger.debug("Registry read failed", exc_info=True)
 
-    # UsageLog — tenant-scoped
+    # UsageLog — tenant-scoped (via economy HTTP client)
     try:
-        from sos.services.economy.usage_log import UsageLog
-        log = UsageLog()
-        events = log.read_all(tenant=project, limit=10)
+        from sos.clients.economy import EconomyClient
+        import os
+        client = EconomyClient(base_url=os.environ.get("SOS_ECONOMY_URL", "http://localhost:6062"))
+        events = client.list_usage(tenant=project, limit=10)
         for e in events[::-1]:  # newest first
             out["recent_usage"].append({
                 "occurred_at": e.occurred_at,
