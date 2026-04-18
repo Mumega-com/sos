@@ -2,6 +2,50 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.7.1] - 2026-04-18 — /sos/traces HTML UI
+
+**Release theme: "Read one trace without `jq`."**
+
+Adds operator-facing HTML renders over the existing `/sos/traces` JSON
+contract. The v0.6.0 trace index already groups audit events by
+`trace_id`; v0.7.1 gives it eyes. Same auth + 4xx semantics, same disk
+sink is authoritative, no new surface beyond two HTML routes.
+
+### Added
+
+- `GET /sos/traces/html` — index view rendering the aggregated trace
+  summary as a dark-themed dashboard. Summary cards (total traces,
+  events, tenants, agents), sortable-by-time table, kind pills
+  coloured by `AuditEventKind`. Each row's trace_id links to the
+  detail page.
+- `GET /sos/traces/{trace_id}/html` — per-trace detail view rendering
+  events in chronological order. One row per event with
+  timestamp / kind pill / agent+tenant / action / target / decision /
+  cost / payload. Sanitised `inputs` / `outputs` / `metadata` appear as
+  collapsible `<details>` blocks.
+- `sos/services/dashboard/templates/traces.py` — inline HTML
+  templates (same pattern as `templates/brain.py` and
+  `templates/login.py`, no Jinja2 dep).
+- Tests: `tests/services/test_dashboard_traces_html.py` — 5 smoke
+  tests covering index content, empty-window fallback, detail render
+  with chronological ordering, 404 on unknown trace, and 401 without
+  bearer on both HTML routes.
+
+### Changed
+
+- `sos/services/dashboard/routes/traces.py` — extracted the
+  aggregation loop into `_build_index(days, limit)` so the JSON and
+  HTML index routes share one implementation. Route registration
+  order: `/sos/traces/html` is declared *before*
+  `/sos/traces/{trace_id}` so `html` isn't captured as a trace id.
+
+### Verified
+
+- 9/9 traces tests green (5 new HTML + 4 existing JSON).
+- `.venv/bin/lint-imports` green (4 contracts kept).
+
+---
+
 ## [0.7.0] - 2026-04-18 — Brain hardening: ProviderMatrix feedback + operator HTML
 
 **Release theme: "Breakers that reflect real traffic, and a dashboard you can actually read."**

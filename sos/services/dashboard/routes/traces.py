@@ -18,18 +18,29 @@ Design notes:
   to group on.
 - ``_audit_dir()`` is re-resolved per request so tests can point
   ``Path.home()`` at a tmp dir.
+
+v0.7.1 adds operator-facing HTML renders: ``GET /sos/traces/html`` for
+the index and ``GET /sos/traces/{trace_id}/html`` for per-trace detail.
+Auth + 4xx semantics match the JSON routes. The HTML index route is
+registered before ``GET /sos/traces/{trace_id}`` so ``html`` isn't
+captured as a trace_id.
 """
 from __future__ import annotations
 
+import html as _html
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 from sos.contracts.audit import AuditEvent
 from sos.contracts.traces import TraceDetailResponse, TraceIndexResponse, TraceSummary
 from sos.kernel.auth import verify_bearer
+
+from ..templates.traces import TRACES_DETAIL_HTML, TRACES_INDEX_HTML
 
 router = APIRouter(tags=["traces"])
 
@@ -67,16 +78,8 @@ def _iter_events(days: int) -> Iterable[AuditEvent]:
                 continue
 
 
-@router.get("/sos/traces", response_model=TraceIndexResponse)
-async def list_traces(
-    authorization: str | None = Header(None),
-    days: int = Query(1, ge=1, le=7, description="How many days back to scan"),
-    limit: int = Query(50, ge=1, le=500, description="Max traces in the response"),
-) -> TraceIndexResponse:
-    """Return a summary row per distinct ``trace_id`` in the audit log."""
-    if verify_bearer(authorization) is None:
-        raise HTTPException(status_code=401, detail="unauthorized")
-
+def _build_index(days: int, limit: int) -> list[TraceSummary]:
+    """Shared index builder used by the JSON and HTML routes."""
     by_trace: dict[str, dict] = {}
     for ev in _iter_events(days):
         tid = ev.trace_id
@@ -115,7 +118,132 @@ async def list_traces(
         for tid, bucket in by_trace.items()
     ]
     summaries.sort(key=lambda s: s.last_ts, reverse=True)
-    return TraceIndexResponse(traces=summaries[:limit])
+    return summaries[:limit]
+
+
+@router.get("/sos/traces", response_model=TraceIndexResponse)
+async def list_traces(
+    authorization: str | None = Header(None),
+    days: int = Query(1, ge=1, le=7, description="How many days back to scan"),
+    limit: int = Query(50, ge=1, le=500, description="Max traces in the response"),
+) -> TraceIndexResponse:
+    """Return a summary row per distinct ``trace_id`` in the audit log."""
+    if verify_bearer(authorization) is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return TraceIndexResponse(traces=_build_index(days=days, limit=limit))
+
+
+def _render_index_rows(traces: list[TraceSummary]) -> str:
+    if not traces:
+        return '<tr><td colspan="7" class="empty">no traces in window</td></tr>'
+    out: list[str] = []
+    for t in traces:
+        tid_esc = _html.escape(t.trace_id)
+        kinds_pills = " ".join(
+            f'<span class="pill kind-{_html.escape(k)}">{_html.escape(k)} · {v}</span>'
+            for k, v in sorted(t.kinds.items())
+        )
+        out.append(
+            "<tr>"
+            f'<td><code><a href="/sos/traces/{tid_esc}/html">{tid_esc[:12]}…</a></code></td>'
+            f"<td><code>{_html.escape(t.first_ts)}</code></td>"
+            f"<td><code>{_html.escape(t.last_ts)}</code></td>"
+            f"<td>{t.event_count}</td>"
+            f"<td>{_html.escape(', '.join(t.tenants))}</td>"
+            f"<td>{_html.escape(', '.join(t.agents))}</td>"
+            f"<td>{kinds_pills}</td>"
+            "</tr>"
+        )
+    return "".join(out)
+
+
+def _render_event_rows(events: list[AuditEvent]) -> str:
+    if not events:
+        return '<tr><td colspan="9" class="empty">no events</td></tr>'
+    out: list[str] = []
+    for i, ev in enumerate(events, start=1):
+        kind_val = _html.escape(ev.kind.value)
+        decision_val = _html.escape(ev.decision.value)
+        # Slash in "n/a" breaks css class parsing if written raw; keep the
+        # template's ``.decision-n\\/a`` rule consistent by swapping to a
+        # safe class suffix here.
+        decision_class = decision_val.replace("/", "\\/")
+        cost_display = (
+            f"{ev.cost_micros / 1_000_000:.6f} {_html.escape(ev.cost_currency)}"
+            if ev.cost_micros
+            else "—"
+        )
+
+        payload_blocks: list[str] = []
+        for label, blob in (
+            ("inputs", ev.inputs),
+            ("outputs", ev.outputs),
+            ("metadata", ev.metadata),
+        ):
+            if not blob:
+                continue
+            pretty = json.dumps(blob, indent=2, sort_keys=True, default=str)
+            payload_blocks.append(
+                f"<details><summary>{label}</summary>"
+                f"<pre>{_html.escape(pretty)}</pre></details>"
+            )
+        payload_cell = "".join(payload_blocks) or '<span class="empty">—</span>'
+
+        reason_suffix = (
+            f" <span class=\"empty\">({_html.escape(ev.reason)})</span>"
+            if ev.reason
+            else ""
+        )
+
+        out.append(
+            "<tr>"
+            f"<td>{i}</td>"
+            f"<td><code>{_html.escape(ev.timestamp)}</code></td>"
+            f'<td><span class="pill kind-{kind_val}">{kind_val}</span></td>'
+            f"<td>{_html.escape(ev.agent)} / {_html.escape(ev.tenant)}</td>"
+            f"<td><code>{_html.escape(ev.action)}</code></td>"
+            f"<td>{_html.escape(ev.target)}</td>"
+            f'<td class="decision-{decision_class}">{decision_val}{reason_suffix}</td>'
+            f"<td>{cost_display}</td>"
+            f"<td>{payload_cell}</td>"
+            "</tr>"
+        )
+    return "".join(out)
+
+
+@router.get("/sos/traces/html", response_class=HTMLResponse)
+async def list_traces_html(
+    authorization: str | None = Header(None),
+    days: int = Query(1, ge=1, le=7, description="How many days back to scan"),
+    limit: int = Query(50, ge=1, le=500, description="Max traces in the response"),
+) -> HTMLResponse:
+    """Render the trace index as HTML.
+
+    Registered *before* ``/sos/traces/{trace_id}`` so FastAPI doesn't
+    capture ``html`` as a trace id. Auth semantics match the JSON index.
+    """
+    if verify_bearer(authorization) is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # Pull the full index (no limit) so the summary cards reflect totals,
+    # then slice for the rendered table.
+    all_summaries = _build_index(days=days, limit=limit * 20)
+    shown = all_summaries[:limit]
+
+    event_total = sum(t.event_count for t in shown)
+    tenant_total = len({tenant for t in shown for tenant in t.tenants})
+    agent_total = len({agent for t in shown for agent in t.agents})
+
+    body = TRACES_INDEX_HTML.format(
+        days=days,
+        total=len(all_summaries),
+        shown=len(shown),
+        event_total=event_total,
+        tenant_total=tenant_total,
+        agent_total=agent_total,
+        trace_rows=_render_index_rows(shown),
+    )
+    return HTMLResponse(content=body)
 
 
 @router.get("/sos/traces/{trace_id}", response_model=TraceDetailResponse)
@@ -134,3 +262,30 @@ async def get_trace(
 
     matching.sort(key=lambda e: e.timestamp)
     return TraceDetailResponse(trace_id=trace_id, events=matching)
+
+
+@router.get("/sos/traces/{trace_id}/html", response_class=HTMLResponse)
+async def get_trace_html(
+    trace_id: str,
+    authorization: str | None = Header(None),
+    days: int = Query(1, ge=1, le=7, description="How many days back to scan"),
+) -> HTMLResponse:
+    """Render one trace's events as HTML, oldest first."""
+    if verify_bearer(authorization) is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    matching = [ev for ev in _iter_events(days) if ev.trace_id == trace_id]
+    if not matching:
+        raise HTTPException(status_code=404, detail="trace not found")
+
+    matching.sort(key=lambda e: e.timestamp)
+
+    body = TRACES_DETAIL_HTML.format(
+        trace_id=_html.escape(trace_id),
+        trace_id_short=_html.escape(trace_id[:12]),
+        event_count=len(matching),
+        first_ts=_html.escape(matching[0].timestamp),
+        last_ts=_html.escape(matching[-1].timestamp),
+        event_rows=_render_event_rows(matching),
+    )
+    return HTMLResponse(content=body)
