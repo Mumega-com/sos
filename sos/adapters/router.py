@@ -1,6 +1,6 @@
 """
 ModelRouter — picks the best adapter for an agent and handles failover.
-Every successful call debits the budget via SovereignWallet.
+Every successful call debits the budget via the Economy service (HTTP).
 """
 from __future__ import annotations
 
@@ -9,20 +9,51 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Type
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
-from sos.adapters.claude_adapter import ClaudeAdapter
-from sos.adapters.gemini_adapter import GeminiAdapter
-from sos.adapters.openai_adapter import OpenAIAdapter
+from sos.clients.economy import EconomyClient
 from sos.observability.logging import get_logger
-from sos.services.economy.wallet import SovereignWallet
 
 log = get_logger("adapter.router")
 
-# Registry of all known providers
-ADAPTER_REGISTRY: Dict[str, Type[AgentAdapter]] = {
-    "anthropic": ClaudeAdapter,
-    "google": GeminiAdapter,
-    "openai": OpenAIAdapter,
+# Registry of all known providers — lazy so that missing SDKs (anthropic,
+# google-genai, openai) only fail when a provider is actually dispatched to,
+# not at import time. Each entry is (module_path, class_name).
+_ADAPTER_PATHS: Dict[str, tuple[str, str]] = {
+    "anthropic": ("sos.adapters.claude_adapter", "ClaudeAdapter"),
+    "google": ("sos.adapters.gemini_adapter", "GeminiAdapter"),
+    "openai": ("sos.adapters.openai_adapter", "OpenAIAdapter"),
 }
+
+
+def _resolve_adapter_class(provider: str) -> Type[AgentAdapter]:
+    import importlib
+
+    if provider not in _ADAPTER_PATHS:
+        raise ValueError(f"Unknown provider: {provider!r}")
+    module_path, attr = _ADAPTER_PATHS[provider]
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
+
+
+class _AdapterRegistry(dict):
+    """Dict view of adapter classes; resolves lazily via import on lookup."""
+
+    def __getitem__(self, key):  # type: ignore[override]
+        return _resolve_adapter_class(key)
+
+    def get(self, key, default=None):  # type: ignore[override]
+        try:
+            return _resolve_adapter_class(key)
+        except (ValueError, ImportError):
+            return default
+
+    def __contains__(self, key) -> bool:  # type: ignore[override]
+        return key in _ADAPTER_PATHS
+
+    def keys(self):  # type: ignore[override]
+        return _ADAPTER_PATHS.keys()
+
+
+ADAPTER_REGISTRY: Dict[str, Type[AgentAdapter]] = _AdapterRegistry()
 
 # Default model preference per provider
 PROVIDER_DEFAULT_MODELS: Dict[str, str] = {
@@ -60,11 +91,11 @@ class ModelRouter:
     """
     Selects and calls the right adapter for an agent.
     Falls back through the provider list on failure.
-    Records cost via SovereignWallet after each successful call.
+    Records cost via the Economy service HTTP client after each successful call.
     """
 
-    def __init__(self, wallet: Optional[SovereignWallet] = None):
-        self._wallet = wallet or SovereignWallet()
+    def __init__(self, wallet: Optional[EconomyClient] = None):
+        self._wallet = wallet or EconomyClient()
         # Instantiate one adapter per provider (singletons, lazy)
         self._adapters: Dict[str, AgentAdapter] = {}
 
@@ -82,7 +113,7 @@ class ModelRouter:
         usage: UsageInfo,
         agent_id: str,
     ) -> None:
-        """Debit the wallet for the cost of this call."""
+        """Debit the user's economy balance for the cost of this call."""
         ru = _cents_to_ru(usage.cost_cents)
         if ru <= 0:
             return
@@ -91,7 +122,7 @@ class ModelRouter:
             await self._wallet.debit(user_id, ru, reason=reason)
         except Exception as exc:
             # Budget errors are non-fatal — log and continue
-            log.warning(
+            log.warn(
                 "Budget debit failed (non-fatal)",
                 user_id=user_id,
                 ru=ru,
@@ -122,7 +153,7 @@ class ModelRouter:
             try:
                 adapter = self._get_adapter(provider)
             except ValueError as exc:
-                log.warning("Skipping unknown provider", provider=provider, error=str(exc))
+                log.warn("Skipping unknown provider", provider=provider, error=str(exc))
                 last_error = str(exc)
                 continue
 
@@ -175,7 +206,7 @@ class ModelRouter:
                 return result
 
             last_error = result.error
-            log.warning(
+            log.warn(
                 "Provider failed, trying next",
                 provider=provider,
                 error=last_error,
@@ -205,7 +236,7 @@ class ModelRouter:
                 adapter = self._get_adapter(provider)
                 ok = await adapter.health_check()
             except Exception as exc:
-                log.warning("Health check error", provider=provider, error=str(exc))
+                log.warn("Health check error", provider=provider, error=str(exc))
                 ok = False
             return provider, ok
 

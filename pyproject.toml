@@ -153,8 +153,8 @@ ignore_imports = [
   "sos.cli -> sos.services.autonomy.__main__",
   "sos.cli -> sos.services.engine.__main__",
   "sos.cli -> sos.services.memory.__main__",
-  # P1-02 adapters.router
-  "sos.adapters.router -> sos.services.economy.wallet",
+  # P1-02 closed in v0.4.6 Step 2 — adapters.router now calls economy via
+  # sos.clients.economy.EconomyClient (HTTP). Ignore removed.
   # Kernel governance has a lazy import into economy.metabolism for
   # budget enforcement (Gap 7). v0.5 flips to HTTP/contracts.
   "sos.adapters.telegram -> sos.services.economy.metabolism",
