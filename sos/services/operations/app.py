@@ -31,6 +31,7 @@ from sos import __version__
 from sos.contracts.policy import PolicyDecision
 from sos.kernel.health import health_response
 from sos.kernel.policy.gate import can_execute
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
 from sos.services.operations.runner import load_template, run_operation
 
@@ -40,7 +41,10 @@ _START_TIME = time.time()
 
 log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
 
+init_tracing("operations")
+
 app = FastAPI(title="SOS Operations Service", version=__version__)
+instrument_fastapi(app)
 
 app.add_middleware(
     CORSMiddleware,

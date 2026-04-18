@@ -27,6 +27,7 @@ from sos.services.engine.middleware import capability_guard_middleware
 from sos.kernel.bus import get_bus
 from sos.services.engine.openai_router import router as openai_router
 from sos.kernel.health import health_response
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 SERVICE_NAME = "engine"
 _START_TIME = time.time()
@@ -45,7 +46,10 @@ REQUEST_DURATION = metrics.histogram(
     label_names=("service",),
 )
 
+init_tracing("engine")
+
 app = FastAPI(title="SOS Engine Service", version=__version__)
+instrument_fastapi(app)
 
 # CORS for desktop/mobile apps
 app.add_middleware(

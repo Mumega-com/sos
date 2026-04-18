@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from sos import __version__
 from sos.observability.logging import get_logger
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.services.memory.core import MemoryCore
 
 SERVICE_NAME = "memory"
@@ -18,7 +19,10 @@ _START_TIME = time.time()
 
 log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
 
+init_tracing("memory")
+
 app = FastAPI(title="SOS Memory Service", version=__version__)
+instrument_fastapi(app)
 
 # CORS for desktop/mobile apps
 app.add_middleware(

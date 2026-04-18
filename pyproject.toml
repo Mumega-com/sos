@@ -40,6 +40,17 @@ gemini = ["google-genai>=1.0.0"]
 openai = ["openai>=1.0.0"]
 all-llms = ["google-genai>=1.0.0", "openai>=1.0.0"]
 
+# Observability — OTEL SDK + auto-instrumentation. Opt-in so dev installs
+# stay lean; enable in services that export traces (everything in prod).
+telemetry = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "opentelemetry-instrumentation-redis>=0.46b0",
+]
+
 # Storage backends
 cloudflare = ["httpx>=0.24"]
 local = ["chromadb>=0.4", "sentence-transformers>=2.2"]
@@ -57,6 +68,12 @@ full = [
     "solders>=0.18.0",
     "base58>=2.1.1",
     "prometheus-client>=0.17",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "opentelemetry-instrumentation-redis>=0.46b0",
 ]
 
 # Development

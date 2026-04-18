@@ -31,6 +31,7 @@ from sos.contracts.messages import (
     TaskScoredPayload,
 )
 from sos.kernel.trace_context import get_current_trace_id, use_trace_id
+from sos.kernel.telemetry import init_tracing, span_under_current_trace
 from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
 from sos.services.brain.scoring import score_task
 from sos.services.brain.state import BrainState, RoutingDecision
@@ -42,9 +43,15 @@ logger = logging.getLogger("sos.brain")
 # ---------------------------------------------------------------------------
 # The Brain no longer imports the registry service module directly. It reaches
 # the canonical agent registry over HTTP via the Registry service (port 6067).
+from sos.kernel.settings import get_settings as _get_settings
+_brain_settings = _get_settings()
 _registry_client = AsyncRegistryClient(
-    base_url=os.environ.get("SOS_REGISTRY_URL", "http://localhost:6067"),
-    token=os.environ.get("SOS_REGISTRY_TOKEN") or os.environ.get("SOS_SYSTEM_TOKEN"),
+    base_url=_brain_settings.services.registry,
+    token=(
+        _brain_settings.auth.registry_token.get_secret_value()
+        if _brain_settings.auth.registry_token
+        else _brain_settings.auth.system_token_str or None
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -117,12 +124,8 @@ class _LRUSet:
 
 
 def _build_redis_url() -> str:
-    host = os.environ.get("REDIS_HOST", "localhost")
-    port = os.environ.get("REDIS_PORT", "6379")
-    password = os.environ.get("REDIS_PASSWORD", "")
-    if password:
-        return f"redis://:{password}@{host}:{port}"
-    return f"redis://{host}:{port}"
+    from sos.kernel.settings import get_settings as _get_settings
+    return _get_settings().redis.build_url()
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +179,9 @@ class BrainService:
             self._consumer_name,
             self._stream_patterns,
         )
+
+        # OTEL: idempotent, so safe even if init_tracing already ran.
+        init_tracing("brain")
 
         if self._redis is None:
             self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
@@ -262,7 +268,14 @@ class BrainService:
                 # it up without needing it threaded through every signature.
                 trace_id = fields.get("trace_id") or BusMessage.new_trace_id()
                 try:
-                    with use_trace_id(trace_id):
+                    with use_trace_id(trace_id), span_under_current_trace(
+                        f"bus.handle.{stream}",
+                        tracer_name="sos.brain",
+                        attributes={
+                            "sos.stream": stream,
+                            "sos.entry_id": entry_id,
+                        },
+                    ):
                         await self._handle_event(stream, entry_id, fields)
                 except Exception:
                     logger.exception(

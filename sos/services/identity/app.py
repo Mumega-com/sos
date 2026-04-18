@@ -26,9 +26,13 @@ from sos.contracts.identity import UV16D
 from sos.contracts.policy import PolicyDecision
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.policy.gate import can_execute
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.services.identity.core import get_identity_core
 
+init_tracing("identity")
+
 app = FastAPI(title="SOS Identity Service", version="0.1.0")
+instrument_fastapi(app)
 core = get_identity_core()
 
 # Lazy-initialised on first use so ``import sos.services.identity.app`` does

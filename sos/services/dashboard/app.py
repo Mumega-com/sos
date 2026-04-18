@@ -12,10 +12,14 @@ import logging
 from fastapi import FastAPI
 
 from .routes import brain, health, login, customer, sos_operator, marketplace
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 logger = logging.getLogger("dashboard")
 
+init_tracing("dashboard")
+
 app = FastAPI(title="Mumega Dashboard", docs_url=None, redoc_url=None)
+instrument_fastapi(app)
 
 # ---------------------------------------------------------------------------
 # Routers

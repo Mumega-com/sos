@@ -19,10 +19,14 @@ from sos import __version__
 from sos.services.tools.core import ToolsCore
 from sos.contracts.tools import ToolCategory, ToolDefinition, ToolStatus
 from sos.observability.logging import get_logger
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 log = get_logger("tools_app")
 
+init_tracing("tools")
+
 app = FastAPI(title="SOS Tools Service", version=__version__)
+instrument_fastapi(app)
 tools = ToolsCore()
 
 # ============================================================

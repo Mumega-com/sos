@@ -29,13 +29,18 @@ from sos.services.saas.pairing import router as pairing_router
 from sos.services.saas.rate_limiter import check_rate_limit as _check_rate_limit
 from sos.services.saas.registry import TenantRegistry
 from sos.kernel.health import health_response
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 # Configure structured logging
 setup_logging("saas")
+# OTEL tracing: idempotent, no-ops cleanly if packages not installed.
+# Must run before FastAPI/httpx auto-instrumentation attaches.
+init_tracing("saas")
 
 log = logging.getLogger("sos.saas")
 
 app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
+instrument_fastapi(app)
 app.include_router(pairing_router)
 _START_TIME = time.time()
 registry = TenantRegistry()

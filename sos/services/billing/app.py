@@ -16,11 +16,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from sos.kernel.health import health_response
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.services.billing.webhook import stripe_webhook_handler
 
 log = logging.getLogger("sos.billing")
 
+init_tracing("billing")
+
 app = FastAPI(title="Mumega Billing Service", version="0.1.0")
+instrument_fastapi(app)
 _START_TIME = time.time()
 
 

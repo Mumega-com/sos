@@ -21,6 +21,7 @@ from sos import __version__
 from sos.observability.logging import get_logger, clear_context, set_agent_context
 from sos.observability.metrics import MetricsRegistry, render_prometheus
 from sos.observability.tracing import TraceContext, TRACE_ID_HEADER, SPAN_ID_HEADER
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 from sos.services.content.strategy import ContentStrategy, MUMEGA_STRATEGY
 from sos.services.content.calendar import ContentCalendar, ScheduledPost, PostStatus
@@ -39,7 +40,10 @@ REQUEST_COUNT = metrics.counter(
     label_names=("endpoint", "status"),
 )
 
+init_tracing("content")
+
 app = FastAPI(title="SOS Content Service", version=__version__)
+instrument_fastapi(app)
 
 # Initialize services
 _calendar = ContentCalendar()
@@ -105,8 +109,9 @@ async def startup_event():
     from sos.clients.engine import AsyncEngineClient
     from sos.kernel.council import create_council
 
+    from sos.kernel.settings import get_settings as _get_settings
     engine = AsyncEngineClient(
-        base_url=os.environ.get("SOS_ENGINE_URL", "http://localhost:6060")
+        base_url=_get_settings().services.engine
     )
     council = create_council(squad_id="marketing")
     

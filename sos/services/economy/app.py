@@ -16,6 +16,7 @@ from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 from sos.services.economy.settlement import settle_usage_event, SettlementResult
 from sos.kernel.health import health_response
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 SERVICE_NAME = "economy"
 _START_TIME = time.time()
@@ -25,7 +26,10 @@ log = get_logger(SERVICE_NAME, min_level=os.getenv("SOS_LOG_LEVEL", "info"))
 wallet = SovereignWallet()
 _usage_log = UsageLog(wallet=wallet)
 
+init_tracing("economy")
+
 app = FastAPI(title="SOS Economy Service", version=__version__)
+instrument_fastapi(app)
 
 # CORS for desktop/mobile apps
 app.add_middleware(

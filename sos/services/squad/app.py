@@ -34,9 +34,13 @@ from sos.services.squad.auth import AuthContext, create_api_key as _create_api_k
 from sos.services.squad.auth import _lookup_token as _squad_lookup_token
 from sos.services.squad.service import SquadDB
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
+from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
+
+init_tracing("squad")
 
 app = FastAPI(title="SOS Squad Service", version=__version__)
+instrument_fastapi(app)
 
 _START_TIME = time.time()
 
