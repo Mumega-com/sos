@@ -5,7 +5,7 @@
 set -e
 
 SOS_DIR="/home/mumega/SOS"
-SQUAD_DIR="$SOS_DIR/sos/squads/marketing"
+SQUAD_DIR="$SOS_DIR/data/squads/marketing"
 
 echo "=== Setting up Mumega Marketing Squad ==="
 
