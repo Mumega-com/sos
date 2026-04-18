@@ -17,7 +17,7 @@ Public API:
 
 Integration points:
     - Bus: subscribes to `sos:stream:*` for task/agent events
-    - Registry: reads AgentIdentity via sos.services.registry
+    - Registry: reads AgentIdentity over HTTP via sos.clients.registry
     - ProviderMatrix: calls select_provider() to pick runtime backend
     - Physics: uses sos.kernel.physics.CoherencePhysics for the FRC constraint
     - Squad Service: reads task state via HTTP at :8060 (for now; bus-driven

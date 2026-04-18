@@ -219,10 +219,8 @@ ignore_imports = [
   # health + journeys subscribe via their own bus consumers. Ignores removed.
   # P0-07 closed in v0.4.5 wave 4 — autonomy calls identity via
   # sos.clients.identity; UV16D moved to sos.contracts.identity. Ignores removed.
-  # P0-09 brain.service → registry.read_all (top-level registry package)
-  "sos.services.brain.** -> sos.services.registry",
-  "sos.services.brain.** -> sos.services.registry.**",
-  "sos.services.brain.** -> sos.services.saas.**",
+  # P0-09 closed in v0.4.5 wave 5 — brain calls registry via
+  # sos.clients.registry over HTTP. Stale brain→saas ignore removed too.
   # P0-10 feedback.loop → health.calcifer
   "sos.services.feedback.** -> sos.services.health.**",
   # P0-11 journeys.tracker → health.calcifer
@@ -236,4 +234,5 @@ ignore_imports = [
   "sos.services.engine.** -> sos.services.bus.**",
   "sos.services.memory.** -> sos.services.bus.**",
   "sos.services.integrations.** -> sos.services.bus.**",
+  "sos.services.registry.** -> sos.services.bus.**",
 ]

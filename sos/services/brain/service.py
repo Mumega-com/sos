@@ -20,6 +20,7 @@ from typing import Optional
 
 import redis.asyncio as aioredis
 
+from sos.clients.registry import AsyncRegistryClient
 from sos.contracts.brain_snapshot import BrainSnapshot
 from sos.contracts.brain_snapshot import RoutingDecision as SnapshotRoute
 from sos.contracts.messages import (
@@ -31,9 +32,18 @@ from sos.contracts.messages import (
 from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
 from sos.services.brain.scoring import score_task
 from sos.services.brain.state import BrainState, RoutingDecision
-from sos.services.registry import read_all as registry_read_all
 
 logger = logging.getLogger("sos.brain")
+
+# ---------------------------------------------------------------------------
+# Registry HTTP client (P0-09 — Wave 5)
+# ---------------------------------------------------------------------------
+# The Brain no longer imports the registry service module directly. It reaches
+# the canonical agent registry over HTTP via the Registry service (port 6067).
+_registry_client = AsyncRegistryClient(
+    base_url=os.environ.get("SOS_REGISTRY_URL", "http://localhost:6067"),
+    token=os.environ.get("SOS_REGISTRY_TOKEN") or os.environ.get("SOS_SYSTEM_TOKEN"),
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -548,10 +558,10 @@ class BrainService:
         required_skills = self.state.task_skills.get(task_id, [])
 
         try:
-            candidates = await asyncio.to_thread(registry_read_all)
+            candidates = await _registry_client.list_agents()
         except Exception:
             logger.exception(
-                "[brain] registry_read_all failed; re-queueing task_id=%s", task_id
+                "[brain] registry list_agents failed; re-queueing task_id=%s", task_id
             )
             self.state.enqueue(task_id, score)
             return
