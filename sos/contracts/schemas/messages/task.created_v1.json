@@ -45,6 +45,11 @@
       "description": "Globally unique identifier for this message envelope. Used for deduplication and tracing.",
       "format": "uuid"
     },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "payload": {
       "type": "object",
       "description": "Task-specific data describing the newly created task.",

@@ -45,6 +45,11 @@
       "format": "uuid",
       "description": "Globally unique identifier for this message. Used for deduplication and reply threading."
     },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "payload": {
       "type": "object",
       "description": "Message body carrying the human-readable content and its content type.",

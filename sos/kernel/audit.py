@@ -56,7 +56,19 @@ def new_event(
 
     Convenience only — callers could construct the model directly, but
     this keeps id/timestamp generation consistent across writers.
+
+    If ``trace_id`` is not supplied in kwargs, the current value from
+    ``sos.kernel.trace_context.get_current_trace_id()`` is used. This
+    lets bus consumers set the trace-id once per inbound message and
+    have every audit event produced during handling inherit it.
     """
+    if "trace_id" not in kwargs:
+        from sos.kernel.trace_context import get_current_trace_id
+
+        current = get_current_trace_id()
+        if current is not None:
+            kwargs["trace_id"] = current
+
     return AuditEvent(
         id=_make_id(),
         timestamp=_now_iso(),

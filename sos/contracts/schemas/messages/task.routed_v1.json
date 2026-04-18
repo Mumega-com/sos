@@ -39,12 +39,17 @@
     "version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
-      "description": "Schema version of this message. SemVer — major.minor or major.minor.patch."
+      "description": "Schema version of this message. SemVer \u2014 major.minor or major.minor.patch."
     },
     "message_id": {
       "type": "string",
       "format": "uuid",
       "description": "Globally unique identifier for this message instance. UUID v4 recommended."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+      "pattern": "^[0-9a-f]{32}$"
     },
     "payload": {
       "type": "object",

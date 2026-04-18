@@ -71,6 +71,7 @@ def _make_task_created_fields(
     skill_id: str | None = None,
     priority: str = "high",
     title: str = "publish wordpress post",
+    trace_id: str | None = None,
 ) -> dict[str, str]:
     payload: dict[str, object] = {
         "task_id": task_id,
@@ -81,7 +82,7 @@ def _make_task_created_fields(
         payload["labels"] = labels
     if skill_id is not None:
         payload["skill_id"] = skill_id
-    return {
+    fields: dict[str, str] = {
         "type": "task.created",
         "source": "agent:squad",
         "target": "sos:channel:tasks",
@@ -90,6 +91,9 @@ def _make_task_created_fields(
         "message_id": str(uuid.uuid4()),
         "payload": json.dumps(payload),
     }
+    if trace_id is not None:
+        fields["trace_id"] = trace_id
+    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +162,14 @@ async def test_brain_e2e_score_dispatch_dashboard(
     await fake.xadd(_AGENTS_STREAM, _make_agent_joined_fields("hermes-test"))
 
     task_id = "task-wp-e2e-001"
+    # Seed a known trace_id on the inbound envelope so we can verify it
+    # propagates through task.scored + task.routed emissions.
+    inbound_trace_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
     await fake.xadd(
         _TASKS_STREAM,
-        _make_task_created_fields(task_id, labels=["wordpress"]),
+        _make_task_created_fields(
+            task_id, labels=["wordpress"], trace_id=inbound_trace_id
+        ),
     )
 
     # ------------------------------------------------------------------
@@ -201,6 +210,18 @@ async def test_brain_e2e_score_dispatch_dashboard(
     )
     assert routed_payload["routed_to"] == "hermes-test", (
         f"expected routed_to=hermes-test, got {routed_payload['routed_to']!r}"
+    )
+
+    # ------------------------------------------------------------------
+    # 6a. Assert trace_id propagates — inbound envelope → scored → routed
+    # ------------------------------------------------------------------
+    assert scored_entries[0].get("trace_id") == inbound_trace_id, (
+        f"task.scored must carry inbound trace_id {inbound_trace_id!r}, "
+        f"got {scored_entries[0].get('trace_id')!r}"
+    )
+    assert routed_entries[0].get("trace_id") == inbound_trace_id, (
+        f"task.routed must carry inbound trace_id {inbound_trace_id!r}, "
+        f"got {routed_entries[0].get('trace_id')!r}"
     )
 
     # ------------------------------------------------------------------

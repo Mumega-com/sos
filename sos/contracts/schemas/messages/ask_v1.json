@@ -45,6 +45,11 @@
       "description": "Unique identifier for this ask message. The reply message must set reply_to equal to this value.",
       "format": "uuid"
     },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "payload": {
       "type": "object",
       "description": "The body of the ask containing the question and reply routing information.",

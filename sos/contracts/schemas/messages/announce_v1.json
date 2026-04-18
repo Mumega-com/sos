@@ -37,6 +37,11 @@
       "description": "Globally unique identifier for this message instance. Used for deduplication and tracing.",
       "format": "uuid"
     },
+    "trace_id": {
+      "type": "string",
+      "description": "W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "target": {
       "type": "string",
       "description": "Destination address on the bus. Defaults to the global channel when omitted.",

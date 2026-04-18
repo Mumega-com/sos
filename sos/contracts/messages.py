@@ -87,6 +87,11 @@ class BusMessage(BaseModel):
         default=None,
         pattern=r"^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
     )
+    trace_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+        description="W3C Trace Context trace-id (32 hex chars). Optional; minted at ingress when absent.",
+    )
 
     @field_validator("timestamp")
     @classmethod
@@ -101,6 +106,12 @@ class BusMessage(BaseModel):
         """Validate that message_id is a well-formed UUID."""
         _uuid_mod.UUID(v)
         return v
+
+    @staticmethod
+    def new_trace_id() -> str:
+        """Mint a fresh W3C-format trace-id (32 lowercase hex chars)."""
+        import uuid as _uuid
+        return _uuid.uuid4().hex
 
     @staticmethod
     def now_iso() -> str:

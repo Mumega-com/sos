@@ -24,11 +24,13 @@ from sos.clients.registry import AsyncRegistryClient
 from sos.contracts.brain_snapshot import BrainSnapshot
 from sos.contracts.brain_snapshot import RoutingDecision as SnapshotRoute
 from sos.contracts.messages import (
+    BusMessage,
     TaskRoutedMessage,
     TaskRoutedPayload,
     TaskScoredMessage,
     TaskScoredPayload,
 )
+from sos.kernel.trace_context import get_current_trace_id, use_trace_id
 from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
 from sos.services.brain.scoring import score_task
 from sos.services.brain.state import BrainState, RoutingDecision
@@ -255,8 +257,13 @@ class BrainService:
                     continue
 
                 handler_raised = False
+                # Extract inbound trace_id (or mint one) and make it the active
+                # context for the handler — downstream audits and emits pick
+                # it up without needing it threaded through every signature.
+                trace_id = fields.get("trace_id") or BusMessage.new_trace_id()
                 try:
-                    await self._handle_event(stream, entry_id, fields)
+                    with use_trace_id(trace_id):
+                        await self._handle_event(stream, entry_id, fields)
                 except Exception:
                     logger.exception(
                         "Handler failed on stream=%s entry=%s; skipping (fail-open)",
@@ -483,6 +490,7 @@ class BrainService:
                 target="sos:channel:tasks",
                 timestamp=now_iso,
                 message_id=str(uuid.uuid4()),
+                trace_id=get_current_trace_id(),
                 payload=TaskScoredPayload(
                     task_id=task_id,
                     score=score,
@@ -582,6 +590,7 @@ class BrainService:
                 target="sos:channel:tasks",
                 timestamp=now_iso,
                 message_id=str(uuid.uuid4()),
+                trace_id=get_current_trace_id(),
                 payload=TaskRoutedPayload(
                     task_id=task_id,
                     routed_to=selected.name,
