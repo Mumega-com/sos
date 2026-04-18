@@ -2,6 +2,36 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.6.3] - 2026-04-18 — Env hygiene + migration parity contract
+
+**Release theme: "Your venv should be able to run your tests."**
+
+Quality-of-life patch. Fixes the dev environment so a fresh
+`uv sync --extra dev` produces a venv that can actually run the full
+contract suite, and adds a regression contract that catches ORM/DB
+drift at test time instead of migration time.
+
+### Added
+
+- `tests/contracts/test_alembic_orm_parity.py` — 4 invariant tests:
+  for each squad table (`squad_skills`, `pipeline_specs`,
+  `pipeline_runs`), apply `alembic upgrade head` against a fresh
+  SQLite and assert `PRAGMA table_info` equals the ORM's
+  `__table__.columns`. Fourth test guards against re-introducing the
+  six columns dropped in v0.6.2.
+- `alembic>=1.13`, `bcrypt>=4.0`, `jsonschema>=4.0` added to
+  `[project.optional-dependencies.dev]`. They were transitively
+  required by tests + the migration runner but never declared, so a
+  fresh venv collapsed with `ModuleNotFoundError`.
+
+### Verified
+
+- `uv sync --extra dev` clean; `.venv/bin/lint-imports` green
+  (4 contracts kept); `.venv/bin/pytest tests/contracts/ -q` green
+  (436 passed, up from 432 with the 4 new parity tests).
+
+---
+
 ## [0.6.2] - 2026-04-18 — Squad Schema Coherency
 
 **Release theme: "One truth per column."**

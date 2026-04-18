@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mumega"
-version = "0.6.2"
+version = "0.6.3"
 description = "Sovereign Operating System for AI Agents - Multi-model, autonomous, edge-native"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -89,6 +89,13 @@ dev = [
     "mypy>=1.0",
     "import-linter>=2.0",
     "pre-commit>=3.0",
+    # Runtime deps pulled in by contract + service tests. Declared
+    # under [dev] (not top-level) because they're only used by tests
+    # and the alembic migration setup; pure library consumers don't
+    # need them. Without these, a fresh `.venv` can't run pytest.
+    "alembic>=1.13",
+    "bcrypt>=4.0",
+    "jsonschema>=4.0",
 ]
 
 [project.urls]
