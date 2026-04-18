@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -351,14 +351,27 @@ class CreateTaskRequest(BaseModel):
 
 
 @app.post("/tasks/create")
-async def create_task(req: CreateTaskRequest):
+async def create_task(
+    req: CreateTaskRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
     """Create a new task."""
-    task_id = await swarm._create_task(
-        title=req.title,
-        scope=req.scope,
-        parent_objective=req.description,
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        task_id = await swarm._create_task(
+            title=req.title,
+            scope=req.scope,
+            parent_objective=req.description,
+        )
+        return {"task_id": task_id, "status": "pending"}
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=req.owner or None,
+        request_body=req.model_dump(),
+        fn=_do,
     )
-    return {"task_id": task_id, "status": "pending"}
 
 
 @app.get("/tasks/list")

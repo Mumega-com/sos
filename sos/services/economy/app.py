@@ -85,12 +85,25 @@ async def get_balance(user_id: str):
     return BalanceResponse(user_id=user_id, balance=balance)
 
 @app.post("/credit", response_model=BalanceResponse)
-async def credit(req: TransactionRequest):
-    try:
-        new_balance = await wallet.credit(req.user_id, req.amount, req.reason)
-        return BalanceResponse(user_id=req.user_id, balance=new_balance)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+async def credit(
+    req: TransactionRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        try:
+            new_balance = await wallet.credit(req.user_id, req.amount, req.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return BalanceResponse(user_id=req.user_id, balance=new_balance).model_dump()
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=req.user_id,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
 
 class TransmuteRequest(BaseModel):
     user_id: str
@@ -131,14 +144,27 @@ async def mint_proof(req: MintProofRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/debit", response_model=BalanceResponse)
-async def debit(req: TransactionRequest):
-    try:
-        new_balance = await wallet.debit(req.user_id, req.amount, req.reason)
-        return BalanceResponse(user_id=req.user_id, balance=new_balance)
-    except InsufficientFundsError as e:
-        raise HTTPException(status_code=402, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+async def debit(
+    req: TransactionRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        try:
+            new_balance = await wallet.debit(req.user_id, req.amount, req.reason)
+        except InsufficientFundsError as e:
+            raise HTTPException(status_code=402, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return BalanceResponse(user_id=req.user_id, balance=new_balance).model_dump()
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=req.user_id,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
 
 
 # ---------------------------------------------------------------------------

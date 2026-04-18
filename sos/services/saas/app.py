@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -201,14 +201,28 @@ def health():
 
 
 @app.post("/tenants")
-async def create_tenant(req: TenantCreate, _: None = Depends(audited_admin("saas:tenant_create"))):
-    existing = registry.get(req.slug)
-    if existing:
-        raise HTTPException(409, f"Tenant {req.slug} already exists")
-    tenant = registry.create(req)
-    log_admin("tenant.created", tenant=req.slug, details={"plan": req.plan.value if hasattr(req.plan, "value") else str(req.plan)})
-    # TODO: trigger async provisioning (bus token, squad, mirror scope)
-    return tenant.model_dump()
+async def create_tenant(
+    req: TenantCreate,
+    _: None = Depends(audited_admin("saas:tenant_create")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        existing = registry.get(req.slug)
+        if existing:
+            raise HTTPException(409, f"Tenant {req.slug} already exists")
+        tenant = registry.create(req)
+        log_admin("tenant.created", tenant=req.slug, details={"plan": req.plan.value if hasattr(req.plan, "value") else str(req.plan)})
+        # TODO: trigger async provisioning (bus token, squad, mirror scope)
+        return tenant.model_dump()
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=req.slug,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
 
 
 @app.get("/tenants")
@@ -260,42 +274,58 @@ def suspend_tenant(slug: str, _: None = Depends(audited_admin("saas:tenant_suspe
 
 
 @app.post("/tenants/{slug}/seats")
-def create_seat(slug: str, req: CreateSeatRequest, _: None = Depends(audited_admin("saas:seat_create"))):
+async def create_seat(
+    slug: str,
+    req: CreateSeatRequest,
+    _: None = Depends(audited_admin("saas:seat_create")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     """Create a new seat (additional MCP token) for a tenant."""
-    tenant = registry.get(slug)
-    if not tenant:
-        raise HTTPException(404, f"Tenant {slug} not found")
+    from sos.kernel.idempotency import with_idempotency
 
-    # Check seat limits by plan
-    seat_limits = {"starter": 1, "growth": 5, "scale": -1}  # -1 = unlimited
-    plan_key = tenant.plan.value.lower() if hasattr(tenant.plan, "value") else str(tenant.plan).lower()
-    limit = seat_limits.get(plan_key, 1)
+    async def _do() -> dict:
+        tenant = registry.get(slug)
+        if not tenant:
+            raise HTTPException(404, f"Tenant {slug} not found")
 
-    current_seats = _count_seats(slug)
-    if limit != -1 and current_seats >= limit:
-        raise HTTPException(
-            403,
-            f"Plan {plan_key} allows {limit} seat(s). Current: {current_seats}. Upgrade to add more.",
-        )
+        # Check seat limits by plan
+        seat_limits = {"starter": 1, "growth": 5, "scale": -1}  # -1 = unlimited
+        plan_key = tenant.plan.value.lower() if hasattr(tenant.plan, "value") else str(tenant.plan).lower()
+        limit = seat_limits.get(plan_key, 1)
 
-    # Generate new token for this seat
-    token = f"sk-{slug}-{secrets.token_hex(16)}"
-    _register_bus_token_with_label(slug, token, req.label, role=req.role, plan=plan_key)
-    log_admin("seat.created", tenant=slug, details={"label": req.label, "role": req.role})
+        current_seats = _count_seats(slug)
+        if limit != -1 and current_seats >= limit:
+            raise HTTPException(
+                403,
+                f"Plan {plan_key} allows {limit} seat(s). Current: {current_seats}. Upgrade to add more.",
+            )
 
-    mcp_url = f"https://mcp.mumega.com/sse/{token}"
+        # Generate new token for this seat
+        token = f"sk-{slug}-{secrets.token_hex(16)}"
+        _register_bus_token_with_label(slug, token, req.label, role=req.role, plan=plan_key)
+        log_admin("seat.created", tenant=slug, details={"label": req.label, "role": req.role})
 
-    return {
-        "seat": req.label,
-        "token": token,
-        "mcp_url": mcp_url,
-        "connect": {
-            "claude_code": f'claude mcp add mumega --transport sse --url "{mcp_url}"',
-            "claude_desktop": {"mcpServers": {"mumega": {"url": mcp_url}}},
-        },
-        "seats_used": current_seats + 1,
-        "seats_limit": limit if limit != -1 else "unlimited",
-    }
+        mcp_url = f"https://mcp.mumega.com/sse/{token}"
+
+        return {
+            "seat": req.label,
+            "token": token,
+            "mcp_url": mcp_url,
+            "connect": {
+                "claude_code": f'claude mcp add mumega --transport sse --url "{mcp_url}"',
+                "claude_desktop": {"mcpServers": {"mumega": {"url": mcp_url}}},
+            },
+            "seats_used": current_seats + 1,
+            "seats_limit": limit if limit != -1 else "unlimited",
+        }
+
+    body = {"slug": slug, "payload": req.model_dump()}
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=slug,
+        request_body=body,
+        fn=_do,
+    )
 
 
 @app.get("/tenants/{slug}/seats")
@@ -554,76 +584,93 @@ class OnboardRequest(BaseModel):
 
 
 @app.post("/onboard")
-async def onboard_customer(req: OnboardRequest, _: None = Depends(audited_admin("saas:customer_onboard"))):
+async def onboard_customer(
+    req: OnboardRequest,
+    _: None = Depends(audited_admin("saas:customer_onboard")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     """Full onboarding: questionnaire -> tenant -> squad -> build -> live site."""
-    # Generate slug from business name
-    slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
+    from sos.kernel.idempotency import with_idempotency
 
-    # Check if tenant already exists
-    existing = registry.get(slug)
-    if existing:
-        raise HTTPException(409, f"Tenant {slug} already exists")
+    # Derive tenant slug once so idempotency keys tenant-scope correctly.
+    slug_for_idem = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
 
-    # 1. Create tenant in registry
-    plan_map = {
-        "starter": TenantPlan.STARTER,
-        "growth": TenantPlan.GROWTH,
-        "scale": TenantPlan.SCALE,
-    }
-    tenant = registry.create(
-        TenantCreate(
-            slug=slug,
-            label=req.business_name,
-            email=req.email,
-            plan=plan_map.get(req.plan, TenantPlan.STARTER),
-            domain=req.domain,
-            industry=req.industry,
-            services=req.services,
-            primary_color=req.primary_color,
-            tagline=req.tagline,
+    async def _do() -> dict:
+        # Generate slug from business name
+        slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
+
+        # Check if tenant already exists
+        existing = registry.get(slug)
+        if existing:
+            raise HTTPException(409, f"Tenant {slug} already exists")
+
+        # 1. Create tenant in registry
+        plan_map = {
+            "starter": TenantPlan.STARTER,
+            "growth": TenantPlan.GROWTH,
+            "scale": TenantPlan.SCALE,
+        }
+        tenant = registry.create(
+            TenantCreate(
+                slug=slug,
+                label=req.business_name,
+                email=req.email,
+                plan=plan_map.get(req.plan, TenantPlan.STARTER),
+                domain=req.domain,
+                industry=req.industry,
+                services=req.services,
+                primary_color=req.primary_color,
+                tagline=req.tagline,
+            )
         )
+
+        # 2. Create squad for this tenant
+        _create_tenant_squad(slug, req.business_name, req.industry)
+
+        # 3. Generate initial content based on questionnaire
+        initial_pages = _generate_initial_content(slug, req)
+
+        # 4. Trigger build via queue (async, non-blocking)
+        try:
+            build_queue.enqueue(slug, trigger="onboard", priority=5)
+            log.info("Enqueued build for %s (onboard)", slug)
+        except Exception as exc:
+            log.warning("Build enqueue failed for %s (falling back to inline): %s", slug, exc)
+            asyncio.create_task(_safe_build(slug, trigger="onboard"))
+
+        # 5. Activate tenant
+        registry.activate(slug, squad_id=slug, bus_token="pending")
+
+        # 6. Generate initial MCP token and send welcome email
+        initial_token = f"sk-{slug}-{secrets.token_hex(16)}"
+        _register_bus_token(slug, initial_token)
+        mcp_url = f"https://mcp.mumega.com/sse/{initial_token}"
+        site_url = f"https://{tenant.subdomain}"
+        try:
+            from sos.services.saas.email import send_onboard_welcome
+            asyncio.create_task(
+                send_onboard_welcome(req.email, req.business_name, mcp_url, slug, site_url)
+            )
+        except Exception as exc:
+            log.warning("Onboard welcome email task creation failed (non-blocking): %s", exc)
+
+        return {
+            "tenant": tenant.model_dump(),
+            "site_url": f"https://{tenant.subdomain}",
+            "pages_generated": len(initial_pages),
+            "status": "provisioning",
+            "message": (
+                f"Your site is being built at {tenant.subdomain}. "
+                "You'll receive a Telegram notification when it's ready."
+            ),
+        }
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=slug_for_idem,
+        request_body=req.model_dump(),
+        fn=_do,
     )
-
-    # 2. Create squad for this tenant
-    _create_tenant_squad(slug, req.business_name, req.industry)
-
-    # 3. Generate initial content based on questionnaire
-    initial_pages = _generate_initial_content(slug, req)
-
-    # 4. Trigger build via queue (async, non-blocking)
-    try:
-        build_queue.enqueue(slug, trigger="onboard", priority=5)
-        log.info("Enqueued build for %s (onboard)", slug)
-    except Exception as exc:
-        log.warning("Build enqueue failed for %s (falling back to inline): %s", slug, exc)
-        asyncio.create_task(_safe_build(slug, trigger="onboard"))
-
-    # 5. Activate tenant
-    registry.activate(slug, squad_id=slug, bus_token="pending")
-
-    # 6. Generate initial MCP token and send welcome email
-    initial_token = f"sk-{slug}-{secrets.token_hex(16)}"
-    _register_bus_token(slug, initial_token)
-    mcp_url = f"https://mcp.mumega.com/sse/{initial_token}"
-    site_url = f"https://{tenant.subdomain}"
-    try:
-        from sos.services.saas.email import send_onboard_welcome
-        asyncio.create_task(
-            send_onboard_welcome(req.email, req.business_name, mcp_url, slug, site_url)
-        )
-    except Exception as exc:
-        log.warning("Onboard welcome email task creation failed (non-blocking): %s", exc)
-
-    return {
-        "tenant": tenant.model_dump(),
-        "site_url": f"https://{tenant.subdomain}",
-        "pages_generated": len(initial_pages),
-        "status": "provisioning",
-        "message": (
-            f"Your site is being built at {tenant.subdomain}. "
-            "You'll receive a Telegram notification when it's ready."
-        ),
-    }
 
 
 # --- Onboarding helpers ---
@@ -810,9 +857,26 @@ build_queue = BuildQueue()
 
 
 @app.post("/builds/enqueue/{slug}")
-def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0, _: None = Depends(audited_admin("saas:build_enqueue"))):
-    build_queue.enqueue(slug, trigger, priority)
-    return {"queued": True, "queue_length": build_queue.queue_length()}
+async def enqueue_build(
+    slug: str,
+    trigger: str = "manual",
+    priority: int = 0,
+    _: None = Depends(audited_admin("saas:build_enqueue")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        build_queue.enqueue(slug, trigger, priority)
+        return {"queued": True, "queue_length": build_queue.queue_length()}
+
+    body = {"slug": slug, "trigger": trigger, "priority": priority}
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=slug,
+        request_body=body,
+        fn=_do,
+    )
 
 
 @app.get("/builds/status")
@@ -961,8 +1025,28 @@ def _revoke_seat(slug: str, token_id: str) -> None:
 
 
 @app.post("/signup")
-async def signup(req: SignupRequest):
+async def signup(
+    req: SignupRequest,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     """Minimal signup -- get MCP config in 10 seconds."""
+    from sos.kernel.idempotency import with_idempotency
+
+    slug_for_idem = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-")[:32]
+
+    async def _do() -> dict:
+        return await _signup_impl(req)
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=slug_for_idem,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
+
+
+async def _signup_impl(req: SignupRequest) -> dict:
+    """Actual signup body (extracted so idempotency replay can re-enter cleanly)."""
     import secrets
 
     slug = re.sub(r"[^a-z0-9]+", "-", req.name.lower()).strip("-")[:32]
@@ -1324,36 +1408,50 @@ def my_tasks(
 
 
 @app.post("/my/tasks")
-async def create_my_task(req: CreateTaskRequest, tenant_slug: str = Depends(audited_customer("saas:my_task_create"))):
+async def create_my_task(
+    req: CreateTaskRequest,
+    tenant_slug: str = Depends(audited_customer("saas:my_task_create")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     """Create a task for this tenant via the Squad Service."""
-    squad_id = req.squad_id or tenant_slug  # default to tenant's own squad
+    from sos.kernel.idempotency import with_idempotency
 
-    payload = {
-        "id": f"{tenant_slug}-{secrets.token_hex(4)}",
-        "squad_id": squad_id,
-        "title": req.title,
-        "description": req.description,
-        "priority": req.priority,
-        "project": tenant_slug,
-        "status": "backlog",
-        "labels": [],
-    }
+    async def _do() -> dict:
+        squad_id = req.squad_id or tenant_slug  # default to tenant's own squad
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{_SQUAD_SERVICE_URL}/tasks",
-                json=payload,
-                headers=_get_squad_service_header(),
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPStatusError as exc:
-        log.error("Squad Service task creation failed for %s: %s", tenant_slug, exc)
-        raise HTTPException(exc.response.status_code, detail=exc.response.text)
-    except Exception as exc:
-        log.error("Squad Service unreachable for %s: %s", tenant_slug, exc)
-        raise HTTPException(503, detail="Squad Service unavailable")
+        payload = {
+            "id": f"{tenant_slug}-{secrets.token_hex(4)}",
+            "squad_id": squad_id,
+            "title": req.title,
+            "description": req.description,
+            "priority": req.priority,
+            "project": tenant_slug,
+            "status": "backlog",
+            "labels": [],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{_SQUAD_SERVICE_URL}/tasks",
+                    json=payload,
+                    headers=_get_squad_service_header(),
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as exc:
+            log.error("Squad Service task creation failed for %s: %s", tenant_slug, exc)
+            raise HTTPException(exc.response.status_code, detail=exc.response.text)
+        except Exception as exc:
+            log.error("Squad Service unreachable for %s: %s", tenant_slug, exc)
+            raise HTTPException(503, detail="Squad Service unavailable")
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=tenant_slug,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
 
 
 @app.get("/my/squads")

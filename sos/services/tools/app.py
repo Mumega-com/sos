@@ -12,7 +12,7 @@ import json
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from sos import __version__
@@ -83,13 +83,26 @@ async def list_tools_legacy():
 
 
 @app.post("/execute")
-async def execute_tool(req: ToolRequest):
+async def execute_tool(
+    req: ToolRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
     """Execute a tool by name."""
-    try:
-        result = await tools.execute(req.tool_name, req.arguments)
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        try:
+            result = await tools.execute(req.tool_name, req.arguments)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
         return {"status": "success", "output": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=None,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
 
 
 # ============================================================

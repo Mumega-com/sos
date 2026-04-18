@@ -321,9 +321,23 @@ async def delete_squad(
 async def create_task(
     payload: SquadTaskIn,
     auth: AuthContext = Depends(require_capability("tasks", "write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    task = _to_task(payload)
-    return {"task": _json(task), "response": _json(tasks.create(task, tenant_id=auth.tenant_scope or "default"))}
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict[str, Any]:
+        task = _to_task(payload)
+        return {
+            "task": _json(task),
+            "response": _json(tasks.create(task, tenant_id=auth.tenant_scope or "default")),
+        }
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=auth.tenant_scope or "default",
+        request_body=payload.model_dump(),
+        fn=_do,
+    )
 
 
 @app.get("/tasks")
@@ -379,12 +393,24 @@ async def complete_task(
     task_id: str,
     payload: CompleteIn,
     auth: AuthContext = Depends(require_capability("tasks", "write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
-    try:
-        task = tasks.complete(task_id, payload.result, tenant_id=auth.tenant_scope)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="task_not_found")
-    return _json(task)
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict[str, Any]:
+        try:
+            task = tasks.complete(task_id, payload.result, tenant_id=auth.tenant_scope)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="task_not_found")
+        return _json(task)
+
+    body = {"task_id": task_id, "payload": payload.model_dump()}
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=auth.tenant_scope or "default",
+        request_body=body,
+        fn=_do,
+    )
 
 
 @app.post("/tasks/{task_id}/fail")
