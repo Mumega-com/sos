@@ -2,6 +2,81 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.5] - 2026-04-18 — Squad audit (in-dep)
+
+**Release theme: "Squad's capability check joins the spine."**
+
+Squad already does the strongest per-service auth in the codebase: every
+protected route calls `require_capability(resource, operation)` which
+resolves a `sos.kernel.capability.Capability` via bcrypt/sqlite token
+lookup and runs `verify_capability(capability, action, resource)` — a
+signed-capability model richer than the kernel gate's generic pillars.
+What was missing: those decisions never showed up in the unified audit
+log.
+
+v0.5.5 adds audit emission at the only place it belongs — inside
+`require_capability` itself, so **no route decorator changes** and the
+capability enforcement stays exactly where it was.
+
+### Added (`sos/services/squad/auth.py`)
+
+- `_emit_squad_policy(agent, action, target, tenant, allowed, reason)` —
+  async helper around `kernel.audit.append_event` + `new_event` with
+  `policy_tier="squad_capability"`. Wraps the call in try/except so
+  audit hiccups never break a request.
+
+### Modified `require_capability`
+
+The inner `dependency` coroutine now emits one `POLICY_DECISION` event
+on every code path:
+
+- Missing bearer → emit deny (`missing_authorization`), raise 401.
+- Invalid token → emit deny (`invalid_token`), raise 401.
+- System token → emit allow (`system_token`), return auth.
+- Capability denial → emit deny (reason from `verify_capability`), raise 403.
+- Capability allow → emit allow (`capability_ok`), return auth.
+
+`action` on the audit event is formatted as `squad:<resource>_<operation>`
+(e.g. `squad:tasks_write`, `squad:squads_read`). `tenant` is the
+authenticated `tenant_id` on allow (or `"mumega"` for system), `"unknown"`
+on pre-auth denials.
+
+### Routes covered (26)
+
+All callers of `Depends(require_capability(...))` in `sos/services/squad/app.py`
+benefit transparently:
+
+- squads (write/read) — create, list, read, update, delete
+- tasks (write/read) — create, list, read, update, close, reassign
+- skills (register/read/execute) — register, list, execute
+- state (read/write), pipeline (read/write/execute)
+
+### Why not `can_execute()` directly
+
+`can_execute()` accepts a `capability=` kwarg but only activates it under
+`SOS_REQUIRE_CAPABILITIES=1`. Squad's native check is always on and runs
+the signed `verify_capability` logic — stronger than the gate's default.
+Re-routing squad through the gate would either weaken the check (flag
+off) or duplicate it (flag on). The in-dep audit emission gives us full
+observability on the unified spine without touching the enforcement
+semantics.
+
+### Proof
+
+- `pytest tests/test_squad_runtime.py tests/contracts/test_squad_task.py tests/clients/test_squad_client.py`
+  — 70/70 green, no regressions.
+- Zero changes to `sos/services/squad/app.py` — all 26 route decorators
+  unchanged.
+- `verify_capability` still runs at the same call site with the same
+  arguments. Enforcement logic untouched.
+
+### Deferred to v0.5.6
+
+- **v0.5.6** — `sos/services/gateway/bridge.py` (external-agent API keys,
+  independent tenant registry). Same audit-wrapper pattern as saas.
+
+---
+
 ## [0.5.4] - 2026-04-18 — SaaS audit-wrapper
 
 **Release theme: "The audit spine reaches the services the gate cannot."**
