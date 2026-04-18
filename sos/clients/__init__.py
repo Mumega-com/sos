@@ -10,6 +10,7 @@ from sos.clients.voice import VoiceClient
 from sos.clients.bus import BusClient
 from sos.clients.operations import AsyncOperationsClient, OperationsClient
 from sos.clients.journeys import AsyncJourneysClient, JourneysClient
+from sos.clients.squad import AsyncSquadClient, SquadClient
 
 __all__ = [
     "SOSClientError",
@@ -24,5 +25,7 @@ __all__ = [
     "AsyncOperationsClient",
     "JourneysClient",
     "AsyncJourneysClient",
+    "SquadClient",
+    "AsyncSquadClient",
 ]
 

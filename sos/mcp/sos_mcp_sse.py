@@ -34,9 +34,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
-from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
-from sos.services.squad.auth import _lookup_token as lookup_squad_token
-from sos.services.squad.service import SquadDB
+from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
@@ -51,7 +49,15 @@ from sos.services.saas.marketplace import Marketplace
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
+# Squad system token now resolves from env — same pattern as agents/join
+# after v0.4.6 P1-05. Default mirrors sos.services.squad.auth.SYSTEM_TOKEN
+# so existing deployments keep working without env changes.
+SQUAD_SYSTEM_TOKEN = os.environ.get("SOS_SQUAD_SYSTEM_TOKEN") or os.environ.get(
+    "SOS_SYSTEM_TOKEN", "sk-sos-system"
+)
+
 _marketplace = Marketplace()
+_squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -256,7 +262,6 @@ def mirror_put(path: str, body: dict[str, Any]) -> Any:
         return {}
 
 
-_squad_db = SquadDB()
 _cloudflare_token_cache: dict[str, tuple[float, MCPAuthContext | None]] = {}
 
 
@@ -436,13 +441,17 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             agent_name=auth_ctx.agent or "",
             role="admin" if auth_ctx.is_admin else "viewer",
         )
-    # 3. Squad API keys.
-    squad_auth = lookup_squad_token(token, _squad_db)
-    if squad_auth:
+    # 3. Squad API keys (resolved over HTTP via SquadClient — was an
+    #    in-process DB lookup before v0.4.7 P1-01).
+    try:
+        squad_auth = _squad_client.verify_token(token)
+    except Exception:
+        squad_auth = None
+    if squad_auth and squad_auth.get("ok"):
         return MCPAuthContext(
             token=token,
-            tenant_id=squad_auth.tenant_id,
-            is_system=squad_auth.is_system,
+            tenant_id=squad_auth.get("tenant_id"),
+            is_system=bool(squad_auth.get("is_system")),
             source="squad_api_keys",
         )
     # 4. Cloudflare KV.
@@ -2197,11 +2206,12 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
     # 4. Clear MCP token cache so new tokens are recognized immediately
     _local_token_cache.invalidate()
 
-    # 5. Create Squad API key
+    # 5. Create Squad API key (over HTTP via SquadClient — was an
+    # in-process create_api_key call before v0.4.7 P1-01).
     squad_token = ""
     try:
-        from sos.services.squad.auth import create_api_key
-        squad_token, _ = create_api_key(slug, "user", _squad_db)
+        result = _squad_client.create_api_key(slug, role="user")
+        squad_token = result.get("token", "") if isinstance(result, dict) else ""
     except Exception as e:
         log.warning("Squad API key creation failed: %s", e)
 

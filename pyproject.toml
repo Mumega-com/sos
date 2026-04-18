@@ -163,9 +163,9 @@ ignore_imports = [
   # directly and drives journeys via sos.clients.journeys (HTTP). Ignores removed.
   # P1-07 closed in v0.4.6 Step 1 — clients/operations POSTs to runner via
   # BaseHTTPClient. Ignore removed.
-  # P1-01 MCP gateway reaches into service internals — rewrite as
-  # thin HTTP proxy via clients/* is its own sprint.
-  "sos.mcp.sos_mcp_sse -> sos.services.squad.**",
+  # P1-01 MCP gateway — v0.4.7 closes each service namespace in a phase:
+  #   Phase 1 (squad) closed — SquadClient + /auth/verify + /api-keys.
+  #   Phases 2-4 (saas, billing, integrations) still pending.
   "sos.mcp.sos_mcp_sse -> sos.services.saas.**",
   "sos.mcp.sos_mcp_sse -> sos.services.billing.**",
   "sos.mcp.sos_mcp_sse -> sos.services.integrations.**",
