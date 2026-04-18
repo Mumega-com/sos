@@ -309,10 +309,13 @@ async def list_usage(
     """Read back usage events. Tenant-scoped unless the caller is system-scoped."""
     if not authorization:
         raise HTTPException(status_code=401, detail="missing bearer token")
-    # Use the requested tenant as the gate resource; gate enforces scope.
-    # Fall back to "mumega" so system-scoped tokens without an explicit
-    # tenant param still get a valid resource to check against.
-    gate_tenant = tenant or "mumega"
+    # When no tenant filter is given, default the gate check to the caller's
+    # own project so project-scoped tokens can read their own events. System
+    # tokens without a project fall back to "mumega".
+    from sos.kernel.auth import verify_bearer as _verify
+    caller_ctx = _verify(authorization)
+    caller_scope = (caller_ctx.project or caller_ctx.tenant_slug) if caller_ctx else None
+    gate_tenant = tenant or caller_scope or "mumega"
     decision = await can_execute(
         action="usage_read",
         resource=gate_tenant,
@@ -320,9 +323,10 @@ async def list_usage(
         authorization=authorization,
     )
     _raise_on_deny(decision)
-    # After gate pass, filter_tenant is the requested param (None means all
-    # events the log will return for a system-scoped caller).
-    filter_tenant = tenant
+    # Project-scoped callers without an explicit filter see only their own
+    # events. System/admin callers without a filter see everything.
+    is_privileged = bool(caller_ctx and (caller_ctx.is_system or caller_ctx.is_admin))
+    filter_tenant = tenant if tenant is not None else (None if is_privileged else caller_scope)
     events = _usage_log.read_all(tenant=filter_tenant, limit=max(1, min(1000, limit)))
     return {"events": [e.to_dict() for e in events], "count": len(events)}
 

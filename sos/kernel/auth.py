@@ -201,12 +201,13 @@ def _entry_to_ctx(entry: dict[str, Any], raw_token_hash: str) -> AuthContext:
     project: str | None = entry.get("project") or None
     tenant_slug: str | None = entry.get("tenant_slug") or project or None
     label: str = entry.get("label") or ""
-    is_admin = bool(agent and agent in _ADMIN_AGENTS)
+    is_admin = bool(agent and agent in _ADMIN_AGENTS) or bool(entry.get("is_admin"))
+    is_system = bool(entry.get("is_system"))
     return AuthContext(
         agent=agent,
         project=project,
         tenant_slug=tenant_slug,
-        is_system=False,
+        is_system=is_system,
         is_admin=is_admin,
         label=label,
         raw_token_hash=raw_token_hash,

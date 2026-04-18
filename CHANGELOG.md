@@ -2,6 +2,53 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.6.1] - 2026-04-18 — Test-Debt Cleanup (Fork A, milestone 1)
+
+**Release theme: "Honor what the token actually claims."**
+
+Closes the six pre-existing 403 Forbidden failures across
+`tests/services/test_settlement.py` and `tests/services/test_economy_usage.py`
+that slipped in when the v0.5.x policy-gate and audit-wrapper waves landed
+on the economy service. See `docs/plans/2026-04-18-v0.6.1-test-debt.md`.
+
+### Fixed
+
+- `sos/kernel/auth.py::_entry_to_ctx` now honors `is_admin` and `is_system`
+  boolean fields on a `tokens.json` entry. Previously these fields were
+  silently ignored — admin status only flowed from the hardcoded
+  `_ADMIN_AGENTS` list and no JSON path could mark a token as system-scoped.
+  Production `sos/bus/tokens.json` entries still use the `agent`-based path
+  unchanged; the new fields are additive.
+- `sos/services/economy/app.py::list_usage` (`GET /usage`) now defaults
+  the gate's tenant scope to the caller's own project when no `tenant`
+  query parameter is supplied. Previously the route pinned `gate_tenant`
+  to `"mumega"`, which caused the gate to 403 every project-scoped caller
+  that didn't pass an explicit filter. Project-scoped callers without a
+  filter now also see only their own events, matching the docstring.
+
+### Added
+
+- `tests/contracts/test_token_scope_fields.py` — four regression tests that
+  pin the `is_admin` / `is_system` / project-scope / agent-admin behavior
+  in `_entry_to_ctx` so this can't re-regress silently.
+- `docs/plans/2026-04-18-v0.6.1-test-debt.md` — sprint plan for the cleanup.
+- `docs/SUBAGENT-BRIEF.md` — the first-read brief every subagent (Sonnet,
+  Haiku, or specialist) now loads. Captures the microkernel + mycelium
+  invariants (RPi-first reference impl, substrate-agnostic kernel,
+  import-linter contracts are load-bearing, dispatcher is protocol not
+  version, federation is a first-class concern).
+
+### Test state
+
+All 6 targeted failures now pass (30/30 in settlement + economy_usage
+modules). 432 contract tests remain green (R0/R1/R2/R5/R6 AST sweeps
+still enforce the kernel/services/clients boundary). 33 unrelated
+pre-existing failures across memory, tools, autonomy, catalog, and
+identity modules remain on the v0.6.x test-debt list — they are not
+regressions from v0.6.1 and will be addressed in later patches.
+
+---
+
 ## [0.6.0] - 2026-04-18 — Stability Polish (observability + schema + config)
 
 **Release theme: "Turn the knobs up: traces you can see, migrations you can replay, config you can type-check."**

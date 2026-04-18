@@ -28,7 +28,7 @@ def tokens_file(tmp_path, monkeypatch):
         {"label": "trop-hashed", "token_hash": hashlib.sha256(b"tk_trop_hashed").hexdigest(),
          "project": "therealmofpatterns", "active": True},
         {"label": "dnu-tenant", "token": "tk_dnu_raw", "project": "dnu", "active": True},
-        {"label": "system-admin", "token": "tk_system_raw", "active": True},  # no project → system scope
+        {"label": "system-admin", "token": "tk_system_raw", "active": True, "is_system": True},
         {"label": "inactive", "token": "tk_inactive", "project": "x", "active": False},
     ]
     p = tmp_path / "tokens.json"
