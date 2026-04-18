@@ -90,17 +90,16 @@ def _atomic_json_append(
 
 
 def _get_admin_token() -> str:
-    """Read admin token from tokens.json (first token with project=null) or env."""
-    env_token = os.environ.get("SOS_ADMIN_TOKEN", "")
+    """Read admin token from env or tokens.json (first token with project=null).
+
+    Resolution order matches the old ``sos.services.squad.auth.SYSTEM_TOKEN``
+    behavior — env first (SOS_ADMIN_TOKEN → SOS_SYSTEM_TOKEN), then on-disk
+    bus tokens as a last resort. Importing the service module to read a
+    literal ``os.getenv`` was a pure R2 leak (P1-05) with no benefit.
+    """
+    env_token = os.environ.get("SOS_ADMIN_TOKEN") or os.environ.get("SOS_SYSTEM_TOKEN")
     if env_token:
         return env_token
-    try:
-        from sos.services.squad.auth import SYSTEM_TOKEN
-
-        if SYSTEM_TOKEN:
-            return SYSTEM_TOKEN
-    except Exception:
-        pass
     try:
         data = json.loads(BUS_TOKENS_PATH.read_text())
         for item in data:
@@ -431,16 +430,14 @@ class AgentJoinService:
             errors.append(f"Nursery bounties failed: {exc}")
             logger.warning("Nursery bounties failed for %s: %s", clean_name, exc)
 
-        # Step 9b: Auto-start best-matching journey
+        # Step 9b: Auto-start best-matching journey via the journeys HTTP service
         try:
-            from sos.services.journeys.tracker import JourneyTracker
-            tracker = JourneyTracker()
-            best_path = tracker.recommend_journey(clean_name)
-            journey_result = tracker.start_journey(clean_name, best_path)
-            if not journey_result.get("error"):
-                logger.info("Journey started for %s: %s", clean_name, best_path)
-            else:
-                errors.append(f"Journey start: {journey_result['error']}")
+            from sos.clients.journeys import AsyncJourneysClient
+
+            journeys = AsyncJourneysClient(token=admin_token or None)
+            best_path = await journeys.recommend(clean_name)
+            await journeys.start(clean_name, best_path)
+            logger.info("Journey started for %s: %s", clean_name, best_path)
         except Exception as exc:
             errors.append(f"Journey start failed: {exc}")
             logger.warning("Journey start failed for %s: %s", clean_name, exc)

@@ -160,9 +160,8 @@ ignore_imports = [
   "sos.adapters.telegram -> sos.services.economy.metabolism",
   # P1-04 closed in v0.4.6 Step 3 — agents/shabrang no longer inherits
   # SOSEngine; it's a standalone mining daemon using kernel + MirrorClient.
-  # P1-05 agents.join
-  "sos.agents.join -> sos.services.squad.auth",
-  "sos.agents.join -> sos.services.journeys.tracker",
+  # P1-05 closed in v0.4.6 Steps 4+5 — agents/join reads SYSTEM_TOKEN from env
+  # directly and drives journeys via sos.clients.journeys (HTTP). Ignores removed.
   # P1-07 clients.operations — should POST to runner, not import
   "sos.clients.operations -> sos.services.operations.runner",
   # P1-01 MCP gateway reaches into service internals — rewrite as
@@ -230,4 +229,5 @@ ignore_imports = [
   "sos.services.integrations.** -> sos.services.bus.**",
   "sos.services.registry.** -> sos.services.bus.**",
   "sos.services.operations.** -> sos.services.bus.**",
+  "sos.services.journeys.** -> sos.services.bus.**",
 ]
