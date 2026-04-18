@@ -89,8 +89,28 @@ is a single commit with its own test run.
 
 ## Sprint v0.4.5 — Event-driven service decoupling
 
-**Theme:** every P0 service→service in-process import becomes a bus event or an
-HTTP call. Services can restart independently.
+**Status: SHIPPED 2026-04-18** — tagged `v0.4.5` @ `8db3d45c`.
+Wave-by-wave log in `CHANGELOG.md` under `[0.4.5]`.
+
+> **Roadmap → reality deltas.** Three steps played out differently than planned:
+>
+> - **Step 11 (FMAAP → squad, P0-08)** was already closed in v0.4.4 when
+>   `kernel/policy/fmaap.py` started reading `DB_PATH` from `kernel.config`.
+>   No squad import remained to remove. The P0-08 ignore entry was stale.
+> - **Steps 9 + 12 (billing → saas via bus events, new schemas).** Step 9
+>   originally called for `billing.payment.confirmed` with saas subscribing.
+>   Shipped as Wave 9 via HTTP through a new `sos/clients/saas.py` instead —
+>   same decoupling result, no new schema/pydantic/enforcement wiring needed,
+>   shipped in ~3 min. The bus path stays available for when billing gains a
+>   second downstream that can't block the Stripe webhook.
+> - **Steps 1 + 6 (health decoupling).** Step 1 Wave 1 closed P0-04 (squad→health)
+>   via bus events. Step 6 (feedback→health, P0-10) and P0-11 (journeys→health)
+>   shipped in Wave 8 as a *kernel extraction* — conductance helpers are pure
+>   file-I/O with no service deps, so `sos/kernel/conductance.py` is a cleaner
+>   fix than a bus subscription. `health.calcifer` re-exports for BC.
+
+**Theme:** every P0 service→service in-process import becomes a bus event, an
+HTTP call, or a kernel primitive. Services can restart independently.
 
 ### Steps (one per P0, grouped by target service)
 

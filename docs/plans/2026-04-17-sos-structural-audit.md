@@ -40,20 +40,23 @@ sos/
 
 ## P0 — Service → service runtime coupling
 
-| ID | Evidence | Fix |
+**Status: all closed in v0.4.5 (2026-04-18).** lint-imports: 4/4 contracts kept,
+0 broken. See `CHANGELOG.md` for wave-by-wave breakdown.
+
+| ID | Evidence | Shipped fix (wave) |
 |---|---|---|
-| P0-01 | `services/billing/webhook.py:20-21` imports `saas.models` + `saas.registry` | Move `Tenant*` models to `contracts/tenant.py`; billing emits `billing.payment.confirmed` bus event for saas to subscribe |
-| P0-02 | `services/engine/core.py:20` imports `tools.core.ToolsCore` (redundant — also has HTTP client) | Remove in-process import; use `clients/tools.py` |
-| P0-03 | `services/content/app.py:105-106` imports `engine.core` + `engine.council` | `content.publish.requested` bus event OR call engine HTTP |
-| P0-04 | `services/squad/tasks.py:417` imports `health.calcifer.conductance_update` | Squad emits `task.completed` bus event; health subscribes |
-| P0-05 | `services/squad/tasks.py:472` imports `journeys.tracker.JourneyTracker` | Same event; journeys subscribes |
-| P0-06 | `services/analytics/ingest.py:60,152,244` imports `integrations.oauth` | Integrations exposes HTTP `/oauth/credentials`; analytics calls it |
-| P0-07 | `services/autonomy/service.py:112,311,336` imports `identity.avatar` | Identity exposes HTTP `/avatar`; autonomy calls it |
-| P0-08 | `services/common/fmaap.py:12` imports `squad.service.DB_PATH` | Extract to kernel config; FMAAP calls squad HTTP |
-| P0-09 | `services/brain/service.py:34` imports `registry.read_all` | Registry exposes HTTP `/agents` (it's already a thin Redis wrapper); brain calls it |
-| P0-10 | `services/feedback/loop.py:404` imports `health.calcifer.conductance_decay` | `feedback.signal` bus event; health subscribes |
-| P0-11 | `services/journeys/tracker.py:249,359` imports `health.calcifer._load_conductance` | Health writes conductance to Redis key; journeys reads the key |
-| P0-12 | `services/dashboard/tenants.py:171`, `routes/sos_operator.py:536` import `economy.usage_log` | Dashboard calls economy HTTP `/usage` |
+| P0-01 | `services/billing/webhook.py:20-21` imports `saas.models` + `saas.registry` | **Wave 9** — `sos/clients/saas.py` (`AsyncSaasClient`); billing calls `create_tenant` / `activate_tenant` / `cancel_tenant` over HTTP. Tenant contract already moved in v0.4.4. |
+| P0-02 | `services/engine/core.py:20` imports `tools.core.ToolsCore` (redundant) | **Wave 7** — dropped in-proc import; chat loop routes through existing `ToolsClient`. |
+| P0-03 | `services/content/app.py:105-106` imports `engine.core` + `engine.council` | **Wave 2** — `SwarmCouncil` byte-moved to `sos/kernel/council.py`; content calls `AsyncEngineClient.chat(ChatRequest)`. |
+| P0-04 | `services/squad/tasks.py:417` imports `health.calcifer.conductance_update` | **Wave 1** — squad emits `task.completed`; `health.bus_consumer` subscribes (5-invariant pattern). |
+| P0-05 | `services/squad/tasks.py:472` imports `journeys.tracker.JourneyTracker` | **Wave 1** — `journeys.bus_consumer` on the same `task.completed` stream. |
+| P0-06 | `services/analytics/ingest.py:60,152,244` imports `integrations.oauth` | **Wave 3** — new `sos/services/integrations/` FastAPI (port 6066) + `sos/clients/integrations.py`. |
+| P0-07 | `services/autonomy/service.py:112,311,336` imports `identity.avatar` | **Wave 4** — `UV16D` → `sos/contracts/identity.py`; identity gains `POST /avatar/generate`; `sos/clients/identity.py`. |
+| P0-08 | `services/common/fmaap.py:12` imports `squad.service.DB_PATH` | **Already fixed in v0.4.4** — FMAAP lives in `sos/kernel/policy/fmaap.py` and reads `DB_PATH` from `sos/kernel/config.py`. Stale entry at v0.4.5 start. |
+| P0-09 | `services/brain/service.py:34` imports `registry.read_all` | **Wave 5** — new `sos/services/registry/` FastAPI (port 6067) + `sos/clients/registry.py` returning `AgentIdentity`. |
+| P0-10 | `services/feedback/loop.py:404` imports `health.calcifer.conductance_decay` | **Wave 8** — helpers moved to `sos/kernel/conductance.py` (pure file-I/O primitive); feedback imports from kernel. |
+| P0-11 | `services/journeys/tracker.py:249,359` imports `health.calcifer._load_conductance` | **Wave 8** — same kernel extract; journeys imports from kernel. |
+| P0-12 | `services/dashboard/tenants.py:171`, `routes/sos_operator.py:536` import `economy.usage_log` | **Wave 6** — `EconomyClient.list_usage` returns typed `UsageEvent`; dashboard uses `EconomyClient` + `RegistryClient`. |
 
 ## P1 — Client-class files reaching into service internals
 
