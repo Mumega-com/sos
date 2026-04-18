@@ -285,10 +285,10 @@ def test_to_redis_fields_roundtrip_preserves_semantics() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_all_8_schema_files_parse() -> None:
-    """All 11 message schema files must be valid JSON and Draft 2020-12."""
-    assert len(_SCHEMA_FILES) == 11, (
-        f"Expected 11 schema files, found {len(_SCHEMA_FILES)}: {_SCHEMA_FILES}"
+def test_all_12_schema_files_parse() -> None:
+    """All 12 message schema files must be valid JSON and Draft 2020-12."""
+    assert len(_SCHEMA_FILES) == 12, (
+        f"Expected 12 schema files, found {len(_SCHEMA_FILES)}: {_SCHEMA_FILES}"
     )
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
@@ -297,9 +297,9 @@ def test_all_8_schema_files_parse() -> None:
         )
 
 
-def test_all_8_schemas_have_5_structural_required() -> None:
+def test_all_12_schemas_have_5_structural_required() -> None:
     """Every message schema must declare all 5 structural fields in 'required'."""
-    assert len(_SCHEMA_FILES) == 11
+    assert len(_SCHEMA_FILES) == 12
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
         required = set(schema.get("required", []))
@@ -309,9 +309,9 @@ def test_all_8_schemas_have_5_structural_required() -> None:
         )
 
 
-def test_all_8_schemas_have_type_const() -> None:
+def test_all_12_schemas_have_type_const() -> None:
     """Every message schema must declare properties.type.const equal to its type name."""
-    assert len(_SCHEMA_FILES) == 11
+    assert len(_SCHEMA_FILES) == 12
     for path in _SCHEMA_FILES:
         # Derive expected type name from filename: e.g. "send_v1.json" → "send"
         expected_type = path.stem.rsplit("_v", 1)[0]
@@ -322,9 +322,9 @@ def test_all_8_schemas_have_type_const() -> None:
         )
 
 
-def test_all_8_schemas_disallow_additional_properties() -> None:
+def test_all_12_schemas_disallow_additional_properties() -> None:
     """Every message schema must set additionalProperties: false at top level."""
-    assert len(_SCHEMA_FILES) == 11
+    assert len(_SCHEMA_FILES) == 12
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
         assert schema.get("additionalProperties") is False, (

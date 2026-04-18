@@ -3,11 +3,35 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
+
+import pytest
+
+import sos.services.identity.core as identity_core_mod
 from sos.services.identity.core import get_identity_core
+
+
+@pytest.fixture(autouse=True)
+def _isolated_identity_db(tmp_path, monkeypatch):
+    """Force IdentityCore to use a tmp data dir so reruns don't UNIQUE-fail."""
+    monkeypatch.setattr(identity_core_mod, "_identity", None, raising=False)
+    from sos.kernel import Config
+
+    original_load = Config.load
+
+    def _patched_load(*args, **kwargs):
+        cfg = original_load(*args, **kwargs)
+        cfg.paths.home = tmp_path
+        (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+        return cfg
+
+    monkeypatch.setattr(Config, "load", staticmethod(_patched_load))
+    yield
+    monkeypatch.setattr(identity_core_mod, "_identity", None, raising=False)
+
 
 async def test_identity_service():
     print("--- Testing SOS Identity Service ---")
-    
+
     # 1. Setup (Clean DB)
     core = get_identity_core()
     # Mocking Redis for test

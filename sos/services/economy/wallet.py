@@ -23,7 +23,13 @@ class SovereignWallet:
     """
     def __init__(self):
         self.backend = SQLiteWalletBackend()
-        self.solana = SolanaWallet()
+        try:
+            self.solana: Optional[SolanaWallet] = SolanaWallet()
+        except RuntimeError as exc:
+            # `solana` extra missing — on-chain features disabled but
+            # off-chain ledger still works. Mint/sync calls will raise.
+            log.warn("SolanaWallet unavailable; on-chain disabled", error=str(exc))
+            self.solana = None
         # Per-user lock to prevent race conditions on high-frequency trades
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
@@ -34,7 +40,10 @@ class SovereignWallet:
         """
         if user_id != "admin": # Only system wallet for now
             return
-            
+        if self.solana is None:
+            log.warn("sync_on_chain skipped — solana extra not installed")
+            return
+
         on_chain_sol = await self.solana.get_balance()
         # 1 SOL = 1,000,000 RU (approximate exchange rate)
         target_ru = on_chain_sol * 1000000
@@ -109,4 +118,8 @@ class SovereignWallet:
         """
         Log a proof of minting on the Solana blockchain.
         """
+        if self.solana is None:
+            raise RuntimeError(
+                "mint_proof requires the `solana` extra (pip install 'mumega[solana]')"
+            )
         return await self.solana.mint_proof(metadata_uri)
