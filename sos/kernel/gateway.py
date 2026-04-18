@@ -320,7 +320,8 @@ class GatewayClient:
             # Try Redis first
             try:
                 import redis.asyncio as redis
-                r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+                from sos.kernel.settings import get_settings as _get_settings
+                r = redis.from_url(_get_settings().redis.resolved_url)
                 await r.set("sos:gateway:circuit_breakers", json.dumps(state))
                 await r.close()
                 log.info("Circuit breaker state persisted to Redis")
@@ -346,7 +347,8 @@ class GatewayClient:
             # Try Redis first
             try:
                 import redis.asyncio as redis
-                r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+                from sos.kernel.settings import get_settings as _get_settings
+                r = redis.from_url(_get_settings().redis.resolved_url)
                 data = await r.get("sos:gateway:circuit_breakers")
                 await r.close()
                 if data:

@@ -24,10 +24,16 @@ log = logging.getLogger("sos.billing.webhook")
 
 
 def _saas_client() -> AsyncSaasClient:
-    """Lazy construction so tests can override SOS_SAAS_URL/token per test."""
-    return AsyncSaasClient(
-        base_url=os.environ.get("SOS_SAAS_URL", "http://localhost:8075")
-    )
+    """Lazy construction so tests can override SOS_SAAS_URL/token per test.
+
+    Tests that mutate ``SOS_SAAS_URL`` at runtime should call
+    ``sos.kernel.settings.reload_settings()`` after the mutation — the
+    default ``get_settings()`` accessor is cached.
+    """
+    from sos.kernel.settings import ServiceURLSettings
+    # Instantiate fresh so env-var test overrides are honored without
+    # forcing a global settings reload.
+    return AsyncSaasClient(base_url=ServiceURLSettings().saas)
 
 
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")

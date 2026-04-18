@@ -23,9 +23,9 @@ def _agent_status(project: str | None) -> dict[str, Any]:
     """
     try:
         from sos.clients.registry import RegistryClient
-        import os
+        from sos.kernel.settings import get_settings as _get_settings
 
-        client = RegistryClient(base_url=os.environ.get("SOS_REGISTRY_URL", "http://localhost:6067"))
+        client = RegistryClient(base_url=_get_settings().services.registry)
         idents = client.list_agents(project=project)
         agents = []
         for ident in idents:
@@ -172,8 +172,8 @@ def _tenant_skills_and_usage(project: str | None) -> dict[str, Any]:
     # UsageLog — tenant-scoped (via economy HTTP client)
     try:
         from sos.clients.economy import EconomyClient
-        import os
-        client = EconomyClient(base_url=os.environ.get("SOS_ECONOMY_URL", "http://localhost:6062"))
+        from sos.kernel.settings import get_settings as _get_settings
+        client = EconomyClient(base_url=_get_settings().services.economy)
         events = client.list_usage(tenant=project, limit=10)
         for e in events[::-1]:  # newest first
             out["recent_usage"].append({

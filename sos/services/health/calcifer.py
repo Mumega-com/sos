@@ -66,10 +66,12 @@ except ImportError:
 if load_dotenv:
     load_dotenv(Path.home() / ".env.secrets")
 
-MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-SQUAD_URL = os.environ.get("SQUAD_URL", "http://127.0.0.1:8060")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+from sos.kernel.settings import get_settings as _get_settings
+_calcifer_settings = _get_settings()
+MIRROR_URL = _calcifer_settings.services.mirror
+SQUAD_URL = _calcifer_settings.services.squad_url
+REDIS_URL = _calcifer_settings.redis.url
+REDIS_PASSWORD = _calcifer_settings.redis.password_str
 CYCLE_SECONDS = int(os.environ.get("CALCIFER_CYCLE", "600"))  # 10 minutes
 STALE_IN_PROGRESS_HOURS = int(os.environ.get("CALCIFER_STALE_IN_PROGRESS_HOURS", "2"))
 CLAIMED_STALE_HOURS = int(os.environ.get("CALCIFER_CLAIMED_STALE_HOURS", "1"))

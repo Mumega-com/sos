@@ -70,12 +70,8 @@ class _LRUSet:
 
 
 def _build_redis_url() -> str:
-    host = os.environ.get("REDIS_HOST", "localhost")
-    port = os.environ.get("REDIS_PORT", "6379")
-    password = os.environ.get("REDIS_PASSWORD", "")
-    if password:
-        return f"redis://:{password}@{host}:{port}"
-    return f"redis://{host}:{port}"
+    from sos.kernel.settings import get_settings as _get_settings
+    return _get_settings().redis.build_url()
 
 
 # ---------------------------------------------------------------------------

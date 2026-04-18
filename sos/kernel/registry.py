@@ -20,7 +20,11 @@ import redis.asyncio as aioredis
 
 logger = logging.getLogger("sos.kernel.registry")
 
-REDIS_URL = os.environ.get("SOS_REDIS_URL", "redis://localhost:6379/0")
+from sos.kernel.settings import get_settings as _get_settings
+REDIS_URL = (
+    _get_settings().redis.legacy_sos_url
+    or _get_settings().redis.resolved_url
+)
 KEY_PREFIX = "sos:kernel:services:"
 
 

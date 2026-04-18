@@ -101,9 +101,8 @@ async def append_event(event: AuditEvent) -> str:
 
     try:
         import redis.asyncio as aioredis
-        redis_pw = os.environ.get("REDIS_PASSWORD", "")
-        default_url = f"redis://:{redis_pw}@localhost:6379/0" if redis_pw else "redis://localhost:6379/0"
-        redis_url = os.environ.get("REDIS_URL", default_url)
+        from sos.kernel.settings import get_settings as _get_settings
+        redis_url = _get_settings().redis.resolved_url
         r = aioredis.from_url(redis_url, decode_responses=True)
         try:
             await r.xadd(

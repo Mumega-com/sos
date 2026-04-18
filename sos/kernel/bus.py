@@ -41,8 +41,11 @@ class MessageBus:
     
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
-        self.redis_url = os.environ.get("SOS_REDIS_URL", "redis://localhost:6379/0")
-        self.redis_password = os.environ.get("REDIS_PASSWORD", "")
+        from sos.kernel.settings import get_settings as _get_settings
+        _s = _get_settings()
+        # SOS_REDIS_URL takes precedence here to preserve legacy behaviour.
+        self.redis_url = _s.redis.legacy_sos_url or "redis://localhost:6379/0"
+        self.redis_password = _s.redis.password_str
         self._redis: Optional[redis.Redis] = None
         self._pubsub = None
         

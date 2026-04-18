@@ -107,8 +107,9 @@ class AutonomyService:
         # generate_avatar and on_alpha_drift calls.
         self._identity_client: Optional[AsyncIdentityClient] = None
         if self.config.enable_avatar:
+            from sos.kernel.settings import get_settings as _get_settings
             self._identity_client = AsyncIdentityClient(
-                base_url=os.getenv("SOS_IDENTITY_URL"),
+                base_url=_get_settings().services.identity,
                 token=os.getenv("SOS_IDENTITY_TOKEN"),
             )
 

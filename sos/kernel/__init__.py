@@ -23,6 +23,14 @@ from sos.kernel.capability import (
     verify_capability_signature,
 )
 from sos.kernel.config import Config, RuntimePaths
+from sos.kernel.settings import (
+    Settings,
+    ConfigError,
+    get_settings,
+    reload_settings,
+    settings,
+    validate_startup_env,
+)
 from sos.kernel.skills import (
     Skill,
     SkillLoader,
@@ -50,6 +58,13 @@ __all__ = [
     # Config
     "Config",
     "RuntimePaths",
+    # Settings (typed pydantic-settings)
+    "Settings",
+    "ConfigError",
+    "get_settings",
+    "reload_settings",
+    "settings",
+    "validate_startup_env",
     # Skills
     "Skill",
     "SkillLoader",

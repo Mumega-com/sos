@@ -45,10 +45,13 @@ class AnalyticsIngester:
         self.gsc_domain = gsc_domain
         self.clarity_project_id = clarity_project_id
         self._client = httpx.Client(timeout=30)
+        from sos.kernel.settings import get_settings as _get_settings
+        _s = _get_settings()
         self._integrations = integrations_client or AsyncIntegrationsClient(
-            base_url=os.environ.get("SOS_INTEGRATIONS_URL"),
+            base_url=_s.services.integrations,
             token=os.environ.get("SOS_INTEGRATIONS_TOKEN")
-            or os.environ.get("SOS_SYSTEM_TOKEN"),
+            or _s.auth.system_token_str
+            or None,
         )
 
     # ------------------------------------------------------------------

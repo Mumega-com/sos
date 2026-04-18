@@ -262,7 +262,8 @@ async def before_action(
         # Notify human via bus
         try:
             import redis.asyncio as aioredis
-            redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+            from sos.kernel.settings import get_settings as _get_settings
+            redis_url = _get_settings().redis.resolved_url
             r = aioredis.from_url(redis_url, decode_responses=True)
             await r.xadd(
                 "sos:stream:global:agent:hadi",
@@ -283,7 +284,8 @@ async def before_action(
         # Notify both Athena and Hadi
         try:
             import redis.asyncio as aioredis
-            redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+            from sos.kernel.settings import get_settings as _get_settings
+            redis_url = _get_settings().redis.resolved_url
             r = aioredis.from_url(redis_url, decode_responses=True)
             for approver in ["athena", "hadi"]:
                 await r.xadd(

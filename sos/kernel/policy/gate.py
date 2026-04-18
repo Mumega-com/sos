@@ -233,7 +233,10 @@ async def can_execute(
     # Only checked when the env says we require capabilities globally.
     # capability_auth handles its own verification via HTTPException; we
     # mirror its allow/deny logic here so the gate owns the decision.
-    if _env_truthy("SOS_REQUIRE_CAPABILITIES", "0"):
+    # Fresh read — tests flip this flag mid-process (see
+    # sos/tests/test_capability_enforcement.py).
+    from sos.kernel.settings import FeatureFlags as _FeatureFlags
+    if _FeatureFlags().require_capabilities:
         if capability is None:
             return await _emit(
                 agent=effective_agent,

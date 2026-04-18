@@ -25,12 +25,14 @@ logger = logging.getLogger("sos.analytics.decide.cli")
 
 async def run_decide(tenant: str, create_tasks: bool) -> None:
     """Run the decision agent for a tenant."""
-    mirror_url = os.environ.get("MIRROR_URL", "http://localhost:8844")
+    from sos.kernel.settings import get_settings as _get_settings
+    _s = _get_settings()
+    mirror_url = _s.services.mirror
     mirror_token = os.environ.get("MIRROR_TOKEN", "")
 
     squad_url = None
     if create_tasks:
-        squad_url = os.environ.get("SQUAD_URL", "http://localhost:8060")
+        squad_url = _s.services.squad_url
 
     if not mirror_token:
         logger.warning("MIRROR_TOKEN not set — Mirror calls may fail, using mock data")

@@ -26,17 +26,16 @@ from sos.kernel.identity import (
 
 logger = logging.getLogger("sos.registry")
 
-_REDIS_PASSWORD: str = os.environ.get("REDIS_PASSWORD", "")
-
-
 def _get_redis() -> Any:
     """Return a Redis client. Raises on connection failure (caller handles)."""
     import redis  # type: ignore[import-untyped]
+    from sos.kernel.settings import get_settings as _get_settings
 
+    _s = _get_settings().redis
     return redis.Redis(
-        host="localhost",
-        port=6379,
-        password=_REDIS_PASSWORD,
+        host=_s.host,
+        port=_s.port,
+        password=_s.password_str or None,
         decode_responses=True,
         socket_connect_timeout=2,
         socket_timeout=2,

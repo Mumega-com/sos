@@ -50,13 +50,13 @@ try:
 except ImportError:
     pass
 
-SQUAD_URL = os.environ.get("SQUAD_URL", "http://127.0.0.1:8060")
-SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "")
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_URL = os.environ.get(
-    "REDIS_URL",
-    f"redis://:{REDIS_PASSWORD}@localhost:6379/0" if REDIS_PASSWORD else "redis://localhost:6379/0",
-)
+from sos.kernel.settings import get_settings as _get_settings
+
+_settings = _get_settings()
+SQUAD_URL = _settings.services.squad_url
+SQUAD_TOKEN = _settings.auth.system_token_str
+REDIS_PASSWORD = _settings.redis.password_str
+REDIS_URL = _settings.redis.resolved_url
 
 
 class Coordinator:

@@ -198,7 +198,8 @@ async def require_tenant(
         raise HTTPException(status_code=401, detail="API key required")
 
     # Internal key bypass — set MUMEGA_INTERNAL_KEY env var to enable
-    internal_key = os.environ.get("MUMEGA_INTERNAL_KEY", "")
+    from sos.kernel.settings import get_settings as _get_settings
+    internal_key = _get_settings().gateway.internal_key_str
     if internal_key and api_key == internal_key:
         await _emit_gateway_policy(
             agent="internal",

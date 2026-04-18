@@ -23,8 +23,10 @@ logger = logging.getLogger("sos.journeys")
 
 PATHS_DIR = Path(__file__).parent / "paths"
 JOURNEYS_DIR = Path.home() / ".sos" / "journeys"
-SQUAD_URL = os.environ.get("SQUAD_URL", "http://127.0.0.1:8060")
-SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "")
+from sos.kernel.settings import get_settings as _get_settings
+_jt_settings = _get_settings()
+SQUAD_URL = _jt_settings.services.squad_url
+SQUAD_TOKEN = _jt_settings.auth.system_token_str
 
 
 def _squad_headers() -> dict[str, str]:

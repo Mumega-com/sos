@@ -15,7 +15,17 @@ CAPABILITY_HEADER = "X-SOS-Capability"
 
 
 def _env_truthy(name: str, default: str = "0") -> bool:
+    # Kept for back-compat (used for SOS_RIVER_PUBLIC_KEY_HEX et al), but
+    # the capability flag is now read via the typed settings loader.
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_capabilities() -> bool:
+    # Reads fresh each call — this flag is toggled by tests at runtime so
+    # the cached settings snapshot would hide mutations. Cheap: one
+    # FeatureFlags() construction per call (no network, no I/O).
+    from sos.kernel.settings import FeatureFlags
+    return FeatureFlags().require_capabilities
 
 
 def decode_capability_header(value: str) -> CapabilityModel:
@@ -54,7 +64,7 @@ def get_capability_from_request(request: Request) -> Optional[CapabilityModel]:
     1) `X-SOS-Capability`
     2) `Authorization: Bearer <token>`
     """
-    if not _env_truthy("SOS_REQUIRE_CAPABILITIES", "0"):
+    if not _require_capabilities():
         return None
 
     raw = request.headers.get(CAPABILITY_HEADER)
@@ -80,7 +90,7 @@ def require_capability(
 
     Enabled by setting `SOS_REQUIRE_CAPABILITIES=1`.
     """
-    if not _env_truthy("SOS_REQUIRE_CAPABILITIES", "0"):
+    if not _require_capabilities():
         return
 
     if capability is None:

@@ -73,12 +73,11 @@ def _idem_key(tenant: Optional[str], key: str) -> str:
 async def _default_redis():
     """Build a Redis client from environment — matches sos.kernel.audit convention."""
     import redis.asyncio as aioredis  # lazy import; tests pass their own client
+    from sos.kernel.settings import get_settings as _get_settings
 
-    redis_pw = os.environ.get("REDIS_PASSWORD", "")
-    default_url = (
-        f"redis://:{redis_pw}@localhost:6379/0" if redis_pw else "redis://localhost:6379/0"
-    )
-    redis_url = os.environ.get("SOS_REDIS_URL", os.environ.get("REDIS_URL", default_url))
+    _s = _get_settings()
+    # Historical lookup order: SOS_REDIS_URL → REDIS_URL → built-from-password.
+    redis_url = _s.redis.legacy_sos_url or _s.redis.resolved_url
     return aioredis.from_url(redis_url, decode_responses=True)
 
 

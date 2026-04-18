@@ -60,11 +60,13 @@ logger = logging.getLogger("task-poller")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 POLL_INTERVAL = int(os.environ.get("TASK_POLL_INTERVAL", "300"))  # 5 minutes
-SQUAD_URL = os.environ.get("SQUAD_URL", "http://127.0.0.1:8060")
-MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@localhost:6379/0" if REDIS_PASSWORD else "redis://localhost:6379/0")
-SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "")
+from sos.kernel.settings import get_settings as _get_settings
+_tp_settings = _get_settings()
+SQUAD_URL = _tp_settings.services.squad_url
+MIRROR_URL = _tp_settings.services.mirror
+REDIS_PASSWORD = _tp_settings.redis.password_str
+REDIS_URL = _tp_settings.redis.resolved_url
+SQUAD_TOKEN = _tp_settings.auth.system_token_str
 STATE_DIR = Path.home() / ".sos" / "state"
 LOG_DIR = Path.home() / ".sos" / "logs" / "task-poller"
 

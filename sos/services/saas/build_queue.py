@@ -21,15 +21,8 @@ log = logging.getLogger("sos.saas.build_queue")
 
 def _get_redis_url() -> str:
     """Build Redis URL with password if needed."""
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-    password = os.environ.get("REDIS_PASSWORD", "")
-
-    if password and "://" in url:
-        # Inject password into URL if not already present
-        scheme, rest = url.split("://", 1)
-        if "@" not in rest:
-            return f"{scheme}://:{password}@{rest}"
-    return url
+    from sos.kernel.settings import get_settings as _get_settings
+    return _get_settings().redis.resolved_url
 
 
 QUEUE_KEY = "saas:build:queue"

@@ -33,8 +33,10 @@ import requests as http_requests
 
 logger = logging.getLogger("verification")
 
-MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
-SQUAD_URL = os.environ.get("SQUAD_URL", "http://127.0.0.1:8060")
+from sos.kernel.settings import get_settings as _get_settings
+_v_settings = _get_settings()
+MIRROR_URL = _v_settings.services.mirror
+SQUAD_URL = _v_settings.services.squad_url
 
 
 async def verify_action(

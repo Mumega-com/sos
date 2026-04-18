@@ -30,8 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("wake-daemon")
 
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_URL = os.getenv("REDIS_URL", f"redis://:{REDIS_PASSWORD}@localhost:6379" if REDIS_PASSWORD else "redis://localhost:6379")
+from sos.kernel.settings import get_settings as _get_settings
+_redis_settings = _get_settings().redis
+REDIS_PASSWORD = _redis_settings.password_str
+REDIS_URL = _redis_settings.resolved_url
 
 # Agent routing config: where each agent lives
 # "tmux" = send-keys to tmux session

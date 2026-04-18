@@ -87,7 +87,9 @@ class EventBus:
     """
 
     def __init__(self, redis_url: str | None = None) -> None:
-        url = redis_url or os.getenv("SOS_REDIS_URL", "redis://localhost:6379/0")
+        from sos.kernel.settings import get_settings as _get_settings
+        _s = _get_settings().redis
+        url = redis_url or _s.legacy_sos_url or _s.resolved_url
         self._redis: aioredis.Redis = aioredis.from_url(
             url, decode_responses=True
         )
