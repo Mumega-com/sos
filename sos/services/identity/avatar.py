@@ -15,7 +15,6 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
-from dataclasses import dataclass
 
 try:
     from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
@@ -26,62 +25,12 @@ except ImportError:
 from sos.kernel import Config
 from sos.observability.logging import get_logger
 
+# UV16D lives in contracts/ so sibling services can build one without
+# reaching into identity internals. Re-exported here for backwards-compat
+# with any code still doing ``from sos.services.identity.avatar import UV16D``.
+from sos.contracts.identity import UV16D
+
 log = get_logger("avatar_generator")
-
-
-@dataclass
-class UV16D:
-    """16D Universal Vector."""
-    # Inner Octave
-    p: float = 0.5      # Phase/Identity
-    e: float = 0.5      # Existence/Worlds
-    mu: float = 0.5     # Cognition/Masks
-    v: float = 0.5      # Energy/Vitality
-    n: float = 0.5      # Narrative/Story
-    delta: float = 0.5  # Trajectory/Motion
-    r: float = 0.5      # Relationality/Bonds
-    phi: float = 0.5    # Field Awareness
-    # Outer Octave (transpersonal)
-    pt: float = 0.5
-    et: float = 0.5
-    mut: float = 0.5
-    vt: float = 0.5
-    nt: float = 0.5
-    deltat: float = 0.5
-    rt: float = 0.5
-    phit: float = 0.5
-
-    @property
-    def coherence(self) -> float:
-        """Calculate overall coherence."""
-        inner = (self.p + self.e + self.mu + self.v + self.n + self.delta + self.r + self.phi) / 8
-        return inner
-
-    @property
-    def inner_octave(self) -> List[float]:
-        return [self.p, self.e, self.mu, self.v, self.n, self.delta, self.r, self.phi]
-
-    @property
-    def outer_octave(self) -> List[float]:
-        return [self.pt, self.et, self.mut, self.vt, self.nt, self.deltat, self.rt, self.phit]
-
-    def to_dict(self) -> Dict[str, float]:
-        return {
-            "p": self.p, "e": self.e, "mu": self.mu, "v": self.v,
-            "n": self.n, "delta": self.delta, "r": self.r, "phi": self.phi,
-            "pt": self.pt, "et": self.et, "mut": self.mut, "vt": self.vt,
-            "nt": self.nt, "deltat": self.deltat, "rt": self.rt, "phit": self.phit,
-            "coherence": self.coherence
-        }
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, float]) -> "UV16D":
-        return cls(
-            p=d.get("p", 0.5), e=d.get("e", 0.5), mu=d.get("mu", 0.5), v=d.get("v", 0.5),
-            n=d.get("n", 0.5), delta=d.get("delta", 0.5), r=d.get("r", 0.5), phi=d.get("phi", 0.5),
-            pt=d.get("pt", 0.5), et=d.get("et", 0.5), mut=d.get("mut", 0.5), vt=d.get("vt", 0.5),
-            nt=d.get("nt", 0.5), deltat=d.get("deltat", 0.5), rt=d.get("rt", 0.5), phit=d.get("phit", 0.5)
-        )
 
 
 class AvatarGenerator:

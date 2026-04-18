@@ -217,8 +217,8 @@ ignore_imports = [
   "sos.services.engine.** -> sos.services.tools.**",
   # P0-04, P0-05 closed in v0.4.5 wave 1 — squad emits task.completed;
   # health + journeys subscribe via their own bus consumers. Ignores removed.
-  # P0-07 autonomy.service → identity.avatar
-  "sos.services.autonomy.** -> sos.services.identity.**",
+  # P0-07 closed in v0.4.5 wave 4 — autonomy calls identity via
+  # sos.clients.identity; UV16D moved to sos.contracts.identity. Ignores removed.
   # P0-09 brain.service → registry.read_all (top-level registry package)
   "sos.services.brain.** -> sos.services.registry",
   "sos.services.brain.** -> sos.services.registry.**",

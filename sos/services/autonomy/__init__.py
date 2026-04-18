@@ -8,7 +8,7 @@ social automation, and metabolism.
 Components:
 - Dreams: LLM-powered insight synthesis (sos.kernel.dreams)
 - Metabolism: Economic cost tracking and heartbeat (sos.kernel.metabolism)
-- Avatar: QNFT generation on alpha drift (sos.services.identity.avatar)
+- Avatar: QNFT generation on alpha drift (via sos.clients.identity — HTTP)
 
 Usage:
     from sos.services.autonomy import AutonomyService, AutonomyConfig
