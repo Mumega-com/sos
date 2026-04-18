@@ -29,8 +29,10 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from sos import __version__
+from sos.contracts.policy import PolicyDecision
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.health import health_response
+from sos.kernel.policy.gate import can_execute
 from sos.observability.logging import get_logger
 from sos.services.registry import read_all, read_one
 
@@ -60,6 +62,36 @@ async def _startup() -> None:
         await register_service(SERVICE_NAME, DEFAULT_PORT)
     except Exception as exc:  # pragma: no cover — discovery is best-effort
         log.warning("registry discovery registration failed", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Gate helper — turn a PolicyDecision into the appropriate HTTP response
+# ---------------------------------------------------------------------------
+
+
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
+
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but OAuth callbacks are only meaningful
+    from MCP's system token.
+    """
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        pillars = set(decision.pillars_passed)
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="oauth callbacks require system or admin scope",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +167,17 @@ async def list_agents(
     The registry's ``read_all`` call is synchronous; we delegate to it in-line
     because it is already cheap redis I/O with short timeouts.
     """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:agents_list",
+        resource=project or "mumega",
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
     entry = _verify_bearer(authorization)
     effective_project = _resolve_project_scope(entry, project)
 
@@ -150,6 +193,17 @@ async def get_agent(
     authorization: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     """Return a single agent by id, or 404 if missing."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:agent_read",
+        resource=agent_id,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
     entry = _verify_bearer(authorization)
     effective_project = _resolve_project_scope(entry, project)
 

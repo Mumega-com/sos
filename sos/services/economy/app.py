@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from sos import __version__
+from sos.contracts.policy import PolicyDecision
+from sos.kernel.policy.gate import can_execute
 from sos.observability.logging import get_logger
-from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 from sos.services.economy.settlement import settle_usage_event, SettlementResult
@@ -34,6 +35,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Gate helper — turn a PolicyDecision into the appropriate HTTP response
+# ---------------------------------------------------------------------------
+
+
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
+
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but admin-only routes require a system token.
+    """
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        pillars = set(decision.pillars_passed)
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="oauth callbacks require system or admin scope",
+            )
+
 
 class BalanceResponse(BaseModel):
     user_id: str
@@ -144,13 +174,15 @@ async def budget_can_spend(
     is enforced — a token scoped to tenant X cannot peek at tenant Y's
     budget. System-scoped tokens (kernel governance) may query any project.
     """
-    entry = _verify_bearer(authorization)
-    scope = _resolve_tenant(entry)
-    if scope is not None and scope != project:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token is scoped to tenant '{scope}', cannot query project '{project}'",
-        )
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="budget_read",
+        resource=project,
+        tenant=project,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
     from sos.services.economy.metabolism import can_spend
     result = can_spend(project, cost)
     return CanSpendResponse(**result)
@@ -167,43 +199,6 @@ async def budget_can_spend(
 # The endpoint is SOS (protocol): canonical UsageEvent shape, tenant scoping,
 # append-only log. Commercial concerns (USD billing, Stripe invoicing, volume
 # tier negotiation) belong to Mumega and layer on top of this log.
-
-
-def _auth_ctx_to_entry(ctx: Any) -> dict[str, Any]:
-    """Convert an AuthContext to the legacy ``entry`` dict shape.
-
-    ``_resolve_tenant`` reads ``entry.get("project")`` — that key is preserved.
-    """
-    return {
-        "project": ctx.project,
-        "tenant_slug": ctx.tenant_slug,
-        "agent": ctx.agent,
-        "label": ctx.label,
-        "is_system": ctx.is_system,
-        "is_admin": ctx.is_admin,
-        "active": True,
-    }
-
-
-def _verify_bearer(authorization: Optional[str]) -> dict[str, Any]:
-    """Return the token record or raise 401.
-
-    Thin wrapper delegating to sos.services.auth.verify_bearer.  Any call-site
-    that missed this migration continues to work unchanged because the public
-    function signature is preserved.  Internals no longer read tokens.json
-    directly — all verification goes through the canonical auth module.
-    """
-    ctx = _auth_verify_bearer(authorization)
-    if ctx is None:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=401, detail="missing bearer token")
-        raise HTTPException(status_code=401, detail="invalid or inactive token")
-    return _auth_ctx_to_entry(ctx)
-
-
-def _resolve_tenant(entry: dict[str, Any]) -> str | None:
-    """Extract tenant scope from a token record. Prefers `project` over `tenant`."""
-    return entry.get("project") or entry.get("tenant") or None
 
 
 class UsageEventRequest(BaseModel):
@@ -237,14 +232,15 @@ async def ingest_usage(
     System-scoped tokens (no `project`/`tenant` field) may write for any tenant
     — this is the admin/trusted-service path used by internal adapters.
     """
-    entry = _verify_bearer(authorization)
-    scope = _resolve_tenant(entry)
-
-    if scope is not None and scope != req.tenant:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token is scoped to tenant '{scope}', cannot write events for '{req.tenant}'",
-        )
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="usage_record",
+        resource=req.tenant,
+        tenant=req.tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
 
     event = UsageEvent(
         tenant=req.tenant,
@@ -281,14 +277,22 @@ async def list_usage(
     authorization: Optional[str] = Header(None),
 ) -> dict[str, Any]:
     """Read back usage events. Tenant-scoped unless the caller is system-scoped."""
-    entry = _verify_bearer(authorization)
-    scope = _resolve_tenant(entry)
-    filter_tenant = tenant or scope
-    if scope is not None and filter_tenant != scope:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token is scoped to tenant '{scope}', cannot read events for '{filter_tenant}'",
-        )
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    # Use the requested tenant as the gate resource; gate enforces scope.
+    # Fall back to "mumega" so system-scoped tokens without an explicit
+    # tenant param still get a valid resource to check against.
+    gate_tenant = tenant or "mumega"
+    decision = await can_execute(
+        action="usage_read",
+        resource=gate_tenant,
+        tenant=gate_tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+    # After gate pass, filter_tenant is the requested param (None means all
+    # events the log will return for a system-scoped caller).
+    filter_tenant = tenant
     events = _usage_log.read_all(tenant=filter_tenant, limit=max(1, min(1000, limit)))
     return {"events": [e.to_dict() for e in events], "count": len(events)}
 
@@ -318,13 +322,15 @@ async def retry_settle(
     returns the result.  Does NOT rewrite the JSONL — callers can poll
     ``GET /usage`` to see the updated ``metadata.settlement_status``.
     """
-    entry = _verify_bearer(authorization)
-    # Admin check: is_admin (kasra/mumega) OR system-scoped token (no project)
-    is_privileged = entry.get("is_admin") or entry.get("is_system") or (
-        not entry.get("project") and not entry.get("tenant_slug")
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="settlement_retry",
+        resource=usage_event_id,
+        tenant="mumega",
+        authorization=authorization,
     )
-    if not is_privileged:
-        raise HTTPException(status_code=403, detail="admin token required for settlement retry")
+    _raise_on_deny(decision, require_system=True)
 
     # Find the event
     events = _usage_log.read_all()

@@ -151,15 +151,23 @@ def test_cross_project_scoped_token_is_403(
             return AuthContext(
                 agent="viamar-agent",
                 project="viamar",
-                tenant_slug="viamar",
+                tenant_slug="mumega",  # tenant matches; project scope restricts sub-resource
                 is_system=False,
                 is_admin=False,
                 label="scoped",
             )
         return None
 
+    # Patch both the app-level alias (used by _verify_bearer / _resolve_project_scope)
+    # and the gate's internal verify_bearer (used by can_execute) so the fake
+    # token is recognised at both layers after the v0.5.3 gate migration.
     monkeypatch.setattr(
         "sos.services.registry.app._auth_verify_bearer",
+        fake_verify,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "sos.kernel.policy.gate.verify_bearer",
         fake_verify,
         raising=True,
     )
@@ -186,7 +194,7 @@ def test_scoped_token_without_explicit_project_is_forced_to_scope(
             return AuthContext(
                 agent="viamar-agent",
                 project="viamar",
-                tenant_slug="viamar",
+                tenant_slug="mumega",  # tenant matches; project scope restricts sub-resource
                 is_system=False,
                 is_admin=False,
                 label="scoped",
@@ -197,9 +205,35 @@ def test_scoped_token_without_explicit_project_is_forced_to_scope(
         observed["project"] = project
         return []
 
+    from sos.contracts.policy import PolicyDecision
+
+    async def fake_can_execute(**_kwargs: Any) -> PolicyDecision:
+        return PolicyDecision(
+            allowed=True,
+            reason="test: gate bypassed",
+            tier="act_freely",
+            action=_kwargs.get("action", ""),
+            resource=_kwargs.get("resource", ""),
+            agent="viamar-agent",
+            tenant="mumega",
+            pillars_passed=["tenant_scope"],
+            pillars_failed=[],
+            capability_ok=None,
+            metadata={},
+        )
+
+    # After the v0.5.3 gate migration, patch can_execute (gate layer) so the
+    # fake token is allowed by the policy gate.  _auth_verify_bearer is still
+    # patched because _verify_bearer / _resolve_project_scope use it to enforce
+    # the per-project sub-scope filter.
     monkeypatch.setattr(
         "sos.services.registry.app._auth_verify_bearer",
         fake_verify,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "sos.services.registry.app.can_execute",
+        fake_can_execute,
         raising=True,
     )
     monkeypatch.setattr(

@@ -2,6 +2,71 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.3] - 2026-04-18 — Gate mop-up, wave 1
+
+**Release theme: "The gate's reach expands."**
+
+v0.5.1 shipped `can_execute()` + one POC migration (`integrations`). v0.5.3
+generalizes the gate across 5 more services. Every authenticated route on
+these services now calls the unified gate and writes exactly one
+`POLICY_DECISION` audit event — no more service-local `_verify_bearer`,
+`_check_scope`, or `_require_admin` reimplementations.
+
+### Services migrated (15 routes, all in parallel)
+
+- **`sos/services/economy/app.py`** (4 routes): `GET /budget/can-spend`,
+  `POST /usage`, `GET /usage`, `POST /settle/{usage_event_id}` (admin-only).
+  Removed `_verify_bearer`, `_resolve_tenant`, `_auth_ctx_to_entry` helpers.
+- **`sos/services/registry/app.py`** (2 routes): `GET /agents`,
+  `GET /agents/{id}`. `_resolve_project_scope` retained — handles
+  sub-tenant project filtering the gate intentionally doesn't cover.
+- **`sos/services/identity/app.py`** (2 routes): `POST /avatar/generate`,
+  `POST /avatar/social/on_alpha_drift`. Scopeless-but-verified tokens now
+  short-circuit with a 403 before the gate runs (preserves pre-migration
+  behaviour).
+- **`sos/services/journeys/app.py`** (4 routes): `GET /recommend/{agent}`,
+  `POST /start`, `GET /status/{agent}`, `GET /leaderboard`. All admin-only —
+  use `_raise_on_deny(decision, require_system=True)`.
+- **`sos/services/operations/app.py`** (3 routes): `POST /run`,
+  `GET /templates`, `GET /templates/{product}`. All admin-only.
+
+### Pattern
+
+Every migrated route follows the v0.5.1 POC pattern verbatim:
+
+```python
+decision = await can_execute(
+    action="<service>:<verb>",
+    resource=<resource_id>,
+    tenant=<tenant>,
+    authorization=authorization,
+)
+_raise_on_deny(decision, require_system=<True for admin-only>)
+```
+
+`_raise_on_deny()` maps denial reason to 401 (bearer/auth) vs 403 (scope/admin)
+and enforces `require_system` post-allow. Every service carries a verbatim
+copy of the helper — small enough that a shared module would be premature
+abstraction.
+
+### Proof
+
+- All `tests/kernel/` + `tests/contracts/` pass (442 tests, 0 failures).
+- Per-service test suites pass where they were passing on v0.5.2:
+  registry 21/21, journeys 14/14, operations 7/7, identity avatars all
+  green. Pre-existing failures in `test_economy_usage.py`,
+  `test_auth_migration.py`, `test_settlement.py` (all `base58` /
+  sqlite / brain-registry issues unrelated to the kernel) are unchanged.
+- `lint-imports`: 4 contracts kept, 0 broken.
+
+### Deferred
+
+- **v0.5.4:** `sos/services/saas/app.py` — 39 routes, custom slug-based
+  scoping. Needs a deliberate pass, not a parallel sprint.
+- **v0.5.5:** `sos/services/squad/` — 28 routes + a capability→gate bridge
+  that still wants a design doc before code.
+- **v0.5.6+:** `sos/services/gateway/bridge.py` and any remaining sites.
+
 ## [0.5.2] - 2026-04-18 — Arbitration: intent → proposal → ratification
 
 **Release theme: "The kernel enforces the blueprint — step 3 of 3."**
