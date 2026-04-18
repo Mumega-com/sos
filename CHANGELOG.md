@@ -2,6 +2,97 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.7] - 2026-04-18 — Stability MVP (trace propagation + idempotency)
+
+**Release theme: "The spine keeps an unbroken thread; write endpoints stop double-billing."**
+
+Closes Step 1 of the two-step stability plan
+(`docs/plans/2026-04-18-sos-stability-two-steps.md`). Three concerns in
+one cut:
+
+1. **W3C-style `trace_id` propagation** end-to-end through the Redis bus
+   and the audit spine, so a single request can be stitched across
+   services and kernel events without changing function signatures.
+2. **Canonical idempotency helper** + wrapper applied to 12 write
+   endpoints across economy / squad / engine / tools / saas — replay a
+   request with the same `Idempotency-Key` and get the cached response;
+   replay with a mismatched body and get a deterministic 409.
+3. **Pre-gate regression tests** (integrations + identity) and
+   **AsyncRegistryClient** unit tests, closing the test debts that the
+   v0.5.6.1 hotfix left open.
+
+### Added — `trace_id` propagation
+
+- `sos/contracts/messages.py` — `BusMessage.trace_id: Optional[str]`
+  (32 hex chars) + `BusMessage.new_trace_id()`. All 12 v1 envelope
+  JSON schemas (`sos/contracts/schemas/messages/*.json`) carry the
+  optional property.
+- `sos/kernel/trace_context.py` — `ContextVar`-based current-trace
+  holder + `use_trace_id()` async-safe context manager. Cheap, opt-in,
+  no signature churn.
+- `sos/kernel/audit.py` — `new_event()` reads the current `trace_id`
+  from the contextvar when the caller doesn't supply one, so every
+  kernel audit event produced inside a bus handler inherits the
+  inbound envelope's trace.
+- `sos/services/brain/service.py` — consumer sets the contextvar on
+  `_handle_event`; `task.scored` and `task.routed` emissions carry the
+  inbound `trace_id` (or mint one if the upstream didn't).
+
+### Added — idempotency
+
+- `sos/kernel/idempotency.py` — `async with_idempotency(*, key, tenant,
+  request_body, fn, ttl_s=86400, redis=None)`. Key shape
+  `sos:idem:<tenant|_system>:<key>`, fingerprint
+  `sha256(json.dumps(body, sort_keys=True, default=str))`. Hit replays
+  the cached response, miss runs `fn` and caches, fingerprint mismatch
+  raises `HTTPException(409)`, `None` key bypasses. Lazy imports keep
+  Redis optional at import-time.
+
+### Modified — 12 endpoints now accept `Idempotency-Key: <str>` header
+
+- `sos/services/economy/app.py` — `POST /credit`, `POST /debit`
+- `sos/services/tools/app.py` — `POST /execute`
+- `sos/services/engine/app.py` — `POST /tasks/create`
+- `sos/services/squad/app.py` — `POST /tasks`, `POST /tasks/{id}/complete`
+- `sos/services/saas/app.py` — `POST /tenants`,
+  `POST /tenants/{slug}/seats`, `POST /onboard`,
+  `POST /builds/enqueue/{slug}`, `POST /signup`, `POST /my/tasks`
+
+### Added — test debts closed
+
+- `tests/services/test_integrations_pregate_audit.py` (3 tests) —
+  pre-gate DENY audit assertions.
+- `tests/services/test_identity_pregate_audit.py` (6 tests) — pre-gate
+  DENY audit assertions for `/avatar/generate` and
+  `/avatar/social/on_alpha_drift`.
+- `tests/clients/test_registry_client.py` (6 tests) —
+  `AsyncRegistryClient.list_agents()` HTTP contract via
+  `httpx.MockTransport`.
+- `tests/kernel/test_idempotency.py` (6 tests) — helper contract:
+  hit/miss/mismatch/None-key/cross-tenant-isolation.
+
+### Fixed
+
+- `tests/contracts/test_messages_integration.py` — fossilised
+  `assert len(_SCHEMA_FILES) == 11` replaced with a dynamic check
+  derived from `typing.get_args(MessageType)` (12 schemas exist today).
+
+### Verification
+
+- Full `pytest -q` sweep: 1209 passed, 15 skipped. 34 failing / 17
+  erroring tests are all pre-existing fossils (economy usage fixtures,
+  autonomy coordinator imports, tools-service health-shape drift) —
+  baseline on the same commit shows 42 failed + 24 errors, so this
+  sprint *reduced* the failure count by 15 and introduced zero new
+  regressions.
+
+### Follow-up — Step 2 (v0.6.0)
+
+Tracked in `docs/plans/2026-04-18-sos-stability-two-steps.md`: OTEL
+instrumentation, Alembic for the one stateful service that still needs
+it, typed config consolidation, `/sos/traces` viewer over the audit
+stream. Cloudflare layer starts after Step 2.
+
 ## [0.5.6.1] - 2026-04-18 — Identity pre-gate audit gap
 
 **Hotfix** found by runtime smoke of the v0.5.0→v0.5.6 arc.
