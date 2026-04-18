@@ -112,6 +112,51 @@ async def debit(req: TransactionRequest):
 
 
 # ---------------------------------------------------------------------------
+# Budget pre-action gate (v0.5.0 — closes kernel→services leak)
+# ---------------------------------------------------------------------------
+#
+# Kernel governance consults this before allowing a governed action.
+# Delegates unchanged to sos.services.economy.metabolism.can_spend so the
+# business logic (SQLite, allocation, digest cycle) stays inside the
+# economy service. Kernel never imports this module — it calls through
+# sos.clients.economy.EconomyClient.can_spend(project, cost).
+
+
+class CanSpendResponse(BaseModel):
+    allowed: bool
+    budget: float
+    spent: float
+    remaining: float
+    pct_used: float
+    reason: str
+    warning: Optional[str] = None
+
+
+@app.get("/budget/can-spend", response_model=CanSpendResponse)
+async def budget_can_spend(
+    project: str,
+    cost: float = 0.0,
+    authorization: Optional[str] = Header(None),
+) -> CanSpendResponse:
+    """Check whether a project has budget headroom for an action.
+
+    Returns the full metabolism.can_spend contract unchanged. Tenant scope
+    is enforced — a token scoped to tenant X cannot peek at tenant Y's
+    budget. System-scoped tokens (kernel governance) may query any project.
+    """
+    entry = _verify_bearer(authorization)
+    scope = _resolve_tenant(entry)
+    if scope is not None and scope != project:
+        raise HTTPException(
+            status_code=403,
+            detail=f"token is scoped to tenant '{scope}', cannot query project '{project}'",
+        )
+    from sos.services.economy.metabolism import can_spend
+    result = can_spend(project, cost)
+    return CanSpendResponse(**result)
+
+
+# ---------------------------------------------------------------------------
 # Usage ingest (trop issue #98)
 # ---------------------------------------------------------------------------
 #

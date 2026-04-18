@@ -2,6 +2,92 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.0] - 2026-04-18 — Kernel floor lock + unified audit stream
+
+**Release theme: "The kernel enforces the blueprint — step 1 of 3."**
+
+This is the release that makes the kernel provably the floor. Every
+`sos.services.*` import has been expunged from `sos/kernel/`, and a
+permanent AST sweep test prevents regression. A new unified audit
+stream (`sos.kernel.audit`) lands as the canonical sink for every
+governed decision; it's designed so v0.5.1 policy and v0.5.2
+arbitration can plug in without reopening the kernel.
+
+### R0 floor lock — the last kernel→services leak, closed
+
+- **`sos/kernel/governance.py`** no longer imports
+  `sos.services.economy.metabolism`. Budget checks now flow through
+  `sos.clients.economy.AsyncEconomyClient.can_spend()` over HTTP.
+  Fail-open on any error (connection refused, timeout, 5xx) — economy
+  downtime can never block governance.
+- **`sos/services/economy/app.py`** gains `GET /budget/can-spend`
+  (Bearer-auth, tenant-scoped) that delegates unchanged to
+  `metabolism.can_spend(project, cost)`.
+- **`sos/clients/economy.py`** gains sync + new `AsyncEconomyClient`
+  (subclasses `AsyncBaseHTTPClient`) with matching `can_spend()`
+  methods. The async variant is what the kernel uses.
+- **Stale R2 ignore removed.** The
+  `sos.adapters.telegram → sos.services.economy.metabolism` entry was
+  already obsolete (no such import existed) and has been dropped from
+  `pyproject.toml`. `lint-imports`: **4 kept, 0 broken.**
+
+### Unified audit stream (`sos.kernel.audit`)
+
+- **`sos/contracts/audit.py`** — new frozen Pydantic model:
+  `AuditEvent`, `AuditEventKind`
+  (`intent`, `policy_decision`, `action_completed`, `action_failed`,
+  `arbitration`), and `AuditDecision` (`allow`, `deny`,
+  `require_approval`, `n/a`). Shape designed to accommodate v0.5.1
+  policy and v0.5.2 arbitration writers **without schema changes**.
+- **`sos/kernel/audit.py`** — three public functions
+  (`new_event`, `append_event`, `read_events`) and nothing else. Disk
+  write at `~/.sos/audit/{tenant}/{YYYY-MM-DD}.jsonl` is authoritative
+  and fsync'd; bus emit to `sos:audit:{tenant}` Redis stream is
+  observational and best-effort. Disk never blocks on Redis.
+- **`sos/kernel/governance.py`** now writes every intent (and every
+  budget denial) through `audit.append_event`. The legacy
+  `~/.sos/governance/intents/{tenant}/{date}.jsonl` file is still
+  populated as a read-side compat shim — planned removal in v0.5.2.
+- **`docs/kernel/audit.md`** — public contract documentation.
+
+### Tests (18 new, all green on first run)
+
+- **`tests/contracts/test_kernel_no_service_imports.py`** — AST sweep
+  walking every `sos/kernel/**/*.py` file, asserting **zero**
+  `sos.services.*` imports. `_ALLOWED_EXCEPTIONS` is an empty
+  `frozenset`; any future addition requires an explicit test edit.
+- **`tests/kernel/test_governance_budget.py`** — 3 tests covering
+  the three paths of budget consultation: allowed, blocked, fail-open
+  on HTTP error.
+- **`tests/kernel/test_audit.py`** — 7 tests covering roundtrip
+  append+read, filter-by-kind, Pydantic immutability (`frozen=True`),
+  disk durability when Redis is down (the whole availability
+  guarantee), corrupted-line tolerance, default-today date.
+- **`tests/contracts/test_audit_schema_stable.py`** — 5 tests
+  snapshotting the v0.5.0 schema baseline. Field removals, rename,
+  required-status changes, and missing enum values all fail loudly.
+  Additive changes are allowed.
+
+### Durability guarantees
+
+- **Kernel is now provably service-free.** Not by convention; by CI.
+- **AuditEvent schema is frozen.** v0.5.1 and v0.5.2 add code, not
+  schema churn.
+- **Policy gate (`kernel/policy.py`) and arbitration
+  (`kernel/arbitration.py`) will land in new files** without
+  modifying audit or governance. The kernel reopens to *add* modules,
+  not to *modify* them. That is the durability property v0.5.0 buys.
+
+### Deferred (intentional)
+
+- `kernel/policy.py` unified `can_execute()` gate — v0.5.1.
+- `kernel/arbitration.py` conflict resolution — v0.5.2 (needs a
+  design brainstorm first; "who wins when Loom and Athena disagree"
+  is a 488 question, not a coding question).
+- `sos/cli` split to drop the three
+  `sos.cli → sos.services.*.__main__` dispatcher ignores — pending.
+- Removal of the legacy `~/.sos/governance/intents/` shim — v0.5.2.
+
 ## [0.4.6] - 2026-04-18 — R2 sweep (clients/adapters/cli/agents)
 
 Closes the P1 micro-kernel violations where non-service code reached into
