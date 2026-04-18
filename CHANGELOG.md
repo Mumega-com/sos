@@ -2,6 +2,39 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.6.1] - 2026-04-18 — Identity pre-gate audit gap
+
+**Hotfix** found by runtime smoke of the v0.5.0→v0.5.6 arc.
+
+`identity/app.py` peeks at the bearer token *before* calling
+`can_execute()` because it uses the caller's own tenant as the gate's
+`tenant` arg (any-valid-scope semantics). The three pre-gate deny paths
+— missing bearer, invalid token, scopeless-but-verified token — raised
+401/403 without writing to the audit spine.
+
+### Added (`sos/services/identity/app.py`)
+
+- `_emit_identity_deny(action, target, reason, tenant="unknown")` — async
+  helper around `kernel.audit.append_event` with
+  `policy_tier="identity_pregate"`. Try/except-wrapped.
+
+### Modified
+
+Both `/avatar/generate` and `/avatar/social/on_alpha_drift` emit a
+`POLICY_DECISION` DENY event on each pre-gate rejection before the
+existing 401/403. Any-valid-scope semantics preserved
+(`test_avatar_generate_403_on_scopeless_token` still green).
+
+### Verification
+
+- `pytest tests/services/test_identity_avatar_endpoints.py` — 6/6 green.
+- Inline smoke confirmed 3 `identity_pregate` DENY events on a fresh run.
+
+### Follow-up
+
+`integrations/app.py` has the same pre-gate pattern and the same gap
+class — tracked separately; out of scope for this hotfix.
+
 ## [0.5.6] - 2026-04-18 — Gateway bridge audit-wrapper
 
 **Release theme: "The external front door joins the spine."**

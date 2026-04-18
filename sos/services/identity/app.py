@@ -87,6 +87,41 @@ def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) ->
             )
 
 
+async def _emit_identity_deny(
+    *,
+    action: str,
+    target: str,
+    reason: str,
+    tenant: str = "unknown",
+) -> None:
+    """Audit a pre-gate rejection so it hits the unified spine (v0.5.6.1).
+
+    Identity peeks at the token scope *before* calling ``can_execute`` to
+    pick the gate's ``tenant`` arg (any-valid-scope semantics). Pre-gate
+    rejections (invalid bearer, scopeless token) would otherwise bypass
+    the audit write the gate would have done. This helper closes that
+    gap. Never raises.
+    """
+    try:
+        from sos.contracts.audit import AuditDecision, AuditEventKind
+        from sos.kernel.audit import append_event, new_event
+
+        await append_event(
+            new_event(
+                agent="anonymous",
+                tenant=tenant,
+                kind=AuditEventKind.POLICY_DECISION,
+                action=action,
+                target=target,
+                decision=AuditDecision.DENY,
+                reason=reason,
+                policy_tier="identity_pregate",
+            )
+        )
+    except Exception:
+        pass
+
+
 # --- Schemas ---
 class UserCreate(BaseModel):
     name: str
@@ -226,15 +261,30 @@ async def avatar_generate(
     tenant so the tenant-scope pillar trivially passes for scoped tokens.
     """
     if not authorization:
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="missing bearer token",
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     # Resolve the caller's tenant from their token so the gate can verify scope.
     ctx = _auth_verify_bearer(authorization)
     if ctx is None:
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="invalid or inactive token",
+        )
         raise HTTPException(status_code=401, detail="invalid or inactive token")
     caller_tenant = ctx.project or ctx.tenant_slug or ctx.agent
     if caller_tenant is None and not (ctx.is_system or ctx.is_admin):
         # Preserves pre-migration 403 for scopeless-but-verified tokens.
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="token has no tenant scope",
+        )
         raise HTTPException(status_code=403, detail="token has no tenant scope")
     caller_tenant = caller_tenant or "mumega"
 
@@ -274,14 +324,29 @@ async def avatar_on_alpha_drift(
     tenant so the tenant-scope pillar trivially passes for scoped tokens.
     """
     if not authorization:
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="missing bearer token",
+        )
         raise HTTPException(status_code=401, detail="missing bearer token")
 
     # Resolve the caller's tenant from their token so the gate can verify scope.
     ctx = _auth_verify_bearer(authorization)
     if ctx is None:
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="invalid or inactive token",
+        )
         raise HTTPException(status_code=401, detail="invalid or inactive token")
     caller_tenant = ctx.project or ctx.tenant_slug or ctx.agent
     if caller_tenant is None and not (ctx.is_system or ctx.is_admin):
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="token has no tenant scope",
+        )
         raise HTTPException(status_code=403, detail="token has no tenant scope")
     caller_tenant = caller_tenant or "mumega"
 
