@@ -39,15 +39,19 @@ SQUAD_DB = Path.home() / ".sos" / "data" / "squads.db"
 INKWELL_SOURCE = Path.home() / "inkwell"
 HOOKS_SOURCE = Path.home() / ".claude" / "hooks"
 
-# SaaS tenant registry (lazy import to avoid circular deps)
-_registry = None
+# SaaS tenant HTTP client — previously imported TenantRegistry directly
+# (R2 violation P1-06). v0.4.6 Step 6 swaps that for sos.clients.saas.SaasClient,
+# which the billing service already uses the same way.
+_saas_client = None
 
-def _get_registry():
-    global _registry
-    if _registry is None:
-        from sos.services.saas.registry import TenantRegistry
-        _registry = TenantRegistry()
-    return _registry
+
+def _get_saas_client():
+    global _saas_client
+    if _saas_client is None:
+        from sos.clients.saas import SaasClient
+
+        _saas_client = SaasClient()
+    return _saas_client
 
 
 def _now() -> str:
@@ -301,13 +305,21 @@ def onboard(slug: str, domain: str, spai_key: str, model: str = "haiku") -> None
     fix_ownership(home, slug)
     setup_tmux(slug, home)
 
-    # Register in SaaS tenant registry
+    # Register in SaaS tenant registry (over HTTP — see _get_saas_client)
     try:
         from sos.contracts.tenant import TenantCreate
-        registry = _get_registry()
-        tenant = registry.create(TenantCreate(slug=slug, label=slug, email=f"{slug}@mumega.com", domain=domain))
-        registry.activate(slug, squad_id=slug, bus_token=token)
-        print(f"  [+] {_green('SaaS tenant registered')} ({tenant.subdomain})")
+
+        payload = TenantCreate(
+            slug=slug,
+            label=slug,
+            email=f"{slug}@mumega.com",
+            domain=domain,
+        ).model_dump(mode="json")
+        saas = _get_saas_client()
+        tenant = saas.create_tenant(payload)
+        saas.activate_tenant(slug, squad_id=slug, bus_token=token)
+        subdomain = tenant.get("subdomain", slug) if isinstance(tenant, dict) else slug
+        print(f"  [+] {_green('SaaS tenant registered')} ({subdomain})")
     except Exception as exc:
         print(f"  [!] SaaS registry failed (non-blocking): {exc}")
 

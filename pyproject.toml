@@ -145,9 +145,8 @@ unmatched_ignore_imports_alerting = "none"
 ignore_imports = [
   # Known v0.4.6–v0.4.8 targets. Each line is a pre-existing violation
   # that a later sprint fixes. Empty list when structural cleanup completes.
-  # P1-06 cli.onboard — saas models/registry move to client/contracts
-  "sos.cli.onboard -> sos.services.saas.registry",
-  "sos.cli.onboard -> sos.services.saas.models",
+  # P1-06 closed in v0.4.6 Step 6 — cli/onboard uses sos.clients.saas.SaasClient
+  # (HTTP) and sos.contracts.tenant.TenantCreate. Ignores removed.
   # project.scripts dispatcher — cli/__init__.py routes to service __main__
   # entrypoints. Legitimate packaging pattern; v0.5 splits cli out.
   "sos.cli -> sos.services.autonomy.__main__",
