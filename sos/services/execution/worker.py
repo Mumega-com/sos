@@ -17,7 +17,7 @@ import json
 from typing import Callable, Dict, Any, Optional
 
 from sos.kernel import Config
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.observability.logging import get_logger
 
 log = get_logger("async_worker")

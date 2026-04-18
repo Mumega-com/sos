@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/announce_v1.json",
+  "title": "SOS Announce Message",
+  "description": "Emitted by an agent when it registers on the SOS bus at startup. Carries the agent's initial self-description. Published to sos:stream:global or sos:stream:sos:channel:global.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "timestamp",
+    "version",
+    "message_id"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Discriminator constant that identifies this as an announce message.",
+      "const": "announce"
+    },
+    "source": {
+      "type": "string",
+      "description": "Bus identity of the agent emitting this message. Must be prefixed with 'agent:' and use lowercase alphanumeric/dash names.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 UTC datetime at which this message was emitted.",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer of the agent software publishing this announce (major.minor or major.minor.patch).",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Globally unique identifier for this message instance. Used for deduplication and tracing.",
+      "format": "uuid"
+    },
+    "target": {
+      "type": "string",
+      "description": "Destination address on the bus. Defaults to the global channel when omitted.",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+      "default": "sos:channel:global"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Optional runtime context snapshot captured at startup.",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Human-readable startup message or greeting from the agent."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Runtime toolchain the agent is executing inside (e.g. claude-code, codex, sdk)."
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Operating system process id of the agent runtime at startup."
+        },
+        "tty": {
+          "type": "string",
+          "description": "TTY or pseudo-terminal device path attached to the agent process, if any."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Absolute working directory path of the agent process at startup."
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent_card_ref": {
+      "type": "string",
+      "description": "URL or opaque reference pointing to the agent's full Agent Card record (sos:registry:{name} key or HTTP URL)."
+    }
+  },
+  "additionalProperties": false
+}

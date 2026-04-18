@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from sos.kernel import Message, MessageType
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
+from sos.contracts.engine import ChatRequest
 from sos.services.content.calendar import ContentCalendar, PostStatus
 from sos.services.content.publisher import get_publisher
 from sos.services.content.strategy import ContentStrategy, MUMEGA_STRATEGY
@@ -71,13 +72,14 @@ class ContentOrchestrator:
         """
         
         logger.info(f"✨ Requesting Oracle draft for: {post.title}")
-        response = await self.engine.chat(
+        chat_request = ChatRequest(
             agent_id="agent:River",
             message=prompt,
             model="gemini-3-flash-preview",
-            memory_enabled=True
+            memory_enabled=True,
         )
-        
+        response = await self.engine.chat(chat_request)
+
         draft_content = response.content
         
         # 2. Update Calendar to IN_REVIEW

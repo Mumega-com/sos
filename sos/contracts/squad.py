@@ -56,7 +56,36 @@ class Squad:
     members: list[SquadMember] = field(default_factory=list)
     kpis: list[str] = field(default_factory=list)
     budget_cents_monthly: int = 0
+    # Living Graph fields
+    dna_vector: list[float] = field(default_factory=list)  # 16D profile
+    coherence: float = 0.5        # C: structural order [0,1]
+    receptivity: float = 0.5      # R: openness to feedback [0,1]
+    conductance: dict[str, float] = field(default_factory=dict)  # skill→G
     created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class SquadGoal:
+    id: str
+    squad_id: str
+    target: str                    # what "done" looks like
+    markers: list[str] = field(default_factory=list)  # measurable checkpoints
+    coherence_threshold: float = 0.6  # C* minimum
+    deadline: Optional[str] = None
+    status: str = "active"         # active|achieved|abandoned
+    progress: float = 0.0          # 0.0 to 1.0
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class SquadWallet:
+    squad_id: str
+    balance_cents: int = 0
+    total_earned_cents: int = 0
+    total_spent_cents: int = 0
+    fuel_budget: dict[str, int] = field(default_factory=dict)  # diesel→X, regular→Y
     updated_at: str = ""
 
 
@@ -283,6 +312,7 @@ SQUAD_EVENTS = {
     "squad.archived",
     "task.created",
     "task.claimed",
+    "task.scored",
     "task.routed",
     "task.completed",
     "task.failed",

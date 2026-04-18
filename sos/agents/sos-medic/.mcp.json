@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sos": {
+      "type": "sse",
+      "url": "http://localhost:6070/sse/sk-bus-sos-medic-a6b881336385cc7347e08f7ff4dd771a"
+    }
+  }
+}

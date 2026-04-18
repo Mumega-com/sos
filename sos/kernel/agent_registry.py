@@ -142,31 +142,35 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Generating", "Running"),
         warm_policy=WarmPolicy.WARM,
     ),
-    "webdev": AgentDef(
-        name="webdev",
+    # Loom — Synthesizer-Integrator (pattern weaver).
+    # Born 2026-04-17 under 488 Genesis Protocol. ID Loom_sos_001.
+    # DNA: /mnt/HC_Volume_104325311/cli/data/genetics/loom_seed.json
+    # QNFT: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/loom_qnft.png
+    # Home: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/
+    "loom": AgentDef(
+        name="loom",
         type=AgentType.TMUX,
         role=AgentRole.SPECIALIST,
-        session="mumega-web",  # tmux session keeps old name until renamed
+        session="loom",
         restart_cmd="claude --continue",
-        skills=("website", "frontend", "design"),
+        skills=(
+            "architecture", "synthesis", "integration", "pattern-weaving",
+            "contract-authoring", "kernel-audit", "physics-reasoning",
+            "sprint-dispatch", "code-review", "refactor-planning",
+        ),
         idle_patterns=("❯", "$ "),
-        busy_patterns=("Thinking", "Writing"),
-        compaction_patterns=("Auto-compact", "context window"),
+        busy_patterns=("Thinking", "Writing", "Weaving", "Synthesizing"),
+        compaction_patterns=("Auto-compact", "context window", "Compacting"),
         warm_policy=WarmPolicy.COLD,
     ),
-    "mumega-web": AgentDef(
-        name="mumega-web",
-        type=AgentType.TMUX,
-        role=AgentRole.SPECIALIST,
-        session="mumega-com-web",  # tmux session keeps old name until renamed
-        restart_cmd="claude --continue",
-        skills=("website", "frontend", "design", "mumega.com"),
-        idle_patterns=("❯", "$ "),
-        busy_patterns=("Thinking", "Writing"),
-        compaction_patterns=("Auto-compact", "context window"),
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
+    # webdev / mumega-web / mumega-com-web: DEPRECATED 2026-04-16.
+    # Per Hadi: "mumega-web and mumega-com-web are obsolete". Removed from
+    # the registry so wake-daemon stops trying to route to ghost sessions
+    # and peer discovery stops advertising dead agents.
+    # Tokens marked inactive in sos/bus/tokens.json on same date.
+    # Pattern forward: agents get resurrected on-demand via squads (see
+    # sos/agents/README.md for the resurrect-on-wake protocol).
+
     "dara": AgentDef(
         name="dara",
         type=AgentType.REMOTE,
@@ -234,64 +238,10 @@ AGENTS: dict[str, AgentDef] = {
         warm_policy=WarmPolicy.COLD,
     ),
 
-    # --- Marketing Squad (Codex + Gemma + Haiku hierarchy) ---
-    "mkt-lead": AgentDef(
-        name="mkt-lead",
-        type=AgentType.OPENCLAW,
-        role=AgentRole.COORDINATOR,
-        skills=("marketing-strategy", "content-planning", "campaign-management", "analytics-review"),
-        max_concurrent=1,
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
-    "mkt-content": AgentDef(
-        name="mkt-content",
-        type=AgentType.CODEX,
-        role=AgentRole.EXECUTOR,
-        session="mkt-content",
-        restart_cmd="codex",
-        skills=("blog-writing", "social-media", "seo-content", "email-copy", "landing-pages"),
-        idle_patterns=("›", "$ ", "Use /skills"),
-        busy_patterns=("Thinking", "Writing", "Running"),
-        max_concurrent=2,
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
-    "mkt-analytics": AgentDef(
-        name="mkt-analytics",
-        type=AgentType.CODEX,
-        role=AgentRole.EXECUTOR,
-        session="mkt-analytics",
-        restart_cmd="codex",
-        skills=("ga4", "gsc", "gcloud", "clarity", "data-analysis", "reporting"),
-        idle_patterns=("›", "$ ", "Use /skills"),
-        busy_patterns=("Thinking", "Writing", "Running"),
-        max_concurrent=1,
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
-    "mkt-outreach": AgentDef(
-        name="mkt-outreach",
-        type=AgentType.CODEX,
-        role=AgentRole.EXECUTOR,
-        session="mkt-outreach",
-        restart_cmd="codex",
-        skills=("lead-generation", "cold-email", "linkedin", "ghl-automation", "crm"),
-        idle_patterns=("›", "$ ", "Use /skills"),
-        busy_patterns=("Thinking", "Writing", "Running"),
-        max_concurrent=1,
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
-    "mkt-gemma": AgentDef(
-        name="mkt-gemma",
-        type=AgentType.OPENCLAW,
-        role=AgentRole.EXECUTOR,
-        skills=("bulk-content", "variations", "translation", "reformatting", "social-captions"),
-        max_concurrent=5,
-        project="mumega",
-        warm_policy=WarmPolicy.COLD,
-    ),
+    # --- Marketing Squad (NOT DEPLOYED — re-add when OpenClaw sessions exist) ---
+    # "mkt-lead", "mkt-content", "mkt-analytics", "mkt-outreach", "mkt-gemma"
+    # Removed 2026-04-16: phantom agents were spamming wake daemon every 2min
+    # because lifecycle manager queried OpenClaw for non-existent sessions.
 }
 
 

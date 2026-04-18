@@ -18,6 +18,8 @@ from typing import Optional, Dict, Any, List, Callable
 from sos.kernel import Config
 from sos.kernel.dreams import DreamSynthesizer, DreamType, Dream
 from sos.observability.logging import get_logger
+from sos.contracts.identity import UV16D
+from sos.clients.identity import AsyncIdentityClient
 
 log = get_logger("autonomy_service")
 
@@ -98,22 +100,25 @@ class AutonomyService:
         else:
             self.dreamer = None
 
-        # Avatar generator (lazy load to avoid PIL dependency)
-        self._avatar_generator = None
+        # Identity HTTP client — replaces the in-process AvatarGenerator /
+        # SocialAutomation imports (P0-07). Base URL + token resolved from
+        # env (``SOS_IDENTITY_URL`` / ``SOS_IDENTITY_TOKEN``) with sensible
+        # localhost default. Cheap to construct; reused for both
+        # generate_avatar and on_alpha_drift calls.
+        self._identity_client: Optional[AsyncIdentityClient] = None
+        if self.config.enable_avatar:
+            self._identity_client = AsyncIdentityClient(
+                base_url=os.getenv("SOS_IDENTITY_URL"),
+                token=os.getenv("SOS_IDENTITY_TOKEN"),
+            )
 
         # Memory client for ARF state
         self._memory_client = None
 
     @property
-    def avatar_generator(self):
-        """Lazy load avatar generator."""
-        if self._avatar_generator is None and self.config.enable_avatar:
-            try:
-                from sos.services.identity.avatar import AvatarGenerator
-                self._avatar_generator = AvatarGenerator()
-            except ImportError:
-                log.warn("Avatar generator not available")
-        return self._avatar_generator
+    def identity_client(self) -> Optional[AsyncIdentityClient]:
+        """Return the Identity HTTP client (None if avatars are disabled)."""
+        return self._identity_client
 
     async def _emit(self, event_type: str, data: Dict[str, Any]):
         """Emit event to callback."""
@@ -300,16 +305,14 @@ class AutonomyService:
             await self._post_to_social(dream)
 
     async def _generate_avatar(self, dream: Dream, alpha: float):
-        """Generate QNFT avatar on significant event."""
-        if not self.avatar_generator:
+        """Generate QNFT avatar on significant event via identity HTTP."""
+        if not self._identity_client:
             return
 
         import time
         self.last_avatar_time = time.time()
 
         try:
-            from sos.services.identity.avatar import UV16D
-
             # Create UV16D from dream state
             uv = UV16D(
                 p=0.5 + dream.relevance_score * 0.3,
@@ -317,11 +320,11 @@ class AutonomyService:
                 phi=0.8 if dream.is_breakthrough else 0.6,
             )
 
-            result = self.avatar_generator.generate(
+            result = await self._identity_client.generate_avatar(
                 agent_id=self.agent_id.split(":")[-1],
                 uv=uv,
                 alpha_drift=alpha,
-                event_type="dream_synthesis"
+                event_type="dream_synthesis",
             )
 
             log.info(f"Avatar generated: {result.get('path')}")
@@ -331,19 +334,19 @@ class AutonomyService:
             log.error(f"Avatar generation failed: {e}")
 
     async def _post_to_social(self, dream: Dream):
-        """Post insight to social media."""
-        try:
-            from sos.services.identity.avatar import SocialAutomation, UV16D
+        """Post insight to social media via identity HTTP."""
+        if not self._identity_client:
+            return
 
-            automation = SocialAutomation()
+        try:
             uv = UV16D(phi=dream.relevance_score)
 
-            result = await automation.on_alpha_drift(
+            result = await self._identity_client.on_alpha_drift(
                 agent_id=self.agent_id.split(":")[-1],
                 uv=uv,
                 alpha_value=0.0,  # Low alpha triggered this
                 insight=dream.insights or dream.content[:200],
-                platforms=["twitter"]
+                platforms=["twitter"],
             )
 
             log.info(f"Social post: {result}")

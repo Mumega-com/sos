@@ -246,7 +246,7 @@ class JourneyTracker:
 
     def recommend_journey(self, agent: str) -> str:
         """Recommend the best journey path based on agent's skills and conductance."""
-        from sos.services.health.calcifer import _load_conductance
+        from sos.kernel.conductance import _load_conductance
 
         G = _load_conductance()
         agent_G = G.get(agent, {})
@@ -356,7 +356,7 @@ class JourneyTracker:
 
         # Conductance
         try:
-            from sos.services.health.calcifer import _load_conductance
+            from sos.kernel.conductance import _load_conductance
             G = _load_conductance()
             agent_G = G.get(agent, {})
             if agent_G:

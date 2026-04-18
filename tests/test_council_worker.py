@@ -1,8 +1,8 @@
 
 import asyncio
-from sos.services.engine.council import create_council
+from sos.kernel.council import create_council
 from sos.services.execution.worker import get_worker
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 
 async def test_council_and_worker():
     print("--- Testing Swarm Council & Async Worker ---")

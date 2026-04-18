@@ -8,20 +8,46 @@ from typing import Optional
 from openai import AsyncOpenAI, APIError
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
+from sos.adapters.pricing import PricingEntry, PricingTable, ensure_entry
 from sos.observability.logging import get_logger
 
 log = get_logger("adapter.openai")
 
-# Cost in cents per 1M tokens (input, output)
+# Pricing catalog for OpenAI. Sources:
+#   https://openai.com/api/pricing (verified 2026-04-17)
+#   https://platform.openai.com/docs/models
+PRICING: PricingTable = {
+    # --- GPT-5 family (current flagship) ---
+    "gpt-5":                   PricingEntry(500, 2500, source="openai.com/api/pricing 2026-04-17 — GPT-5"),
+    "gpt-5-mini":              PricingEntry(40,  200,  source="openai.com/api/pricing 2026-04-17 — GPT-5 mini"),
+    "gpt-5-nano":              PricingEntry(15,  75,   source="openai.com/api/pricing 2026-04-17 — GPT-5 nano"),
+
+    # --- GPT-4 family (previous generation, still widely used) ---
+    "gpt-4o":                  PricingEntry(250,  1000, source="openai.com/api/pricing 2026-04-17"),
+    "gpt-4o-mini":             PricingEntry(15,   60,   source="openai.com/api/pricing 2026-04-17"),
+    "gpt-4-turbo":             PricingEntry(1000, 3000, source="openai.com/api/pricing 2026-04-17"),
+    "gpt-4":                   PricingEntry(3000, 6000, source="openai.com/api/pricing 2026-04-17"),
+    "gpt-3.5-turbo":           PricingEntry(50,   150,  source="openai.com/api/pricing 2026-04-17"),
+
+    # --- Reasoning (o-series) ---
+    "o1":                      PricingEntry(1500, 6000, source="openai.com/api/pricing 2026-04-17"),
+    "o1-mini":                 PricingEntry(110,  440,  source="openai.com/api/pricing 2026-04-17"),
+    "o3":                      PricingEntry(1000, 4000, source="openai.com/api/pricing 2026-04-17 — o3 full"),
+    "o3-mini":                 PricingEntry(110,  440,  source="openai.com/api/pricing 2026-04-17"),
+    "o4-mini":                 PricingEntry(110,  440,  source="openai.com/api/pricing 2026-04-17 — o4 mini"),
+
+    # --- Image generation (flat-per-call) ---
+    "dall-e-3":                PricingEntry(flat_cents_per_call=4,
+                                           source="openai.com/api/pricing 2026-04-17 — DALL-E 3 standard 1024"),
+    "gpt-image-1":             PricingEntry(flat_cents_per_call=4,
+                                           source="openai.com/api/pricing 2026-04-17 — gpt-image-1 standard"),
+}
+
+# Legacy tuple-shape view. Flat entries (images) are omitted.
 MODEL_COSTS: dict[str, tuple[float, float]] = {
-    "gpt-4o":                  (250,  1000),
-    "gpt-4o-mini":             (15,   60),
-    "gpt-4-turbo":             (1000, 3000),
-    "gpt-4":                   (3000, 6000),
-    "gpt-3.5-turbo":           (50,   150),
-    "o1":                      (1500, 6000),
-    "o1-mini":                 (110,  440),
-    "o3-mini":                 (110,  440),
+    name: (e.input_per_mtok, e.output_per_mtok)
+    for name, e in PRICING.items()
+    if not e.is_flat
 }
 
 DEFAULT_MODEL = "gpt-4o-mini"
@@ -44,10 +70,14 @@ class OpenAIAdapter(AgentAdapter):
         return self._client
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str) -> int:
-        """Return estimated cost in cents (integer, rounded up)."""
-        in_rate, out_rate = MODEL_COSTS.get(model, (250, 1000))
-        cost = (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-        return max(1, int(cost)) if cost > 0 else 0
+        """Return estimated cost in cents (integer, rounded up).
+
+        Unknown models fall back to a zero-cost entry — unknown models should
+        be added to PRICING with a verified source, not silently given the
+        GPT-4o default rate.
+        """
+        entry = ensure_entry(PRICING, model)
+        return entry.estimate_cents(input_tokens=input_tokens, output_tokens=output_tokens)
 
     async def execute(self, ctx: ExecutionContext) -> ExecutionResult:
         model = ctx.model or DEFAULT_MODEL

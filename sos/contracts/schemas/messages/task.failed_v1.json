@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task.failed_v1.json",
+  "title": "task.failed v1",
+  "description": "Explicit failure event for a task, distinct from task.completed with status=failed. Use when failure is detected externally (watchdog, timeout handler, Brain service) rather than by the executing agent.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task.failed",
+      "description": "Message type discriminator. Always 'task.failed' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9-]*$",
+      "description": "Bus identity of the agent or service that detected the failure."
+    },
+    "target": {
+      "type": "string",
+      "default": "sos:channel:tasks",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+      "description": "Bus channel this message is published to. Defaults to 'sos:channel:tasks'."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp at which this message was emitted."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "Schema version of this message. SemVer — major.minor or major.minor.patch."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message instance. UUID v4 recommended."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Data describing the externally-detected task failure.",
+      "required": [
+        "task_id",
+        "failed_at",
+        "error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Identifier of the task that failed. Alphanumeric, underscores, and dashes only."
+        },
+        "failed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the failure was detected."
+        },
+        "error": {
+          "type": "object",
+          "description": "Structured error detail for the failure.",
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^SOS-[A-Z0-9]{4,}$",
+              "description": "SOS error code in the format SOS-XXXX."
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable description of the error."
+            },
+            "traceback": {
+              "type": "string",
+              "description": "Full stack trace or exception chain as a plain string. Optional."
+            }
+          }
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "True if the scheduler may re-queue this task for another attempt."
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of previous attempts before this failure, if known."
+        },
+        "assigned_to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Agent that was assigned the task when the failure occurred, if known."
+        }
+      }
+    }
+  }
+}

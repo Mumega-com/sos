@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task.completed_v1.json",
+  "title": "SOS Task Completed Message",
+  "description": "Event emitted by an agent when it finishes a task (successfully or otherwise). Triggers feedback loop, settlement, and ledger entry on the SOS bus.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task.completed",
+      "description": "Discriminator field identifying this as a task.completed event."
+    },
+    "source": {
+      "type": "string",
+      "description": "Bus identity of the agent that completed the task. Must match the agent: URI scheme followed by a lowercase, dash-allowed agent name.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "string",
+      "description": "Destination channel or agent on the SOS bus. Defaults to the shared tasks channel.",
+      "default": "sos:channel:tasks",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of when this message was emitted.",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer (MAJOR.MINOR or MAJOR.MINOR.PATCH) of the message schema this record conforms to.",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Globally unique identifier for this message instance. Used for deduplication and tracing.",
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Task-specific result data including outcome, timing, resource usage, and optional error detail.",
+      "required": [
+        "task_id",
+        "status",
+        "completed_at"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Identifier of the task that was completed. Must be alphanumeric with underscores and dashes.",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "status": {
+          "type": "string",
+          "description": "Terminal status of the task. 'done' = success; 'failed' = agent error; 'cancelled' = externally aborted; 'timeout' = exceeded deadline.",
+          "enum": [
+            "done",
+            "failed",
+            "cancelled",
+            "timeout"
+          ]
+        },
+        "completed_at": {
+          "type": "string",
+          "description": "ISO-8601 UTC timestamp of when the task reached its terminal state.",
+          "format": "date-time"
+        },
+        "result": {
+          "type": "object",
+          "description": "Arbitrary structured output produced by the task. Present only when status is 'done'. Schema is task-type-specific.",
+          "additionalProperties": true
+        },
+        "duration_s": {
+          "type": "integer",
+          "description": "Wall-clock duration of the task in whole seconds from start to completion.",
+          "minimum": 0
+        },
+        "artifacts": {
+          "type": "array",
+          "description": "Opaque references (URLs, file paths, or object keys) to durable outputs produced by the task.",
+          "items": {
+            "type": "string",
+            "description": "A single artifact reference \u2014 URL, absolute path, or opaque storage key."
+          },
+          "uniqueItems": true
+        },
+        "tokens_spent": {
+          "type": "integer",
+          "description": "Total LLM tokens consumed by the agent during this task (input + output + cache read). Used for ledger and quota tracking.",
+          "minimum": 0
+        },
+        "cost_cents": {
+          "type": "integer",
+          "description": "Computed cost of the task in US cents (integer, no fractional cents). Used for settlement and billing.",
+          "minimum": 0
+        },
+        "error": {
+          "type": "object",
+          "description": "Structured error detail. Should be present when status is 'failed', 'cancelled', or 'timeout'. Omit for 'done'.",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "SOS error code in the format SOS-XXXX (e.g. SOS-4001). Maps to the canonical SOS error registry.",
+              "pattern": "^SOS-[A-Z0-9]{4,}$"
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable description of the error suitable for logging and operator review."
+            },
+            "traceback": {
+              "type": "string",
+              "description": "Full stack trace or exception chain as a plain string. Optional \u2014 include when available for post-mortem debugging."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

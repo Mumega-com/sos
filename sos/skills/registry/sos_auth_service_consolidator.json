@@ -1,0 +1,97 @@
+{
+  "schema_version": "1",
+  "id": "sos-auth-service-consolidator-v1",
+  "skill_descriptor_id": "sos-auth-service-consolidator-v1",
+  "name": "SOS Auth Service Consolidator — one token source of truth",
+  "version": "1.0.0",
+  "author_agent": "agent:sos-dev",
+  "created_at": "2026-04-17T14:17:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "call_site_globs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "sos/**/*.py"
+        ]
+      },
+      "preserve_env_vars": {
+        "type": "boolean",
+        "default": true,
+        "description": "Keep env var injection as fallback during migration"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "call_sites_migrated": {
+        "type": "integer"
+      },
+      "new_tests_added": {
+        "type": "integer"
+      }
+    }
+  },
+  "description": "Consolidates every scattered auth path (tokens.json, SOS_SYSTEM_TOKEN env, MIRROR_TOKEN env, BUS_BRIDGE_TOKEN, CYRUS_BUS_TOKEN, etc.) behind a single sos.services.auth module exposing verify_bearer(auth_header) -> AuthContext. Callers stop reading env vars and tokens.json directly. Adds integration tests for scope matrix (system/admin/tenant/agent).",
+  "tags": [
+    "sos",
+    "auth",
+    "refactor",
+    "security",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T16:26:46.910319+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T16:26:46.910250+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-auth-service-consolidator.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ]
+  }
+}

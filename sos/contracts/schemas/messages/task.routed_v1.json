@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task.routed_v1.json",
+  "title": "task.routed v1",
+  "description": "Event emitted by the Brain service when it selects an agent for a task. Provides routing decision metadata for observability and audit.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task.routed",
+      "description": "Message type discriminator. Always 'task.routed' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9-]*$",
+      "description": "Bus identity of the Brain service agent that made the routing decision."
+    },
+    "target": {
+      "type": "string",
+      "default": "sos:channel:tasks",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$",
+      "description": "Bus channel this message is published to. Defaults to 'sos:channel:tasks'."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp at which this message was emitted."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "Schema version of this message. SemVer — major.minor or major.minor.patch."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message instance. UUID v4 recommended."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Data describing the Brain's routing decision for the task.",
+      "required": [
+        "task_id",
+        "routed_to",
+        "routed_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Identifier of the task that was routed. Alphanumeric, underscores, and dashes only."
+        },
+        "routed_to": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Agent name selected by the Brain to execute the task."
+        },
+        "routed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the routing decision was made."
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Confidence score of the routing decision (0.0 = lowest, 1.0 = highest)."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Human-readable explanation of why this agent was selected."
+        },
+        "skill_matched": {
+          "type": "string",
+          "description": "Skill identifier that matched the task's skill requirement, if applicable."
+        },
+        "fallback": {
+          "type": "boolean",
+          "description": "True if this was a fallback routing (primary agent unavailable). False for primary selection."
+        }
+      }
+    }
+  }
+}

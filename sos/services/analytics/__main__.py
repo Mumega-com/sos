@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -69,7 +70,7 @@ def run_tenant(name: str, config: dict[str, str], days: int) -> str:
     )
 
     try:
-        result = ingester.ingest_all(days=days)
+        result = asyncio.run(ingester.ingest_all(days=days))
         return result
     finally:
         ingester.close()

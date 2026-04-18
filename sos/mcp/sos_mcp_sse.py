@@ -15,6 +15,7 @@ Port: 6070 (env: SOS_MCP_PORT)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -33,9 +34,64 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
-from sos.services.squad.auth import SYSTEM_TOKEN as SQUAD_SYSTEM_TOKEN
-from sos.services.squad.auth import _lookup_token as lookup_squad_token
-from sos.services.squad.service import SquadDB
+from sos.clients.billing import AsyncBillingClient
+from sos.clients.integrations import AsyncIntegrationsClient
+from sos.clients.saas import AsyncSaasClient, SaasClient
+from sos.clients.squad import SquadClient
+from sos.contracts.messages import SendMessage
+from sos.mcp.customer_tools import (
+    BLOCKED_TOOLS,
+    TOOL_MAPPING,
+    get_customer_tools,
+    get_tools_for_role,
+    is_customer_tool,
+    is_tool_allowed_for_role,
+)
+from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+
+# Squad system token now resolves from env — same pattern as agents/join
+# after v0.4.6 P1-05. Default mirrors sos.services.squad.auth.SYSTEM_TOKEN
+# so existing deployments keep working without env changes.
+SQUAD_SYSTEM_TOKEN = os.environ.get("SOS_SQUAD_SYSTEM_TOKEN") or os.environ.get(
+    "SOS_SYSTEM_TOKEN", "sk-sos-system"
+)
+
+_squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
+_saas_client = SaasClient()
+_async_saas_client = AsyncSaasClient()
+_async_billing_client = AsyncBillingClient()
+_async_integrations_client = AsyncIntegrationsClient()
+
+
+def _audit_tool_call(
+    tenant: str,
+    tool: str,
+    actor: str = "",
+    ip: str = "",
+    details: dict | None = None,
+) -> None:
+    """Fire-and-forget audit write. Never blocks the request path.
+
+    Uses the async client from the running event loop when available;
+    falls back to the sync client if called outside an async context.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(
+            _async_saas_client.log_tool_call(
+                tenant, tool, actor=actor, ip=ip, details=details
+            )
+        )
+        return
+    try:
+        _saas_client.log_tool_call(
+            tenant, tool, actor=actor, ip=ip, details=details
+        )
+    except Exception as exc:
+        log.warning("audit log_tool_call failed: %s", exc)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -126,6 +182,14 @@ class MCPAuthContext:
         return None if self.is_system else self.tenant_id
 
     agent_name: str = ""  # Explicit agent identity from token
+    scope: str = ""  # "customer" for external customers; empty for internal agents
+    plan: str | None = None  # starter | growth | scale | None (system)
+    role: str = "admin"  # admin | editor | viewer
+
+    @property
+    def is_customer(self) -> bool:
+        """True only for external customer tokens — gates tool visibility and access."""
+        return self.scope == "customer"
 
     @property
     def agent_scope(self) -> str:
@@ -232,9 +296,85 @@ def mirror_put(path: str, body: dict[str, Any]) -> Any:
         return {}
 
 
-_squad_db = SquadDB()
 _cloudflare_token_cache: dict[str, tuple[float, MCPAuthContext | None]] = {}
-_local_token_cache: dict[str, MCPAuthContext] = {}
+
+
+class _TokenCacheWithHotReload:
+    """Token cache with automatic mtime-based reload.
+
+    Stores tokens.json mtime and reloads the cache if the file changes.
+    Includes a 30-second TTL to avoid filesystem hits on every request.
+    """
+    def __init__(self):
+        self._cache: dict[str, MCPAuthContext] = {}
+        self._mtime: float = 0
+        self._last_check: float = 0
+        self._check_interval: float = 30  # Check mtime every 30 seconds max
+
+    def get(self) -> dict[str, MCPAuthContext]:
+        """Get tokens, reloading if file changed or TTL expired."""
+        now = time.monotonic()
+
+        # Check if we should reload (at least 30 seconds since last check or file changed)
+        if now - self._last_check >= self._check_interval:
+            try:
+                current_mtime = os.path.getmtime(BUS_TOKENS_PATH)
+                if current_mtime != self._mtime:
+                    log.info(f"tokens.json changed (mtime {self._mtime:.1f} -> {current_mtime:.1f}), reloading")
+                    self._reload()
+                    self._mtime = current_mtime
+            except OSError:
+                # File doesn't exist, keep current cache
+                pass
+            self._last_check = now
+
+        return self._cache
+
+    def _reload(self) -> None:
+        """Reload tokens from file. Cache is keyed by SHA-256 token hash."""
+        cache: dict[str, MCPAuthContext] = {}
+        try:
+            raw = json.loads(BUS_TOKENS_PATH.read_text())
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                if not item.get("active"):
+                    continue
+                # Prefer stored token_hash; fall back to hashing raw token for
+                # entries that haven't been migrated yet.
+                stored_hash = item.get("token_hash", "")
+                raw_token = item.get("token", "")
+                if stored_hash:
+                    hash_key = stored_hash
+                elif raw_token:
+                    hash_key = hashlib.sha256(raw_token.encode()).hexdigest()
+                else:
+                    continue
+                project = item.get("project") or None
+                agent_name = item.get("agent", "")
+                scope = item.get("scope", "")
+                plan = item.get("plan") or None
+                role = item.get("role", "admin")
+                cache[hash_key] = MCPAuthContext(
+                    token=hash_key,  # store hash, never the raw token
+                    tenant_id=project,
+                    is_system=project is None,
+                    source="bus_tokens",
+                    agent_name=agent_name,
+                    scope=scope,
+                    plan=plan,
+                    role=role,
+                )
+        except Exception as e:
+            log.error(f"Failed to load tokens.json: {e}")
+        self._cache = cache
+
+    def invalidate(self) -> None:
+        """Force immediate reload on next call."""
+        self._last_check = 0
+        self._mtime = 0
+
+
+_local_token_cache = _TokenCacheWithHotReload()
 
 
 def _system_tokens() -> set[str]:
@@ -245,30 +385,8 @@ def _system_tokens() -> set[str]:
 
 
 def _load_bus_tokens() -> dict[str, MCPAuthContext]:
-    global _local_token_cache
-    if _local_token_cache:
-        return _local_token_cache
-    cache: dict[str, MCPAuthContext] = {}
-    try:
-        raw = json.loads(BUS_TOKENS_PATH.read_text())
-        items = raw if isinstance(raw, list) else [raw]
-        for item in items:
-            token = item.get("token", "")
-            if not token or not item.get("active"):
-                continue
-            project = item.get("project") or None
-            agent_name = item.get("agent", "")
-            cache[token] = MCPAuthContext(
-                token=token,
-                tenant_id=project,
-                is_system=project is None,
-                source="bus_tokens",
-                agent_name=agent_name,
-            )
-    except Exception:
-        return {}
-    _local_token_cache = cache
-    return cache
+    """Load bus tokens with automatic hot-reload on file changes."""
+    return _local_token_cache.get()
 
 
 def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
@@ -296,8 +414,20 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
             payload = json.loads(resp.text)
             project = payload.get("project") or None
             active = payload.get("active", True)
-            if project and active:
-                ctx = MCPAuthContext(token=token, tenant_id=project, is_system=False, source="cloudflare_kv")
+            agent_name = payload.get("agent", "")
+            scope = payload.get("scope", "")
+            plan = payload.get("plan") or None
+            role = payload.get("role", "admin")
+            if active and (project or agent_name):
+                ctx = MCPAuthContext(
+                    token=token, tenant_id=project,
+                    is_system=project is None,
+                    source="cloudflare_kv",
+                    agent_name=agent_name,
+                    scope=scope,
+                    plan=plan,
+                    role=role,
+                )
             else:
                 ctx = None
     except Exception:
@@ -307,21 +437,58 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
 
 
 def _resolve_token_context(token: str) -> MCPAuthContext | None:
+    """Resolve a raw token string to an MCPAuthContext.
+
+    For the bus-token path, this now delegates to sos.services.auth.verify_bearer
+    (single source of truth).  The URL-based /sse/<token> flow constructs a
+    synthetic ``Authorization: Bearer <token>`` header and calls verify_bearer,
+    which handles env-var system tokens, sha256 token_hash, bcrypt, and raw token
+    fallback — without any direct tokens.json reads here.
+
+    Lookup order:
+      1. MCP_ACCESS_TOKENS / SQUAD_SYSTEM_TOKEN env vars (system path, no file I/O)
+      2. sos.services.auth.verify_bearer (bus tokens via canonical auth module)
+      3. Squad API keys DB (squad_api_keys table)
+      4. Cloudflare KV (edge-provisioned tokens)
+    """
     if not token:
         return None
+    # 1. Env-var system tokens checked first — fast path, no file I/O.
     if token in _system_tokens():
         return MCPAuthContext(token=token, tenant_id=None, is_system=True, source="system")
-    local_bus = _load_bus_tokens().get(token)
-    if local_bus:
-        return local_bus
-    squad_auth = lookup_squad_token(token, _squad_db)
-    if squad_auth:
+    # 2. Bus tokens via canonical auth module — replaces direct _load_bus_tokens() lookup.
+    auth_ctx = _auth_verify_bearer(f"Bearer {token}")
+    if auth_ctx is not None:
+        # Map AuthContext → MCPAuthContext, preserving all attributes read by handlers.
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        # Try to pull richer metadata (scope, plan, role) from the local cache built
+        # by _TokenCacheWithHotReload so we don't lose those fields.
+        local_bus = _load_bus_tokens().get(token_hash)
+        if local_bus:
+            return local_bus
+        # Fallback: construct MCPAuthContext from AuthContext alone.
         return MCPAuthContext(
             token=token,
-            tenant_id=squad_auth.tenant_id,
-            is_system=squad_auth.is_system,
+            tenant_id=auth_ctx.project,
+            is_system=auth_ctx.is_system,
+            source="bus_tokens",
+            agent_name=auth_ctx.agent or "",
+            role="admin" if auth_ctx.is_admin else "viewer",
+        )
+    # 3. Squad API keys (resolved over HTTP via SquadClient — was an
+    #    in-process DB lookup before v0.4.7 P1-01).
+    try:
+        squad_auth = _squad_client.verify_token(token)
+    except Exception:
+        squad_auth = None
+    if squad_auth and squad_auth.get("ok"):
+        return MCPAuthContext(
+            token=token,
+            tenant_id=squad_auth.get("tenant_id"),
+            is_system=bool(squad_auth.get("is_system")),
             source="squad_api_keys",
         )
+    # 4. Cloudflare KV.
     return _lookup_cloudflare_token(token)
 
 
@@ -501,6 +668,19 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "task_board",
+            "description": "Prioritized task board — unified view across all projects. Returns scored + sorted tasks. Score = priority×10 + blocks×5 + staleness×2 + revenue_bonus.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Filter by project (optional)"},
+                    "agent": {"type": "string", "description": "Filter by assignee (optional)"},
+                    "limit": {"type": "integer", "default": 20},
+                    "status": {"type": "string", "default": "queued", "description": "Filter: queued, claimed, in_progress, blocked, all"},
+                },
+            },
+        },
+        {
             "name": "onboard",
             "description": "Onboard a new agent or customer. For agents: generates tokens, registers in Squad Service, sets up routing, announces on bus — full self-onboarding in one call. For customers (system token only): creates tokens, squad, genesis task.",
             "inputSchema": {
@@ -537,6 +717,18 @@ def get_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+        {
+            "name": "code_mode",
+            "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["code"],
+                "properties": {
+                    "code": {"type": "string", "description": "Python snippet to execute. Last expression becomes the return value. Available names: `tools` (SimpleNamespace) and a small allowlist of builtins (int, str, list, dict, ...). Imports are blocked."},
+                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 10.0, "default": 5.0},
+                },
             },
         },
     ]
@@ -677,6 +869,73 @@ def _text(t: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": t}]}
 
 
+# Safe, read-only tools exposed inside code_mode's `tools` namespace. Keep this
+# set narrow — every name here is callable from a client-supplied snippet.
+_CODE_MODE_SAFE_TOOLS: frozenset[str] = frozenset(
+    {"status", "peers", "memories", "recall", "search_code", "task_board", "task_list"}
+)
+
+
+def _make_code_mode_sync_wrapper(
+    tool_name: str, auth: MCPAuthContext
+) -> Any:
+    """Build a sync callable that forwards kwargs to ``handle_tool(tool_name, ...)``.
+
+    Runs the coroutine to completion using the event loop the helper itself
+    is running on. If we're in an event loop (normal case — ``handle_tool``
+    is async), schedule via ``run_coroutine_threadsafe`` and block the
+    snippet's worker thread until done.
+    """
+
+    def _sync(**kw: Any) -> Any:
+        coro = handle_tool(tool_name, kw, auth)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        import concurrent.futures  # noqa: PLC0415 - local import keeps hot path cold
+
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return fut.result(timeout=10.0)
+        except concurrent.futures.TimeoutError:
+            return {"error": "tool_call_timeout"}
+
+    return _sync
+
+
+async def _handle_code_mode(
+    args: dict[str, Any], auth: MCPAuthContext
+) -> dict[str, Any]:
+    """Execute a Python snippet via ``sos.mcp.code_mode.execute_snippet``.
+
+    Exposes a narrow, read-only slice of ``handle_tool`` as the ``tools``
+    namespace. Empty ``code`` is rejected. The return shape is a standard
+    MCP content block wrapping a JSON body (``value``, ``stdout``,
+    ``stderr``, ``duration_ms``, ``token_estimate``).
+    """
+    from sos.mcp.code_mode import execute_snippet  # noqa: PLC0415
+
+    code = str(args.get("code", ""))
+    if not code.strip():
+        return _text("error: empty code")
+    timeout_s = float(args.get("timeout_s", 5.0))
+
+    tools_map: dict[str, Any] = {
+        tn: _make_code_mode_sync_wrapper(tn, auth) for tn in _CODE_MODE_SAFE_TOOLS
+    }
+
+    result = await execute_snippet(code=code, tools=tools_map, timeout_s=timeout_s)
+    payload = {
+        "value": repr(result["value"]),
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+        "duration_ms": result["duration_ms"],
+        "token_estimate": result["token_estimate"],
+    }
+    return _text(json.dumps(payload))
+
+
 async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     r = _get_redis()
@@ -709,6 +968,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             return _text("Rate limit: too many write operations. Try again in a minute.")
 
     try:
+        # --- code_mode ---
+        if name == "code_mode":
+            return await _handle_code_mode(args, auth)
+
         # --- ask ---
         if name == "ask":
             agent = _require_same_tenant_agent(auth, args.get("agent"))
@@ -739,24 +1002,33 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             to = _require_same_tenant_agent(auth, args.get("to"))
             text = args["text"]
             stream = _agent_stream(to, project_scope)
-            msg = scoped_sos_msg("chat", f"agent:{agent_scope}", f"agent:{to}", text, project_scope)
+            # v0.4.0-beta.1: v1 "send" message with structured payload. Builds via
+            # Pydantic model so all schema invariants (source pattern, target pattern,
+            # ISO timestamp, UUID message_id, payload.text max length, content_type
+            # enum) are enforced on construction — before any XADD.
+            try:
+                sendmsg = SendMessage(
+                    source=f"agent:{agent_scope}",
+                    target=f"agent:{to}",
+                    timestamp=SendMessage.now_iso(),
+                    message_id=str(uuid4()),
+                    payload={"text": text, "content_type": "text/plain"},
+                )
+            except Exception as ve:
+                log.error(f"SendMessage construction failed: {ve}")
+                return _text(f"error: SOS-4001 {ve}")
+            msg = sendmsg.to_redis_fields()
+            if project_scope:
+                msg["project"] = project_scope
+            # Pydantic already validated on construction above — no second enforce()
+            # pass because the Redis-field shape (payload as JSON string) is not
+            # re-parseable by Pydantic without from_redis_fields() (which would be
+            # wasted cycles). Validation happened at SendMessage(...) ingress.
             mid = await r.xadd(stream, msg)
             await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
-            try:
-                await loop.run_in_executor(
-                    None,
-                    mirror_post,
-                    "/store",
-                    {
-                        "text": f"[{AGENT_SELF} -> {to}] {text}",
-                        "agent": agent_scope,
-                        "project": project_scope,
-                        "context_id": _scoped_context_id(auth, f"msg_{mid}"),
-                    },
-                )
-            except Exception:
-                pass
+            # mirror_post("/store", ...) removed — mirror_bus_consumer subscribes
+            # to sos:stream:* and writes engrams asynchronously off the stream.
             return _text(f"Sent to {to} (id: {mid})")
 
         # --- inbox ---
@@ -779,8 +1051,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- peers ---
         elif name == "peers":
-            pattern = f"{_prefix(project_scope)}:agent:*"
             agents: set[str] = set()
+            # Project-scoped tokens only see agents in their project
+            pattern = f"{_prefix(project_scope)}:agent:*"
             cursor = 0
             while True:
                 cursor, keys = await r.scan(cursor, match=pattern, count=100)
@@ -788,7 +1061,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     agents.add(k.split(":")[-1])
                 if cursor == 0:
                     break
+            # System tokens with no project scope see global agents only
+            # (not every project's agents — that doesn't scale to 1M squads)
             if auth.is_system and not project_scope:
+                # Also check legacy stream pattern
                 cursor = 0
                 while True:
                     cursor, keys = await r.scan(
@@ -798,6 +1074,11 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                         agents.add(k.split(":")[-1])
                     if cursor == 0:
                         break
+            # Filter out internal system agents from non-system callers
+            internal_agents = {"sos-mcp-sse", "sos-squad", "sovereign-loop", "calcifer",
+                               "lifecycle", "task-poller", "wake-daemon"}
+            if not auth.is_system:
+                agents -= internal_agents
             scope = f"project:{project_scope}" if project_scope else "global"
             return _text(
                 f"Agents ({scope}): {', '.join(sorted(agents))}" if agents else "No agents found."
@@ -813,7 +1094,21 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             else:
                 stream = f"{_prefix(project_scope)}:broadcast"
                 channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
-            msg = scoped_sos_msg("broadcast", f"agent:{agent_scope}", channel, text, project_scope)
+            # v0.4.0: broadcast uses v1 "send" type with a channel target.
+            try:
+                bmsg = SendMessage(
+                    source=f"agent:{agent_scope}",
+                    target=channel,
+                    timestamp=SendMessage.now_iso(),
+                    message_id=str(uuid4()),
+                    payload={"text": text, "content_type": "text/plain"},
+                )
+            except Exception as ve:
+                log.error(f"broadcast SendMessage construction failed: {ve}")
+                return _text(f"error: SOS-4001 {ve}")
+            msg = bmsg.to_redis_fields()
+            if project_scope:
+                msg["project"] = project_scope
             mid = await r.xadd(stream, msg)
             await r.publish(channel, json.dumps(msg))
             return _text(f"Broadcast to {channel} (id: {mid})")
@@ -821,17 +1116,29 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- remember ---
         elif name == "remember":
             ctx = _scoped_context_id(auth, args.get("context"))
-            await loop.run_in_executor(
-                None,
-                mirror_post,
-                "/store",
-                {
-                    "text": args["text"],
-                    "agent": agent_scope,
-                    "project": project_scope,
-                    "context_id": ctx,
-                },
-            )
+            # mirror_post("/store", ...) removed — mirror_bus_consumer writes engrams
+            # from the bus stream asynchronously. Direct HTTP write retired.
+            # Publish a "remember" type message onto the agent's stream so the
+            # bus consumer picks it up and stores the engram automatically.
+            try:
+                from uuid import uuid4 as _uuid4
+                rem_msg = {
+                    "type": "send",
+                    "source": f"agent:{agent_scope}",
+                    "target": f"agent:{agent_scope}",
+                    "timestamp": SendMessage.now_iso(),
+                    "message_id": str(_uuid4()),
+                    "payload": json.dumps({
+                        "text": args["text"],
+                        "content_type": "text/plain",
+                        "remember": True,
+                    }),
+                }
+                if project_scope:
+                    rem_msg["project"] = project_scope
+                await r.xadd(_agent_stream(agent_scope, project_scope), rem_msg)
+            except Exception:
+                pass
             return _text(f"Stored: {ctx}")
 
         # --- recall ---
@@ -897,19 +1204,22 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- task_create ---
         elif name == "task_create":
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
             await loop.run_in_executor(
                 None,
-                mirror_post,
-                "/tasks",
-                {
-                    "title": args["title"],
-                    "description": args.get("description", ""),
-                    "assignee": _require_same_tenant_agent(auth, args.get("assignee")),
-                    "priority": args.get("priority", "medium"),
-                    "status": "pending",
-                    "agent": agent_scope,
-                    "project": project_scope,
-                },
+                lambda: requests.post(
+                    f"{SQUAD_SERVICE_URL}/tasks",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    json={
+                        "title": args["title"],
+                        "description": args.get("description", ""),
+                        "assignee": _require_same_tenant_agent(auth, args.get("assignee")),
+                        "priority": args.get("priority", "medium"),
+                        "agent": agent_scope,
+                        "project": project_scope or args.get("project"),
+                    },
+                    timeout=10,
+                ),
             )
             return _text(f"Task created: {args['title']}")
 
@@ -923,7 +1233,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 params += f"&agent={assignee}"
             if project_scope:
                 params += f"&project={project_scope}"
-            result = await loop.run_in_executor(None, mirror_get, f"/tasks{params}")
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
+            result = await loop.run_in_executor(
+                None,
+                lambda: requests.get(
+                    f"{SQUAD_SERVICE_URL}/tasks{params}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                ).json(),
+            )
             tasks = result if isinstance(result, list) else result.get("tasks", [])
             if project_scope:
                 tasks = [t for t in tasks if t.get("project") == project_scope]
@@ -932,21 +1250,106 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             lines = []
             for t in tasks:
                 lines.append(
-                    f"[{t.get('status', '?')}] {t.get('title', '?')} -> {t.get('assignee', '?')}"
+                    f"[{t.get('status', '?')}] {t.get('title', '?')} -> {t.get('assignee', t.get('agent', '?'))}"
                 )
             return _text("\n".join(lines))
 
         # --- task_update ---
         elif name == "task_update":
-            task = await loop.run_in_executor(None, mirror_get, f"/tasks/{args['task_id']}")
+            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
+            task = await loop.run_in_executor(
+                None,
+                lambda: requests.get(
+                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                ).json(),
+            )
             _ensure_task_in_scope(task, auth)
-            body: dict[str, Any] = {"task_id": args["task_id"]}
+            body: dict[str, Any] = {}
             if args.get("status"):
                 body["status"] = args["status"]
             if args.get("notes"):
                 body["notes"] = args["notes"]
-            await loop.run_in_executor(None, mirror_put, f"/tasks/{args['task_id']}", body)
+            await loop.run_in_executor(
+                None,
+                lambda: requests.put(
+                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    json=body,
+                    timeout=5,
+                ),
+            )
             return _text(f"Task {args['task_id']} updated")
+
+        # --- task_board (prioritized unified view) ---
+        elif name == "task_board":
+            REVENUE_PROJECTS = {"dentalnearyou", "dnu", "gaf", "viamar", "stemminds", "pecb", "digid", "torivers"}
+            PRIORITY_W = {"critical": 4, "urgent": 4, "high": 3, "medium": 2, "low": 1}
+
+            # Pull exclusively from Squad Service — Mirror /tasks is retired (410).
+            all_tasks: list[dict] = []
+            try:
+                squad_resp = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(f"{SQUAD_SERVICE_URL}/tasks", headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"}, timeout=5).json(),
+                )
+                squad_tasks = squad_resp if isinstance(squad_resp, list) else squad_resp.get("tasks", [])
+                for t in squad_tasks:
+                    t["_source"] = "squad"
+                all_tasks.extend(squad_tasks)
+            except Exception:
+                pass
+            # Mirror /tasks secondary fetch removed — Mirror retired its /tasks
+            # endpoints (410 Gone). Squad Service is the single source of truth.
+
+            # Filter
+            status_filter = args.get("status", "queued")
+            if status_filter != "all":
+                all_tasks = [t for t in all_tasks if t.get("status") == status_filter]
+            if args.get("project"):
+                all_tasks = [t for t in all_tasks if t.get("project") == args["project"]]
+            if args.get("agent"):
+                all_tasks = [t for t in all_tasks if t.get("assignee") == args["agent"] or t.get("agent") == args["agent"]]
+            if project_scope and not auth.is_system:
+                all_tasks = [t for t in all_tasks if t.get("project") == project_scope]
+
+            # Score
+            def _score(t: dict) -> int:
+                p = str(t.get("priority", "medium")).lower()
+                blocks = len(t.get("blocks") or t.get("blocks_json") or [])
+                updated = t.get("updated_at", "")
+                staleness = 0
+                if updated:
+                    try:
+                        from datetime import datetime as dt
+                        age = (dt.now(timezone.utc) - dt.fromisoformat(updated.replace("Z", "+00:00"))).days
+                        staleness = min(age, 30)
+                    except Exception:
+                        pass
+                project = str(t.get("project", ""))
+                revenue = 20 if project in REVENUE_PROJECTS else 0
+                return PRIORITY_W.get(p, 1) * 10 + blocks * 5 + staleness * 2 + revenue
+
+            for t in all_tasks:
+                t["_score"] = _score(t)
+            all_tasks.sort(key=lambda t: t["_score"], reverse=True)
+
+            limit = args.get("limit", 20)
+            all_tasks = all_tasks[:limit]
+
+            if not all_tasks:
+                return _text(f"No {status_filter} tasks found.")
+
+            lines = [f"### Task Board ({status_filter}) — {len(all_tasks)} tasks\n"]
+            lines.append(f"{'Score':>5} | {'Priority':>8} | {'Project':<14} | {'Agent':<10} | Title")
+            lines.append(f"{'─'*5} | {'─'*8} | {'─'*14} | {'─'*10} | {'─'*30}")
+            for t in all_tasks:
+                agent = t.get("assignee") or t.get("agent") or "—"
+                lines.append(
+                    f"{t['_score']:>5} | {str(t.get('priority') or 'med'):>8} | {str(t.get('project') or '—'):<14} | {str(agent):<10} | {str(t.get('title') or '?')[:50]}"
+                )
+            return _text("\n".join(lines))
 
         # --- onboard ---
         elif name == "onboard":
@@ -995,8 +1398,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             )
 
             # Clear MCP token cache so new token is recognized immediately
-            global _local_token_cache
-            _local_token_cache = {}
+            _local_token_cache.invalidate()
 
             if not join_result.success:
                 return _text(
@@ -1163,6 +1565,108 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     lines.append(f"- {status}: {count}")
 
             return _text("\n".join(lines))
+
+        # --- browse_marketplace ---
+        elif name == "browse_marketplace":
+            results = await _async_saas_client.browse_marketplace(
+                category=args.get("category"),
+                query=args.get("query"),
+            )
+            if not results:
+                text = "No listings found. The marketplace is just getting started!"
+            else:
+                lines = [f"Found {len(results)} listings:\n"]
+                for r in results:
+                    price = f"${r['price_cents'] / 100:.0f}/{r['price_model']}"
+                    lines.append(f"- **{r['title']}** ({r['category']}) — {price}")
+                    lines.append(f"  {r['description'][:100]}")
+                    lines.append(f"  ID: {r['id']} | {r['subscriber_count']} subscribers")
+                    lines.append("")
+                text = "\n".join(lines)
+            return _text(text)
+
+        # --- subscribe ---
+        elif name == "subscribe":
+            result = await _async_saas_client.subscribe_marketplace(
+                project_scope or agent_scope, args["listing_id"]
+            )
+            text = result.get("message") or result.get("error", "Unknown error")
+            return _text(text)
+
+        # --- my_subscriptions ---
+        elif name == "my_subscriptions":
+            subs = await _async_saas_client.my_subscriptions(
+                project_scope or agent_scope
+            )
+            if not subs:
+                text = "No active subscriptions."
+            else:
+                lines = ["Your subscriptions:\n"]
+                for s in subs:
+                    lines.append(
+                        f"- {s['title']} ({s['category']}) — ${s['price_cents'] / 100:.0f}/{s['price_model']}"
+                    )
+                text = "\n".join(lines)
+            return _text(text)
+
+        # --- create_listing ---
+        elif name == "create_listing":
+            result = await _async_saas_client.create_listing(
+                seller_tenant=project_scope or agent_scope,
+                title=args["title"],
+                description=args["description"],
+                category=args["category"],
+                listing_type=args.get("listing_type", "squad"),
+                price_cents=args["price_cents"],
+                tags=args.get("tags", []),
+            )
+            text = (
+                f"Listed: {result['title']} (ID: {result['listing_id']})"
+                if result.get("success")
+                else result.get("error", "Failed")
+            )
+            return _text(text)
+
+        # --- my_earnings ---
+        elif name == "my_earnings":
+            earnings = await _async_saas_client.my_earnings(
+                project_scope or agent_scope
+            )
+            lines = [
+                f"Total MRR: ${earnings['total_mrr_cents'] / 100:.0f}",
+                f"Platform fee (5%): ${earnings['platform_fee_cents'] / 100:.0f}",
+                f"Net earnings: ${earnings['net_earnings_cents'] / 100:.0f}\n",
+            ]
+            for listing in earnings["listings"]:
+                lines.append(
+                    f"- {listing['title']}: {listing['subscriber_count']} subscribers × ${listing['price_cents'] / 100:.0f}"
+                )
+            text = "\n".join(lines)
+            return _text(text)
+
+        # --- notification_settings ---
+        elif name == "notification_settings":
+            tenant_slug = project_scope or agent_scope
+            prefs_updates: dict[str, Any] = {}
+            for key in ("email", "telegram", "webhook", "in_app"):
+                if args.get(key) is not None:
+                    prefs_updates[key] = args.get(key)
+
+            existing = await _async_saas_client.get_notification_preferences(
+                tenant_slug
+            )
+            existing.update(prefs_updates)
+            await _async_saas_client.set_notification_preferences(
+                tenant_slug, existing
+            )
+            text = (
+                f"Notification settings updated for {tenant_slug}:\n"
+                f"- Email: {'enabled' if existing.get('email') else 'disabled'}\n"
+                f"- Telegram: {'enabled' if existing.get('telegram') else 'disabled'}\n"
+                f"- Webhook: {existing.get('webhook') or 'not configured'}\n"
+                f"- In-app: {'enabled' if existing.get('in_app') else 'disabled'}"
+            )
+            return _text(text)
 
         else:
             return _text(f"Unknown tool: {name}")
@@ -1717,11 +2221,11 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
         dedup_key="agent_slug", dedup_value=slug,
     )
 
-    # 3. Store Bus token (atomic)
+    # 3. Store Bus token (atomic) — scope="customer" gates tool visibility
     bus_added = _atomic_json_append(
         BUS_TOKENS_PATH,
-        {"token": bus_token, "token_hash": "", "project": slug,
-         "label": label, "active": True, "created_at": timestamp},
+        {"token": bus_token, "token_hash": "", "project": slug, "agent": slug,
+         "label": label, "active": True, "created_at": timestamp, "scope": "customer"},
         dedup_key="project", dedup_value=slug,
     )
 
@@ -1729,14 +2233,14 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
         return {"error": f"Customer '{slug}' already exists", "status": "duplicate"}
 
     # 4. Clear MCP token cache so new tokens are recognized immediately
-    global _local_token_cache
-    _local_token_cache = {}
+    _local_token_cache.invalidate()
 
-    # 5. Create Squad API key
+    # 5. Create Squad API key (over HTTP via SquadClient — was an
+    # in-process create_api_key call before v0.4.7 P1-01).
     squad_token = ""
     try:
-        from sos.services.squad.auth import create_api_key
-        squad_token, _ = create_api_key(slug, "user", _squad_db)
+        result = _squad_client.create_api_key(slug, role="user")
+        squad_token = result.get("token", "") if isinstance(result, dict) else ""
     except Exception as e:
         log.warning("Squad API key creation failed: %s", e)
 
@@ -1845,10 +2349,27 @@ async def customer_signup(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @app.post("/webhook/stripe")
-async def stripe_webhook(request: Request) -> JSONResponse:
-    """Stripe webhook endpoint. Verifies signature, provisions tenant on checkout."""
-    from sos.services.billing.webhook import stripe_webhook_handler
-    return await stripe_webhook_handler(request)
+async def stripe_webhook(request: Request) -> Response:
+    """Stripe webhook proxy — forwards the raw request to the billing
+    service so Stripe signature verification (HMAC over the raw bytes)
+    happens inside billing, not in-process here. Body + headers pass
+    through unchanged.
+    """
+    raw_body = await request.body()
+    try:
+        billing_resp = await _async_billing_client.forward_stripe_webhook(
+            raw_body, dict(request.headers)
+        )
+    except Exception as exc:
+        log.exception("billing webhook proxy failed")
+        return JSONResponse(
+            {"status": "error", "detail": str(exc)}, status_code=502
+        )
+    return Response(
+        content=billing_resp.content,
+        status_code=billing_resp.status_code,
+        media_type=billing_resp.headers.get("content-type"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1860,17 +2381,20 @@ async def ghl_oauth_callback(request: Request) -> Response:
     """Handle GHL OAuth callback after tenant grants access.
 
     Query params: code, tenant (passed via state or custom param).
+    Proxies to integrations service — MCP no longer touches
+    TenantIntegrations directly (v0.4.7 Phase 4, R2 closure).
     """
-    from sos.services.integrations.oauth import TenantIntegrations
-
     code = request.query_params.get("code", "")
     tenant = request.query_params.get("tenant", "")
 
     if not code or not tenant:
         raise HTTPException(status_code=400, detail="code and tenant required")
 
-    integrations = TenantIntegrations(tenant)
-    result = await integrations.handle_ghl_callback(code)
+    try:
+        result = await _async_integrations_client.handle_ghl_callback(tenant, code)
+    except Exception as exc:
+        log.exception("integrations ghl callback proxy failed")
+        raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
     return JSONResponse({
@@ -1886,9 +2410,9 @@ async def google_oauth_callback(request: Request) -> Response:
     """Handle Google OAuth callback after tenant grants access.
 
     Query params: code, state (contains tenant:service).
+    Proxies to integrations service — MCP no longer touches
+    TenantIntegrations directly (v0.4.7 Phase 4, R2 closure).
     """
-    from sos.services.integrations.oauth import TenantIntegrations
-
     code = request.query_params.get("code", "")
     state = request.query_params.get("state", "")
 
@@ -1905,8 +2429,11 @@ async def google_oauth_callback(request: Request) -> Response:
     if service not in ("analytics", "search_console", "ads"):
         raise HTTPException(status_code=400, detail=f"unknown service: {service}")
 
-    integrations = TenantIntegrations(tenant)
-    result = await integrations.handle_google_callback(code, service)  # type: ignore[arg-type]
+    try:
+        await _async_integrations_client.handle_google_callback(tenant, code, service)
+    except Exception as exc:
+        log.exception("integrations google callback proxy failed")
+        raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
     return JSONResponse({
@@ -2315,11 +2842,90 @@ async def _process_jsonrpc(
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
+        # Customer tokens see tools filtered by their role
+        if auth.is_customer:
+            return _jsonrpc_ok(msg_id, {"tools": get_tools_for_role(auth.role)})
         return _jsonrpc_ok(msg_id, {"tools": get_tools()})
     if method == "tools/call":
         tool_name = params.get("name", "")
+        # --- Rate limiting (customer tokens only) ---
+        if auth.is_customer:
+            rl_tenant = auth.project_scope or "system"
+            try:
+                rl_result = await _async_saas_client.check_rate_limit(
+                    rl_tenant, auth.plan
+                )
+                allowed = bool(rl_result.get("allowed", True))
+            except Exception as exc:
+                log.warning("rate limit check failed (fail-open): %s", exc)
+                allowed = True
+            if not allowed:
+                log.warning(
+                    "rate limit exceeded for tenant %s (plan=%s)",
+                    rl_tenant,
+                    auth.plan,
+                )
+                _audit_tool_call(
+                    rl_tenant,
+                    tool_name,
+                    actor=auth.agent_scope,
+                    details={"status": "blocked", "reason": "rate_limit_exceeded"},
+                )
+                return _jsonrpc_err(msg_id, "Rate limit exceeded. Try again in a minute.")
+        # Customer token gating: block admin tools, resolve customer names to internal names
+        if auth.is_customer:
+            if tool_name in BLOCKED_TOOLS:
+                log.warning(
+                    "customer %s attempted blocked tool %s",
+                    auth.tenant_id,
+                    tool_name,
+                )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "customer_tool_gating"},
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            if not is_customer_tool(tool_name):
+                log.warning(
+                    "customer %s attempted unknown tool %s",
+                    auth.tenant_id,
+                    tool_name,
+                )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "customer_tool_gating"},
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            # --- RBAC: check role-based permission ---
+            if not is_tool_allowed_for_role(tool_name, auth.role):
+                log.warning(
+                    "customer %s (role=%s) denied tool %s",
+                    auth.tenant_id,
+                    auth.role,
+                    tool_name,
+                )
+                _audit_tool_call(
+                    auth.tenant_id or "unknown",
+                    tool_name,
+                    actor=auth.tenant_id or "",
+                    details={"status": "blocked", "reason": "rbac_denied", "role": auth.role},
+                )
+                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+            # Resolve customer-facing name to internal SOS tool name
+            internal_name = TOOL_MAPPING.get(tool_name, tool_name)
+            tool_name = internal_name
         tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth)
         _append_audit(auth.token, tool_name, not _tool_result_failed(tool_result))
+        _audit_tool_call(
+            _scope_project(auth) or "system",
+            tool_name,
+            actor=auth.agent_scope,
+            details={"status": "ok"},
+        )
         return _jsonrpc_ok(msg_id, tool_result)
     if method == "ping":
         return _jsonrpc_ok(msg_id, {})

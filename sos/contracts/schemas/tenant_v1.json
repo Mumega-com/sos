@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/tenant_v1.json",
+  "title": "Tenant v1",
+  "description": "Tenant entity and create/update shapes for the SOS SaaS layer. A Tenant is a single customer/workspace with billing, domain, and squad attachments. Shared between saas (registry), billing (Stripe webhook mutations), and cli (onboarding) services so no service hand-rolls this shape.",
+  "$defs": {
+    "TenantStatus": {
+      "type": "string",
+      "description": "Lifecycle state of a tenant.",
+      "enum": ["provisioning", "active", "suspended", "cancelled"]
+    },
+    "TenantPlan": {
+      "type": "string",
+      "description": "Billing plan tier. Starter $29/mo, Growth $79/mo, Scale $199/mo.",
+      "enum": ["starter", "growth", "scale"]
+    },
+    "Tenant": {
+      "type": "object",
+      "description": "Full tenant record as persisted in the SaaS registry.",
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "label",
+        "email",
+        "subdomain",
+        "plan",
+        "status",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "slug": {
+          "type": "string",
+          "description": "URL-safe identifier, lowercase alphanumeric + dashes.",
+          "pattern": "^[a-z0-9-]+$",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "label": {
+          "type": "string",
+          "description": "Display name."
+        },
+        "email": {
+          "type": "string",
+          "description": "Primary contact email for the tenant."
+        },
+        "domain": {
+          "type": ["string", "null"],
+          "description": "Custom domain, if any."
+        },
+        "subdomain": {
+          "type": "string",
+          "description": "{slug}.mumega.com"
+        },
+        "stripe_customer_id": {
+          "type": ["string", "null"]
+        },
+        "stripe_subscription_id": {
+          "type": ["string", "null"]
+        },
+        "plan": {"$ref": "#/$defs/TenantPlan"},
+        "status": {"$ref": "#/$defs/TenantStatus"},
+        "squad_id": {
+          "type": ["string", "null"]
+        },
+        "mirror_project": {
+          "type": ["string", "null"]
+        },
+        "bus_token": {
+          "type": ["string", "null"]
+        },
+        "telegram_chat_id": {
+          "type": ["string", "null"]
+        },
+        "inkwell_config": {
+          "type": ["object", "null"],
+          "description": "Tenant-specific config overrides for Inkwell.",
+          "additionalProperties": true
+        },
+        "created_at": {
+          "type": "string",
+          "description": "ISO 8601 UTC timestamp of creation."
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "ISO 8601 UTC timestamp of last mutation."
+        }
+      }
+    },
+    "TenantCreate": {
+      "type": "object",
+      "description": "Input payload for creating a new tenant. Includes optional questionnaire answers used for initial site generation.",
+      "additionalProperties": false,
+      "required": ["slug", "label", "email"],
+      "properties": {
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "label": {"type": "string"},
+        "email": {"type": "string"},
+        "plan": {
+          "$ref": "#/$defs/TenantPlan",
+          "default": "starter"
+        },
+        "domain": {"type": ["string", "null"]},
+        "industry": {"type": ["string", "null"]},
+        "services": {
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        },
+        "primary_color": {"type": ["string", "null"]},
+        "tagline": {"type": ["string", "null"]}
+      }
+    },
+    "TenantUpdate": {
+      "type": "object",
+      "description": "Partial update payload — every field optional. Only fields present are applied.",
+      "additionalProperties": false,
+      "properties": {
+        "label": {"type": ["string", "null"]},
+        "domain": {"type": ["string", "null"]},
+        "plan": {
+          "anyOf": [
+            {"$ref": "#/$defs/TenantPlan"},
+            {"type": "null"}
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {"$ref": "#/$defs/TenantStatus"},
+            {"type": "null"}
+          ]
+        },
+        "telegram_chat_id": {"type": ["string", "null"]},
+        "inkwell_config": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "stripe_customer_id": {"type": ["string", "null"]},
+        "stripe_subscription_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

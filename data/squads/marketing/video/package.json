@@ -1,0 +1,23 @@
+{
+  "name": "mumega-media",
+  "version": "1.0.0",
+  "description": "Marketing squad video pipeline — topic page data to Remotion renders",
+  "scripts": {
+    "studio": "remotion studio src/index.tsx",
+    "render:topic": "remotion render TopicHighlight out/topic-highlight.mp4",
+    "render:stat": "remotion render StatCard out/stat-card.mp4",
+    "render:weekly": "remotion render WeeklyRecap out/weekly-recap.mp4"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@remotion/cli": "^4.0.434",
+    "@remotion/transitions": "^4.0.434",
+    "@remotion/noise": "^4.0.434",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "remotion": "^4.0.434",
+    "typescript": "^5.9.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
+  }
+}

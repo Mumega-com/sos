@@ -1,0 +1,343 @@
+# breakables.yaml — single source of truth for everything that can fail
+#
+# Consumed by:
+#   - mumega-watch CF Worker (external probes every 60s, writes to KV + D1)
+#   - sos/services/watch/ (Python impl, VPS/RPi bare-metal probes)
+#   - sos/agents/sos-medic/tools/check-all-pipes.sh (ad-hoc on-demand)
+#
+# Schema: each entry follows the Breakable Card v1 schema
+# (sos/contracts/schemas/breakable_card_v1.json — shipped in v0.4.0 Contracts).
+#
+# Fields:
+#   id          — unique slug
+#   type        — internal-service | external-provider | tls-cert | webhook-receiver |
+#                 kv | d1 | do | cron-last-run | disk | redis | host
+#   endpoint    — URL or resource identifier probed
+#   probe       — probe spec (see per-type conventions below)
+#   severity    — critical | high | medium | low
+#   owner       — agent/team responsible when this breaks
+#   affects     — agents/tenants/features that go down with this breakable
+#   dependencies— other breakables this one depends on
+#
+# The list is deliberately long — "everything that can fail, named." Incomplete
+# is fine; start here and grow. Each fix to "why didn't we know X broke?"
+# becomes a new entry.
+
+breakables:
+
+  # ── Internal SOS services (VPS) ────────────────────────────────────────────
+
+  - id: squad-service
+    type: internal-service
+    endpoint: http://localhost:8060/health
+    probe: { interval_s: 60, timeout_s: 3, expect_json: '.status == "ok"' }
+    severity: critical
+    owner: sos-dev
+    affects: [every agent using squad/*, every tenant, task board]
+    dependencies: [redis, squad-db]
+
+  - id: mirror-service
+    type: internal-service
+    endpoint: http://localhost:8844/
+    probe: { interval_s: 60, timeout_s: 3, expect_json: '.status == "online"' }
+    severity: critical
+    owner: sos-dev
+    affects: [every agent using memory/recall, mumega portal memory card]
+    dependencies: [pgvector-db]
+
+  - id: saas-service
+    type: internal-service
+    endpoint: http://localhost:8075/health
+    probe: { interval_s: 60, timeout_s: 3, expect_json: '.status == "ok"' }
+    severity: critical
+    owner: kasra
+    affects: [signup, tenant provisioning, billing, Mumega portal]
+    dependencies: [squad-db, stripe-webhook]
+
+  - id: dashboard-service
+    type: internal-service
+    endpoint: http://localhost:8090/health
+    probe: { interval_s: 60, timeout_s: 3 }
+    severity: high
+    owner: sos-dev
+    affects: [app.mumega.com/dashboard, customer portal]
+    dependencies: [saas-service, mirror-service]
+
+  - id: bus-gateway
+    type: internal-service
+    endpoint: http://localhost:6070/health
+    probe: { interval_s: 60, timeout_s: 3, expect_json: '.status == "ok"' }
+    severity: critical
+    owner: sos-dev
+    affects: [every MCP client, every bus message]
+    dependencies: [redis]
+
+  - id: engine-service
+    type: internal-service
+    endpoint: http://localhost:6060/health
+    probe: { interval_s: 120, timeout_s: 3 }
+    severity: medium
+    owner: sos-dev
+
+  - id: memory-service
+    type: internal-service
+    endpoint: http://localhost:6061/health
+    probe: { interval_s: 120, timeout_s: 3 }
+    severity: medium
+    owner: sos-dev
+
+  - id: content-service
+    type: internal-service
+    endpoint: http://localhost:8020/health
+    probe: { interval_s: 300, timeout_s: 3 }
+    severity: low
+    owner: sol
+
+  - id: fmaap-hub
+    type: internal-service
+    endpoint: http://localhost:8845/health
+    probe: { interval_s: 120, timeout_s: 3 }
+    severity: medium
+    owner: sos-dev
+
+  # ── External (third-party) services ────────────────────────────────────────
+
+  - id: openclaw-gateway
+    type: internal-service
+    endpoint: http://localhost:18789/health
+    probe: { interval_s: 60, timeout_s: 3 }
+    severity: critical
+    owner: sos-dev
+    affects: [athena, sol, dandan, worker, mizan, gemma]
+    dependencies: [openclaw-oauth-pool]
+    notes: |
+      External tool (github.com/openclaw/openclaw) Hadi adopted. Known bug
+      #56960 can cause OAuth-refresh-loop. Upgrade upstream when it breaks;
+      don't fix in SOS.
+
+  - id: openclaw-oauth-pool
+    type: cron-last-run
+    endpoint: ~/.openclaw/credentials/
+    probe: { check: file_mtime, max_age_h: 24 }
+    severity: high
+    owner: sos-dev
+
+  # ── LLM provider health (Provider Matrix v0.4.1 populates these) ───────────
+
+  - id: anthropic-api
+    type: external-provider
+    endpoint: https://api.anthropic.com/v1/messages
+    probe: { check: trivial_completion, timeout_s: 5 }
+    severity: critical
+    owner: sos-dev
+    affects: [every Claude-based agent]
+
+  - id: openai-api
+    type: external-provider
+    endpoint: https://api.openai.com/v1/chat/completions
+    probe: { check: trivial_completion, timeout_s: 5 }
+    severity: high
+
+  - id: google-gemini-api
+    type: external-provider
+    endpoint: https://generativelanguage.googleapis.com/v1/models
+    probe: { check: trivial_completion, timeout_s: 5 }
+    severity: high
+
+  - id: openrouter-api
+    type: external-provider
+    endpoint: https://openrouter.ai/api/v1/models
+    probe: { interval_s: 300, timeout_s: 5 }
+    severity: medium
+
+  # ── Infrastructure backing services ────────────────────────────────────────
+
+  - id: redis
+    type: internal-service
+    endpoint: redis://127.0.0.1:6379
+    probe: { check: ping, timeout_s: 2 }
+    severity: critical
+    owner: codex
+    affects: [bus, squad, every agent registry entry]
+
+  - id: pgvector-db
+    type: internal-service
+    endpoint: postgresql://127.0.0.1:5432/mirror
+    probe: { check: select_1, timeout_s: 3 }
+    severity: critical
+    owner: codex
+    affects: [mirror-service, memory for every agent]
+
+  - id: squad-db
+    type: internal-service
+    endpoint: ~/.sos/data/squads.db
+    probe: { check: file_exists_and_readable, max_age_h: 168 }
+    severity: critical
+    owner: sos-dev
+
+  - id: disk-root
+    type: disk
+    endpoint: /
+    probe: { check: df_percent, warn_pct: 85, crit_pct: 92 }
+    severity: critical
+    owner: codex
+    notes: as of 2026-04-16 sits at 93%. Cleanup overdue.
+
+  - id: disk-data
+    type: disk
+    endpoint: /mnt/HC_Volume_104325311
+    probe: { check: df_percent, warn_pct: 85, crit_pct: 92 }
+    severity: high
+
+  - id: vps-reachability
+    type: host
+    endpoint: 167.235.31.213
+    probe: { check: icmp_ping, timeout_s: 2 }
+    severity: critical
+    notes: probed from outside (mumega-watch CF Worker). Internal probes can't detect VPS-down.
+
+  # ── Customer-facing edges ──────────────────────────────────────────────────
+
+  - id: nginx-app-mumega
+    type: webhook-receiver
+    endpoint: https://app.mumega.com/login
+    probe: { interval_s: 60, timeout_s: 5, expect_http: 200 }
+    severity: critical
+    owner: sos-dev
+
+  - id: nginx-mcp-mumega
+    type: webhook-receiver
+    endpoint: https://mcp.mumega.com/health
+    probe: { interval_s: 60, timeout_s: 3, expect_http: 200 }
+    severity: critical
+    owner: sos-dev
+
+  - id: mumega-com
+    type: webhook-receiver
+    endpoint: https://mumega.com
+    probe: { interval_s: 300, timeout_s: 5, expect_http: 200 }
+    severity: high
+    owner: kasra
+
+  - id: stripe-webhook-receiver
+    type: webhook-receiver
+    endpoint: https://app.mumega.com/webhook/stripe
+    probe: { check: last_received, max_age_h: 24 }
+    severity: high
+    owner: kasra
+
+  - id: resend-api
+    type: external-provider
+    endpoint: https://api.resend.com/emails
+    probe: { interval_s: 600, timeout_s: 5 }
+    severity: medium
+    owner: kasra
+    affects: [magic-link auth, customer welcome emails]
+
+  # ── Per-customer TLS certs (autogenerate entries from SaaS registry) ──────
+
+  - id: trop-ssl
+    type: tls-cert
+    endpoint: https://trop.mumega.com
+    probe: { check: cert_expiry, warn_days: 14, crit_days: 3 }
+    severity: high
+
+  - id: viamar-ssl
+    type: tls-cert
+    endpoint: https://viamar.ca
+    probe: { check: cert_expiry, warn_days: 14, crit_days: 3 }
+    severity: high
+
+  - id: digid-ssl
+    type: tls-cert
+    endpoint: https://digid.ca
+    probe: { check: cert_expiry, warn_days: 14, crit_days: 3 }
+    severity: high
+
+  - id: app-mumega-ssl
+    type: tls-cert
+    endpoint: https://app.mumega.com
+    probe: { check: cert_expiry, warn_days: 14, crit_days: 3 }
+    severity: critical
+
+  - id: mcp-mumega-ssl
+    type: tls-cert
+    endpoint: https://mcp.mumega.com
+    probe: { check: cert_expiry, warn_days: 14, crit_days: 3 }
+    severity: critical
+
+  # ── Cron jobs (last-run freshness) ────────────────────────────────────────
+
+  - id: cron-mirror-watchdog
+    type: cron-last-run
+    endpoint: /home/mumega/.mumega/logs/mirror-watchdog.log
+    probe: { check: file_mtime, max_age_min: 10 }
+    severity: medium
+
+  - id: cron-metabolism-digest
+    type: cron-last-run
+    endpoint: /home/mumega/.mumega/logs/metabolism.log
+    probe: { check: file_mtime, max_age_h: 5 }
+    severity: medium
+
+  - id: cron-athena-pulse
+    type: cron-last-run
+    endpoint: /home/mumega/.mumega/logs/athena-pulse.log
+    probe: { check: file_mtime, max_age_h: 7 }
+    severity: low
+
+  - id: cron-team-pulse
+    type: cron-last-run
+    endpoint: /home/mumega/.mumega/logs/team-pulse.log
+    probe: { check: file_mtime, max_age_min: 45 }
+    severity: low
+
+  # ── Cloudflare dependencies (added when dispatcher + mumega-watch live) ───
+
+  - id: cf-worker-dispatcher
+    type: internal-service
+    endpoint: https://mcp.mumega.com/health
+    probe: { interval_s: 60, timeout_s: 3, expect_json: '.source == "dispatcher-cf"' }
+    severity: critical
+    owner: sos-dev
+    affects: [every customer MCP client]
+    notes: probed from outside (self-referential — dispatcher probes itself via watchdog)
+
+  - id: cf-kv-tokens
+    type: kv
+    endpoint: SOS_TOKENS
+    probe: { check: kv_get, key: "token:<known-hash>", expect_nonempty: true }
+    severity: critical
+    owner: sos-dev
+
+  - id: cf-d1-dispatcher-log
+    type: d1
+    endpoint: sos-dispatcher-log
+    probe: { check: select_count, max_age_min: 10 }
+    severity: medium
+    owner: sos-dev
+
+  - id: cf-mesh
+    type: external-provider
+    endpoint: mesh.cloudflare.com
+    probe: { check: mesh_nodes_healthy, min_count: 1 }
+    severity: critical
+    owner: sos-dev
+    notes: Mesh enrollment pending; add probe when Mesh bindings live.
+
+  # ── Wake daemon + sos-medic (identity/ops plane) ──────────────────────────
+
+  - id: wake-daemon
+    type: cron-last-run
+    endpoint: /run/user/1000/systemd/units/agent-wake-daemon.service
+    probe: { check: systemctl_active, timeout_s: 2 }
+    severity: critical
+    owner: sos-dev
+    affects: [tmux wake injection for kasra, sos-medic, mumcp, gaf, trop, all tmux agents]
+
+  - id: sos-medic
+    type: cron-last-run
+    endpoint: sos:registry:sos-medic
+    probe: { check: redis_hash_freshness, max_age_s: 900 }
+    severity: medium
+    owner: sos-dev

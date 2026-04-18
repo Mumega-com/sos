@@ -1,6 +1,6 @@
 
 import asyncio
-from sos.services.bus.core import MessageBus
+from sos.kernel.bus import MessageBus
 from sos.kernel import Message, MessageType
 
 async def test_nervous_system():

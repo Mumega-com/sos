@@ -26,10 +26,18 @@ class ExecutionContext:
 
 @dataclass
 class UsageInfo:
-    """Token usage and cost info from a model call."""
+    """Token usage and cost info from a model call.
+
+    Currency-agnostic: `cost_micros` (integer, 1 micro = 1e-6 unit) is the
+    canonical storage. `cost_cents` retained for Python-adapter legacy callers;
+    new call sites should prefer `cost_micros`. Edge tenants (Cloudflare
+    workers etc.) post `cost_micros` directly to the economy `/usage` endpoint.
+    """
     input_tokens: int = 0
     output_tokens: int = 0
     cost_cents: int = 0
+    cost_micros: int = 0
+    image_count: int = 0  # for flat-billed image generation models (Imagen 4 etc.)
     model: str = ""
     provider: str = ""
 

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task.scored_v1.json",
+  "title": "task.scored v1",
+  "description": "Event emitted by the Brain service (sos.services.brain) after it scores a newly created task via the coherence formula. Published to the SOS bus so observers can record the ranking before dispatch.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task.scored",
+      "description": "Message type discriminator. Always 'task.scored' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "description": "Bus identity of the emitting agent. Must follow the 'agent:<name>' convention where name is lowercase alphanumeric with dashes.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "string",
+      "description": "Bus channel or agent address this message is routed to. Defaults to the shared task channel.",
+      "default": "sos:channel:tasks",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of when this event was emitted.",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "string",
+      "description": "SemVer of the message payload schema. Major bumps are breaking; minor/patch are additive.",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Globally unique identifier for this message envelope. Used for deduplication and tracing.",
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Scoring output data describing the computed rank for a newly created task.",
+      "required": [
+        "task_id",
+        "score",
+        "urgency",
+        "ts"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Identifier of the task being scored",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "score": {
+          "type": "number",
+          "description": "Raw scoring output from brain.scoring.score_task",
+          "minimum": 0,
+          "exclusiveMaximum": 10000
+        },
+        "urgency": {
+          "type": "string",
+          "description": "Urgency bucket used in the weight lookup",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "impact": {
+          "type": "number",
+          "description": "Business impact factor",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "unblock_count": {
+          "type": "integer",
+          "description": "Number of tasks currently blocked by this one",
+          "minimum": 0
+        },
+        "cost": {
+          "type": "number",
+          "description": "Token-cost estimate used as the divisor",
+          "minimum": 0.1,
+          "maximum": 10.0
+        },
+        "ts": {
+          "type": "string",
+          "description": "ISO-8601 UTC timestamp when the score was computed",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

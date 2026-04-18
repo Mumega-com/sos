@@ -94,15 +94,44 @@ def _legacy_stream(agent: str) -> str:
 
 
 def sos_msg(msg_type: str, source: str, target: str, text: str, project: str | None = None) -> dict:
-    msg = {
-        "id": str(uuid4()),
-        "type": msg_type,
-        "source": source,
-        "target": target,
-        "payload": json.dumps({"text": text}),
-        "timestamp": now_iso(),
-        "version": "1.0",
-    }
+    """v0.4.0: build a v1-shaped bus message using Pydantic contracts.
+
+    Legacy callers passed msg_type="chat" or "broadcast" — those are translated
+    to v1 "send" with the appropriate target (agent: for chat, sos:channel: for
+    broadcast). "announce" maps directly to AnnounceMessage. Anything else is
+    rejected.
+
+    Returns a dict ready for `redis.xadd` (payload JSON-encoded into a string).
+    """
+    from sos.contracts.messages import SendMessage, AnnounceMessage
+
+    # Legacy → v1 type mapping
+    v1_type = {"chat": "send", "broadcast": "send"}.get(msg_type, msg_type)
+
+    # Legacy target normalization: bare "broadcast" → sos:channel:global
+    if target == "broadcast":
+        target = "sos:channel:global"
+
+    if v1_type == "send":
+        m = SendMessage(
+            source=source,
+            target=target,
+            timestamp=SendMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": text, "content_type": "text/plain"},
+        )
+    elif v1_type == "announce":
+        m = AnnounceMessage(
+            source=source,
+            target=target,
+            timestamp=AnnounceMessage.now_iso(),
+            message_id=str(uuid4()),
+            payload={"text": text} if text else None,
+        )
+    else:
+        raise ValueError(f"unknown message type: {msg_type!r}")
+
+    msg = m.to_redis_fields()
     if project:
         msg["project"] = project
     return msg

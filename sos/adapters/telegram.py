@@ -21,7 +21,7 @@ from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from sos.clients.engine import AsyncEngineClient
 from sos.contracts.engine import ChatRequest
 from sos.observability.logging import get_logger
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.kernel import Message, MessageType
 
 log = get_logger("adapter_telegram")

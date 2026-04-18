@@ -323,7 +323,7 @@ class TestCapabilityVerifierMiddleware:
     def test_verifier_checks_expiry(self):
         """Verifier should reject expired capabilities."""
         from sos.services.engine.middleware import CapabilityVerifier
-        from sos.services.common.capability import CapabilityModel
+        from sos.kernel.policy.capability import CapabilityModel
 
         verifier = CapabilityVerifier()
 
@@ -343,7 +343,7 @@ class TestCapabilityVerifierMiddleware:
     def test_verifier_checks_action(self):
         """Verifier should reject mismatched action."""
         from sos.services.engine.middleware import CapabilityVerifier
-        from sos.services.common.capability import CapabilityModel
+        from sos.kernel.policy.capability import CapabilityModel
 
         verifier = CapabilityVerifier()
 
@@ -363,7 +363,7 @@ class TestCapabilityVerifierMiddleware:
     def test_verifier_allows_wildcard_action(self):
         """Verifier should allow wildcard action."""
         from sos.services.engine.middleware import CapabilityVerifier
-        from sos.services.common.capability import CapabilityModel
+        from sos.kernel.policy.capability import CapabilityModel
 
         verifier = CapabilityVerifier()
 
@@ -383,7 +383,7 @@ class TestCapabilityVerifierMiddleware:
     def test_verifier_valid_capability(self):
         """Verifier should accept valid capability."""
         from sos.services.engine.middleware import CapabilityVerifier
-        from sos.services.common.capability import CapabilityModel
+        from sos.kernel.policy.capability import CapabilityModel
 
         verifier = CapabilityVerifier()
 

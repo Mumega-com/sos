@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/agent_joined_v1.json",
+  "title": "SOS agent_joined Message",
+  "description": "Kernel-side event emitted by the bus/gateway when it observes a new registry entry (sos:registry:{agent} created). Distinct from 'announce', which is agent-initiated; agent_joined is kernel-observed and authoritative.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "agent_joined",
+      "description": "Discriminator for this message type. Always 'agent_joined'."
+    },
+    "source": {
+      "type": "string",
+      "default": "agent:kernel",
+      "description": "Bus address of the emitter. Defaults to 'agent:kernel' \u2014 the gateway component that monitors the registry."
+    },
+    "target": {
+      "type": "string",
+      "default": "sos:channel:system:events",
+      "description": "Bus address of the intended recipient or fan-out channel. Defaults to 'sos:channel:system:events'.",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of when the kernel emitted this event."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "Schema version of this message, e.g. '1.0' or '1.0.0'. Bump minor for additive changes, major for breaking changes."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message instance. Used for deduplication and tracing."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event body containing information about the agent that joined.",
+      "additionalProperties": false,
+      "required": [
+        "agent_name",
+        "joined_at"
+      ],
+      "properties": {
+        "agent_name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Unique agent identifier on the bus. Lowercase, dash-separated. Matches the key suffix in sos:registry:{agent_name}."
+        },
+        "joined_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp of when the registry entry was first observed by the kernel. May differ slightly from the agent's own registered_at inside the Agent Card."
+        },
+        "tenant_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Tenant identifier scoping this agent. Non-null for tenant-bound agents."
+            },
+            {
+              "type": "null",
+              "description": "Null for full-scope (admin/system) agents not bound to a specific tenant."
+            }
+          ],
+          "description": "Tenant scope of the joining agent. Null means the agent operates across all tenants."
+        },
+        "agent_card": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Snapshot of the Agent Card v1 record written to sos:registry:{agent_name} at join time. additionalProperties is true because the Agent Card schema evolves independently and fields may vary by agent version."
+        },
+        "source_host": {
+          "type": "string",
+          "description": "Hostname of the machine where the registry entry was detected. Useful for multi-host deployments to locate the originating node."
+        },
+        "expiry_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the registry entry will auto-expire if the agent stops heartbeating. Derived from the Redis TTL set at join time."
+        }
+      }
+    }
+  }
+}

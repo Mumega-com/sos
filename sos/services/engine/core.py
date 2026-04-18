@@ -17,7 +17,6 @@ from sos.kernel import Config, Message, Response
 from sos.clients.memory import MemoryClient
 from sos.clients.tools import ToolsClient
 from sos.clients.economy import EconomyClient
-from sos.services.tools.core import ToolsCore
 from sos.observability.logging import get_logger
 
 log = get_logger("engine_core")
@@ -78,7 +77,6 @@ class SOSEngine(EngineContract):
         # Initialize Service Clients
         self.memory = MemoryClient(self.config.memory_url, timeout_seconds=60.0)
         self.tools = ToolsClient(self.config.tools_url)
-        self.tools_core = ToolsCore(self.config)  # Local tools executor
         self.economy = EconomyClient(self.config.economy_url)
         
         # Initialize Model Adapters
@@ -328,7 +326,7 @@ class SOSEngine(EngineContract):
                     tool_args = tool_data.get("args", {})
 
                     log.info(f"🔧 Executing tool: {tool_name}", args=tool_args)
-                    tool_result = await self.tools_core.execute(tool_name, tool_args)
+                    tool_result = await self.tools.execute({"tool_name": tool_name, "arguments": tool_args})
                     tool_calls.append({"name": tool_name, "args": tool_args, "result": str(tool_result)[:500]})
 
                     # Continue conversation with tool result

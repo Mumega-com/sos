@@ -24,8 +24,9 @@ from sos.observability.tracing import (
 from sos.contracts.engine import ChatRequest, ChatResponse
 from sos.services.engine.core import SOSEngine
 from sos.services.engine.middleware import capability_guard_middleware
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.services.engine.openai_router import router as openai_router
+from sos.kernel.health import health_response
 
 SERVICE_NAME = "engine"
 _START_TIME = time.time()
@@ -164,7 +165,7 @@ async def list_tasks():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "engine"}
+    return health_response("engine", _START_TIME)
 
 @app.get("/stream/subconscious")
 async def stream_subconscious():
@@ -253,7 +254,7 @@ async def resolve_witness(request: WitnessCollapseRequest):
     return {"status": "collapsed", "agent_id": request.agent_id}
 
 # --- Swarm Council (Governance) ---
-from sos.services.engine.council import SwarmCouncil
+from sos.kernel.council import SwarmCouncil
 from sos.contracts.governance import VoteChoice
 
 council = SwarmCouncil(squad_id="core")

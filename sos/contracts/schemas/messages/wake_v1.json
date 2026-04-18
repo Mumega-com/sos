@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/wake_v1.json",
+  "title": "SOS Wake Message",
+  "description": "Internal signal published to Redis pubsub channel sos:wake:{agent} to cause wake-daemon to inject a message into a target agent's tmux session. Always directed \u2014 target is required.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "wake",
+      "description": "Message type discriminator. Always 'wake' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "description": "Agent id of the sender in the form 'agent:{name}'. Lowercase, dash-separated name.",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "target": {
+      "type": "string",
+      "description": "Agent id of the intended recipient in the form 'agent:{name}'. Required \u2014 wake messages are always directed to a specific agent.",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp at which this wake message was created.",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "string",
+      "description": "Schema version this message conforms to (SemVer, major.minor or major.minor.patch).",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Unique UUID v4 identifier for this wake message. Used for deduplication and tracing.",
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Wake payload delivered to the target agent's tmux session.",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Human-readable message text injected into the agent's tmux session. This is the prompt or notification the agent will read.",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "priority": {
+      "type": "string",
+      "description": "Delivery priority hint for the wake-daemon. Determines ordering when multiple wakes are queued for the same target.",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low"
+      ],
+      "default": "normal"
+    },
+    "expires_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp after which this wake message should be discarded undelivered if the target has not yet received it.",
+      "format": "date-time"
+    },
+    "ref_message_id": {
+      "type": "string",
+      "description": "UUID of the send-type bus message that triggered this wake. Allows the woken agent to correlate the wake with the original message payload.",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false
+}

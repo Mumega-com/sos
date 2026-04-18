@@ -12,7 +12,7 @@ import json
 import time
 from sos.services.engine.core import SOSEngine
 from sos.contracts.engine import ChatRequest
-from sos.services.bus.core import get_bus
+from sos.kernel.bus import get_bus
 from sos.kernel import Message, MessageType
 
 async def run_final_trace():

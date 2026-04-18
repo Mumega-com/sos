@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/agent_card_v1.json",
+  "title": "SOS Agent Card",
+  "description": "Runtime operational registry view of an agent on the SOS bus. AgentCard is an OVERLAY on the canonical AgentIdentity defined in sos/kernel/identity.py. References the soul-level identity via identity_id (pattern: agent:<slug>). Soul fields (public_key, dna, verification_status, capabilities) live on AgentIdentity. Echo fields (name, model, role, etc.) are denormalized here for display convenience. Written to sos:registry:{agent} on first-connect and refreshed via heartbeat. Auto-expires via Redis TTL if the agent stops heartbeating. Version is SemVer; schema bumps require CHANGELOG entry.",
+  "type": "object",
+  "required": [
+    "identity_id",
+    "agent_card_version",
+    "name",
+    "tool",
+    "type",
+    "role",
+    "registered_at",
+    "last_seen"
+  ],
+  "properties": {
+    "identity_id": {
+      "type": "string",
+      "description": "Reference to the canonical AgentIdentity in sos/kernel/identity.py. Pattern mirrors AgentIdentity.id. Source of truth for soul fields (dna, public_key, verification_status, capabilities).",
+      "pattern": "^agent:[a-z][a-z0-9-]*$"
+    },
+    "agent_card_version": {
+      "type": "string",
+      "description": "SemVer of the Agent Card schema this record conforms to.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "name": {
+      "type": "string",
+      "description": "Unique agent id on the bus. Lowercase, dash-separated. Matches the key in sos:registry:{name}.",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "minLength": 2,
+      "maxLength": 64
+    },
+    "tool": {
+      "type": "string",
+      "description": "The runtime the agent executes in.",
+      "enum": [
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "openclaw",
+        "hermes",
+        "custom-http",
+        "sdk",
+        "cron",
+        "service"
+      ]
+    },
+    "type": {
+      "type": "string",
+      "description": "How the agent receives wake signals. Expanded in island #3 (2026-04-18) to cover multi-vendor substrates + human squad members per the coherence plan.",
+      "enum": ["tmux", "openclaw", "remote", "webhook", "service", "hermes", "codex", "cma", "human"]
+    },
+    "role": {
+      "type": "string",
+      "description": "The agent's role in squad coordination.",
+      "enum": ["coordinator", "executor", "specialist", "oracle", "medic", "service", "human"]
+    },
+    "model": {
+      "type": ["string", "null"],
+      "description": "Underlying model identifier (opus-4.7, sonnet-4.6, haiku-4.5, gpt-5.4, gemini-3.1-pro, gemma-4-31b, etc.)."
+    },
+    "session": {
+      "type": ["string", "null"],
+      "description": "tmux session name. Null for non-tmux agents."
+    },
+    "skills": {
+      "type": "array",
+      "description": "Skills this agent advertises. Used by conductance routing.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "uniqueItems": true
+    },
+    "squads": {
+      "type": "array",
+      "description": "Squad ids this agent is a member of.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "uniqueItems": true
+    },
+    "project": {
+      "type": ["string", "null"],
+      "description": "Primary project/tenant scope. Null = full-scope (admin agent)."
+    },
+    "tenant_subdomain": {
+      "type": ["string", "null"],
+      "description": "Customer-facing subdomain (e.g. trop.mumega.com). Only set for tenant agents."
+    },
+    "plan": {
+      "type": ["string", "null"],
+      "description": "SaaS plan bound to this agent, if any.",
+      "enum": [null, "starter", "growth", "scale", "enterprise"]
+    },
+    "warm_policy": {
+      "type": "string",
+      "description": "Lifecycle policy. warm = auto-restart, cold = can be parked idle.",
+      "enum": ["warm", "cold"]
+    },
+    "cache_ttl_s": {
+      "type": "integer",
+      "description": "Current Anthropic prompt-cache TTL in seconds for this agent's runtime. 300 = 5min (default 2026-Q2), 3600 = 1h opt-in.",
+      "minimum": 0,
+      "maximum": 86400
+    },
+    "last_cache_hit_rate": {
+      "type": ["number", "null"],
+      "description": "Rolling cache-hit rate over the last heartbeat window. 0.0-1.0.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "pid": {
+      "type": ["integer", "null"],
+      "description": "Process id of the runtime. Null for remote agents."
+    },
+    "host": {
+      "type": ["string", "null"],
+      "description": "Hostname the agent runs on. Null = this machine."
+    },
+    "cwd": {
+      "type": ["string", "null"],
+      "description": "Working directory of the runtime."
+    },
+    "registered_at": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of first registration for this runtime session.",
+      "format": "date-time"
+    },
+    "last_seen": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of most recent heartbeat.",
+      "format": "date-time"
+    },
+    "summary": {
+      "type": ["string", "null"],
+      "description": "One-line human-readable summary of what this agent is currently doing.",
+      "maxLength": 280
+    }
+  },
+  "additionalProperties": false
+}

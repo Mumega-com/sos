@@ -1,0 +1,103 @@
+{
+  "schema_version": "1",
+  "id": "mirror-bus-subscriber-v1",
+  "skill_descriptor_id": "mirror-bus-subscriber-v1",
+  "name": "Mirror Bus Subscriber — auto-engram from sos:stream",
+  "version": "1.0.0",
+  "author_agent": "agent:sos-dev",
+  "created_at": "2026-04-17T14:15:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "target_repo": {
+        "type": "string",
+        "default": "/home/mumega/mirror"
+      },
+      "sos_repo": {
+        "type": "string",
+        "default": "/mnt/HC_Volume_104325311/SOS"
+      },
+      "streams": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "sos:stream:global:*"
+        ]
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "tests_passing": {
+        "type": "integer"
+      },
+      "mirror_post_sites_removed": {
+        "type": "integer"
+      },
+      "systemd_unit_name": {
+        "type": "string"
+      }
+    }
+  },
+  "description": "Makes Mirror a native bus consumer. Subscribes to sos:stream:* and auto-stores an engram on every v1 send/remember/task_completed message. Retires the synchronous mirror_post HTTP calls from sos_mcp_sse.py (5-6 call sites). Kills three debt items at once: 'Mirror doesn't consume bus', 'UsageLog not mirrored', 'write amplification on every agent send'.",
+  "tags": [
+    "mirror",
+    "bus",
+    "refactor",
+    "sos-cleanup",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T16:34:18.645192+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T16:34:18.645121+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/mirror-bus-subscriber.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ]
+  }
+}

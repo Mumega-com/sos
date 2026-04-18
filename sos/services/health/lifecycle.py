@@ -89,6 +89,8 @@ def _build_agent_defs() -> dict[str, dict]:
     """Convert AgentDef objects from the registry to the dict format lifecycle expects."""
     result = {}
     for name, agent in get_all_agents().items():
+        if agent.type == AgentType.REMOTE:
+            continue  # Remote agents run off-server — skip monitoring
         result[name] = {
             "type": agent.type.value,
             "session": agent.session,
@@ -249,7 +251,7 @@ def log_event(agent_id: str, event_type: str, details: str) -> None:
     r = get_redis()
     if r:
         try:
-            r.xadd("sos:stream:lifecycle", {"data": json.dumps(entry)}, maxlen=1000)
+            r.xadd("sos:stream:lifecycle", {"payload": json.dumps(entry)}, maxlen=1000)
         except Exception:
             pass
 
@@ -362,11 +364,18 @@ def detect_agent_state(agent_id: str, agent_def: dict) -> dict:
         return {"state": "compacted", "details": "context compaction detected in output"}
 
     # Check for crash / error patterns
-    crash_patterns = ["Error:", "Traceback", "SIGTERM", "killed", "exited with"]
+    crash_patterns = ["Traceback", "SIGTERM", "killed", "exited with"]
+    api_exhausted_patterns = ["Extra usage is required", "rate limit", "quota exceeded", "billing"]
     if any(p in tail for p in crash_patterns):
         # Only if also at a shell prompt (agent CLI crashed, back to shell)
         if any(p in tail for p in ["$", "❯", "#"]):
+            if warm_policy == "cold" and not _agent_has_active_tasks(agent_id):
+                return {"state": "parked", "details": f"cold agent '{agent_id}' process exited, no active tasks"}
             return {"state": "dead", "details": "agent process crashed, at shell prompt"}
+    # API quota exhaustion is not a crash — don't restart in a loop
+    if any(p.lower() in tail.lower() for p in api_exhausted_patterns):
+        if any(p in tail for p in ["$", "❯", "#"]):
+            return {"state": "parked", "details": f"agent '{agent_id}' API quota exhausted, waiting for credits"}
 
     # Check busy vs idle
     busy = any(p in tail for p in agent_def.get("busy_patterns", []))
@@ -434,6 +443,9 @@ def _detect_openclaw_state(agent_id: str, agent_def: dict) -> dict:
         age_minutes = int(latest.get("ageMs", 0)) / 60000
 
         if age_minutes > STUCK_THRESHOLD_MINUTES:
+            # Cold agents with no active tasks are parked, not stuck
+            if agent_def.get("warm_policy", "cold") == "cold" and not _agent_has_active_tasks(agent_id):
+                return {"state": "parked", "details": f"cold agent '{agent_id}' idle for {int(age_minutes)}m, no active tasks"}
             return {"state": "stuck", "details": f"last activity {int(age_minutes)} minutes ago"}
 
         return {"state": "busy", "details": f"active session, last activity {int(age_minutes)}m ago"}
@@ -469,7 +481,7 @@ def get_agent_context(agent_id: str) -> str:
     try:
         resp = requests.post(
             f"{MIRROR_URL}/search",
-            json={"query": f"latest context for {agent_id}", "limit": 3},
+            json={"query": f"{agent_id} task work current status", "agent_filter": agent_id, "limit": 3},
             timeout=5,
         )
         if resp.status_code == 200:
@@ -526,7 +538,10 @@ def get_agent_context(agent_id: str) -> str:
     if not parts:
         return "Check your inbox for pending work."
 
-    return "\n".join(parts)
+    context = "\n".join(parts)
+    if len(context) > 2048:
+        context = context[:2048] + "\n[context truncated]"
+    return context
 
 
 def restart_tmux_agent(agent_id: str, agent_def: dict) -> bool:
@@ -688,12 +703,18 @@ def check_dead_letter_queue() -> list[dict]:
                 age_ms = now_ms - msg_ts
 
                 if age_ms > one_hour_ms:
+                    try:
+                        preview_raw = msg_data.get("payload", "") if isinstance(msg_data, dict) else str(msg_data)
+                        preview_parsed = json.loads(preview_raw) if isinstance(preview_raw, str) and preview_raw.startswith("{") else {}
+                        preview = preview_parsed.get("text", preview_raw)[:100] if preview_parsed else str(preview_raw)[:100]
+                    except Exception:
+                        preview = str(msg_data)[:100]
                     alerts.append({
                         "agent": agent_id,
                         "msg_id": msg_id,
                         "age_minutes": int(age_ms / 60000),
                         "action": "dead_letter",
-                        "preview": str(msg_data)[:100],
+                        "preview": preview,
                     })
                 elif age_ms > ten_min_ms:
                     # Check if agent is dead/offline
@@ -703,14 +724,15 @@ def check_dead_letter_queue() -> list[dict]:
                         if not check_tmux_alive(session):
                             # Agent offline, redirect to orchestrator
                             try:
+                                msg_payload = msg_data.get("payload", "") if isinstance(msg_data, dict) else str(msg_data)
                                 r.xadd(
                                     "sos:stream:global:agent:mumega",
                                     {
-                                        "data": json.dumps({
+                                        "payload": json.dumps({
                                             "type": "dead_letter_redirect",
                                             "source": "lifecycle-manager",
                                             "original_agent": agent_id,
-                                            "text": f"Message to {agent_id} unread for {int(age_ms/60000)}m (agent offline): {str(msg_data)[:200]}",
+                                            "text": f"Message to {agent_id} unread for {int(age_ms/60000)}m (agent offline): {msg_payload[:200]}",
                                         }),
                                     },
                                     maxlen=500,
@@ -812,10 +834,10 @@ def alert_bus(agent_id: str, event_type: str, message: str) -> None:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         # Alert to mumega (orchestrator)
-        r.xadd("sos:stream:global:agent:mumega", {"data": payload}, maxlen=500)
+        r.xadd("sos:stream:global:agent:mumega", {"payload": payload}, maxlen=500)
         r.publish("sos:wake:mumega", payload)
         # Also to lifecycle stream
-        r.xadd("sos:stream:lifecycle", {"data": payload}, maxlen=1000)
+        r.xadd("sos:stream:lifecycle", {"payload": payload}, maxlen=1000)
     except Exception as e:
         logger.warning(f"Bus alert failed: {e}")
 
@@ -910,6 +932,32 @@ def run_cycle(cycle_num: int) -> dict:
     return results
 
 
+def _start_bus_consumer_thread() -> None:
+    """Launch the health bus consumer on a daemon thread alongside lifecycle.
+
+    The consumer subscribes to ``sos:stream:global:squad:*`` and updates the
+    conductance network on ``task.completed`` events. Opt out by setting
+    ``SOS_HEALTH_BUS_CONSUMER=0``.
+    """
+    if os.environ.get("SOS_HEALTH_BUS_CONSUMER", "1") == "0":
+        logger.info("HealthBusConsumer disabled via SOS_HEALTH_BUS_CONSUMER=0")
+        return
+
+    import threading
+
+    def _run() -> None:
+        try:
+            from sos.services.health.bus_consumer import HealthBusConsumer
+            consumer = HealthBusConsumer()
+            asyncio.run(consumer.run())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("HealthBusConsumer crashed: %s", exc, exc_info=True)
+
+    t = threading.Thread(target=_run, name="health-bus-consumer", daemon=True)
+    t.start()
+    logger.info("HealthBusConsumer thread started")
+
+
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Agent Lifecycle Manager")
@@ -923,6 +971,10 @@ def main() -> None:
         results = run_cycle(1)
         print(json.dumps(results, indent=2))
         return
+
+    # Launch the task.completed bus consumer in a daemon thread so we react to
+    # squad events in real time while the lifecycle poller keeps its cadence.
+    _start_bus_consumer_thread()
 
     cycle_num = 0
     while True:

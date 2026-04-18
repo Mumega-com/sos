@@ -100,12 +100,14 @@ async def startup_event():
     global _orchestrator
     
     log.info("🚀 Starting Content Service Subconscious...")
-    
+
     # 1. Initialize Clients
-    from sos.services.engine.core import SOSEngine
-    from sos.services.engine.council import create_council
-    
-    engine = SOSEngine()
+    from sos.clients.engine import AsyncEngineClient
+    from sos.kernel.council import create_council
+
+    engine = AsyncEngineClient(
+        base_url=os.environ.get("SOS_ENGINE_URL", "http://localhost:6060")
+    )
     council = create_council(squad_id="marketing")
     
     # 2. Start Orchestrator
@@ -120,7 +122,7 @@ async def startup_event():
 
 async def run_council_listener(orchestrator: ContentOrchestrator):
     """Background task to listen for Council results."""
-    from sos.services.bus.core import get_bus
+    from sos.kernel.bus import get_bus
     bus = get_bus()
     await bus.connect()
     

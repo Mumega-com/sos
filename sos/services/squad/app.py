@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -9,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from sos import __version__
+from sos.kernel.health import health_response
 from sos.contracts.squad import (
     LoadingLevel,
     PipelineSpec,
@@ -27,11 +29,16 @@ from sos.contracts.squad import (
     TaskStatus,
     TrustTier,
 )
-from sos.services.squad.auth import AuthContext, require_capability
+from fastapi import Header
+from sos.services.squad.auth import AuthContext, create_api_key as _create_api_key, require_capability
+from sos.services.squad.auth import _lookup_token as _squad_lookup_token
+from sos.services.squad.service import SquadDB
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
 
 
 app = FastAPI(title="SOS Squad Service", version=__version__)
+
+_START_TIME = time.time()
 
 squads = SquadService()
 tasks = SquadTaskService()
@@ -200,7 +207,64 @@ def _to_task(payload: SquadTaskIn) -> SquadTask:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "squad", "version": __version__}
+    return health_response("squad", _START_TIME)
+
+
+_SYSTEM_BEARER = os.getenv("SOS_SYSTEM_TOKEN", "sk-sos-system")
+
+
+def _require_system_bearer(authorization: Optional[str]) -> None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing_authorization")
+    presented = authorization.split(" ", 1)[1].strip()
+    if presented != _SYSTEM_BEARER:
+        raise HTTPException(status_code=403, detail="system_bearer_required")
+
+
+class AuthVerifyRequest(BaseModel):
+    token: str
+
+
+@app.post("/auth/verify")
+async def auth_verify(
+    payload: AuthVerifyRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Resolve a bearer against the squad api_keys table.
+
+    Admin-gated: only callers presenting SOS_SYSTEM_TOKEN can verify tokens
+    on another identity's behalf. Returns ``{ok: false}`` on miss so the
+    shape is uniform for clients; SOSClientError is not raised for 401.
+    """
+    _require_system_bearer(authorization)
+    ctx = _squad_lookup_token(payload.token, SquadDB())
+    if ctx is None:
+        return {"ok": False}
+    return {
+        "ok": True,
+        "tenant_id": ctx.tenant_id,
+        "is_system": ctx.is_system,
+        "identity_type": ctx.identity.metadata.get("identity_type"),
+        "identity_id": ctx.identity.id,
+    }
+
+
+class ApiKeyCreateRequest(BaseModel):
+    tenant_id: str
+    identity_type: str = "user"
+
+
+@app.post("/api-keys")
+async def api_keys_create(
+    payload: ApiKeyCreateRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Mint a new api-key for ``tenant_id``. System-bearer gated."""
+    _require_system_bearer(authorization)
+    token, created_at = _create_api_key(
+        payload.tenant_id, payload.identity_type, SquadDB()
+    )
+    return {"token": token, "tenant_id": payload.tenant_id, "created_at": created_at}
 
 
 @app.post("/squads")

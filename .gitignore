@@ -44,6 +44,13 @@ data/**/*.db
 htmlcov/
 .coverage
 
+# Generated / caches
+graphify-out/
+graphify-out-*/
+.wrangler/
+.remember/
+.code-review-graph/
+
 # OS
 Thumbs.db
 *~

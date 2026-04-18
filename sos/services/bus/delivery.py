@@ -48,29 +48,30 @@ AGENT_ROUTING = {
     "worker":   "openclaw",
     "dandan":   "openclaw",
     "mumcp":    "tmux",
-    "webdev":   "tmux",
-    "mumega-web": "tmux",
-    "mumega-com-web": "tmux",  # Alias — old name still receives messages
+    # webdev / mumega-web / mumega-com-web: DEPRECATED 2026-04-16 (Hadi: obsolete).
+    # Removed from routing so wake-daemon stops poking dead tmux sessions.
     "dara":     "none",  # Remote agent on Hadi's Mac — inbox only, no tmux wake
     "torivers": "tmux",  # Separate Linux user — wake via sudo tmux send-keys
     "mizan":    "openclaw",
     "gemma":    "openclaw",
     "gaf":      "tmux",
+    "prefrontal": "tmux",  # Customer agent — separate Linux user
+    "trop":     "tmux",    # TROP growth loop agent — Sonnet
+    "sos-medic": "tmux",   # SOS connectivity on-call responder (home: sos/agents/sos-medic/)
 }
 
 # Tmux session name override (if different from agent name)
 # Current sessions: athena, kasra, kasra-dnu, kasra-gaf, kasra-trop, river
 TMUX_SESSION_MAP = {
-    "gemini": "river",   # gemini agent uses tmux session named "river"
+    "gemini": "gemini",  # gemini CLI runs in tmux session "gemini"
     "river": "river",    # legacy alias
     "athena": "athena",
-    "mumega-web": "mumega-com-web",  # tmux session kept old name after rename
-    "webdev": "mumega-web",          # tmux session kept old name after rename
+    # webdev / mumega-web / mumega-com-web entries removed 2026-04-16 (obsolete)
 }
 
 # Aliases: old names that should route to the new name's handler
-AGENT_ALIASES = {
-    "mumega-com-web": "mumega-web",  # old name → new name
+AGENT_ALIASES: dict[str, str] = {
+    # mumega-com-web → mumega-web alias removed 2026-04-16 (both deprecated)
 }
 
 # Agents running as separate Linux users — need sudo for tmux access
@@ -191,7 +192,10 @@ def wake_tmux(agent: str, message: str) -> bool:
             ["tmux"] + sock_args + ["capture-pane", "-t", session, "-p"],
             capture_output=True, text=True, timeout=5,
         )
-        last_lines = check.stdout.strip().split("\n")[-3:]
+        # Look at the last 10 lines — TUIs (Claude Code, Codex) render prompt
+        # above trailing status chrome (e.g. "bypass permissions", "1 MCP server
+        # needs auth"), so a 3-line window misses the ❯ prompt itself.
+        last_lines = check.stdout.strip().split("\n")[-10:]
         last_text = " ".join(last_lines).lower()
 
         # Only send if agent appears to be at a prompt (waiting for input)

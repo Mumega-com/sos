@@ -14,6 +14,14 @@ Tiers:
   dual_approval — notify two approvers (data deletion, security changes)
 
 Default: everything is act_freely. Governance grows with trust.
+
+v0.5.0:
+  - Budget check flipped from inline `sos.services.economy.metabolism`
+    import to HTTP via `sos.clients.economy.AsyncEconomyClient`. Kernel
+    no longer imports any service module. Fail-open on HTTP error.
+  - Every intent also written to the unified audit stream
+    (`sos.kernel.audit`). Legacy `~/.sos/governance/intents/` files
+    still populated for one version as a read-side compat shim.
 """
 from __future__ import annotations
 
@@ -24,7 +32,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sos.clients.economy import AsyncEconomyClient
+from sos.contracts.audit import AuditDecision, AuditEventKind
+from sos.kernel.audit import append_event as _audit_append
+from sos.kernel.audit import new_event as _audit_new_event
+
 logger = logging.getLogger("sos.governance")
+
+# Module-level client — kernel→economy boundary crossing via HTTP.
+# Fail-open on any error so governance availability is preserved.
+_economy_client = AsyncEconomyClient()
 
 TIERS = {"act_freely", "batch_approve", "human_gate", "dual_approval"}
 
@@ -95,31 +112,48 @@ async def before_action(
     now = datetime.now(timezone.utc).isoformat()
     intent_id = f"{agent}:{action}:{int(datetime.now(timezone.utc).timestamp())}"
 
-    # Gap 7: Budget enforcement — check before allowing action
+    # v0.5.0: Budget check via HTTP — kernel never imports services directly.
+    # Fail-open on any error (connection refused, timeout, economy down) so
+    # governance availability is preserved. Denials here are authoritative.
     estimated_cost = (metadata or {}).get("estimated_cost", 0.0)
     project = (metadata or {}).get("project", tenant)
     try:
-        from sos.services.economy.metabolism import can_spend
-        budget_check = can_spend(project, estimated_cost)
-        if not budget_check["allowed"]:
+        budget_check = await _economy_client.can_spend(project, estimated_cost)
+        if not budget_check.get("allowed", True):
             logger.warning(
                 f"BUDGET BLOCKED: {agent} → {action} on {target}. "
-                f"Project {project} over budget: {budget_check['reason']}"
+                f"Project {project} over budget: {budget_check.get('reason', 'unknown')}"
             )
+            # Emit audit record for the denial before returning
+            try:
+                await _audit_append(_audit_new_event(
+                    agent=agent,
+                    tenant=tenant,
+                    kind=AuditEventKind.INTENT,
+                    action=action,
+                    target=target,
+                    decision=AuditDecision.DENY,
+                    reason=budget_check.get("reason", "budget exceeded"),
+                    policy_tier="budget_exceeded",
+                    metadata={"intent_id": intent_id, "budget": budget_check, **(metadata or {})},
+                ))
+            except Exception as audit_exc:
+                logger.debug("audit append failed on budget denial: %s", audit_exc)
             return {
                 "allowed": False,
                 "tier": "budget_exceeded",
                 "intent_id": intent_id,
-                "reason": budget_check["reason"],
+                "reason": budget_check.get("reason", "budget exceeded"),
                 "budget": budget_check,
             }
         if budget_check.get("warning"):
             logger.info(
-                f"BUDGET WARNING: {project} at {budget_check['pct_used']:.0f}% "
-                f"(${budget_check['spent']:.4f} / ${budget_check['budget']:.4f})"
+                f"BUDGET WARNING: {project} at {budget_check.get('pct_used', 0):.0f}% "
+                f"(${budget_check.get('spent', 0):.4f} / ${budget_check.get('budget', 0):.4f})"
             )
-    except ImportError:
-        pass  # metabolism module optional
+    except Exception as exc:
+        # Fail-open: economy unreachable should never block governance.
+        logger.debug("budget check unavailable (%s): %s", type(exc).__name__, exc)
 
     # Always log intent (accountability)
     intent = {
@@ -134,7 +168,26 @@ async def before_action(
         "metadata": metadata or {},
     }
 
-    # Log to file (always works, even if Mirror is down)
+    # v0.5.0: unified audit stream. Disk-authoritative via kernel.audit.
+    # Shim below continues to write the legacy per-tenant intents file so
+    # external tooling reading ~/.sos/governance/intents/ is not broken.
+    # Planned removal of the shim: v0.5.2.
+    try:
+        await _audit_append(_audit_new_event(
+            agent=agent,
+            tenant=tenant,
+            kind=AuditEventKind.INTENT,
+            action=action,
+            target=target,
+            decision=AuditDecision.NOT_APPLICABLE,
+            reason=reason,
+            policy_tier=tier,
+            metadata={"intent_id": intent_id, **(metadata or {})},
+        ))
+    except Exception as audit_exc:
+        logger.debug("audit append failed on intent log: %s", audit_exc)
+
+    # Legacy compat: per-tenant intent file (v0.5.x shim).
     intent_dir = _governance_dir() / "intents" / tenant
     intent_dir.mkdir(parents=True, exist_ok=True)
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")

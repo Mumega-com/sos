@@ -16,6 +16,18 @@ import json
 import os
 
 
+# ---------------------------------------------------------------------------
+# Kernel-level constants (single source of truth for path + tenant defaults).
+# Moved from sos/services/squad/service.py in v0.4.4 Wave 4 to fix R1
+# violation (policy layer reaching into service layer). Kept intentionally
+# trivial — v0.5.0 is free to replace with richer config plumbing.
+# ---------------------------------------------------------------------------
+
+SOS_DATA_DIR: Path = Path(os.environ.get("SOS_DATA_DIR", str(Path.home() / ".sos" / "data")))
+DB_PATH: Path = SOS_DATA_DIR / "squads.db"
+DEFAULT_TENANT_ID: str = "default"
+
+
 @dataclass
 class RuntimePaths:
     """

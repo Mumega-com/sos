@@ -10,12 +10,49 @@ The Economy Service handles:
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 from enum import Enum
+from uuid import uuid4
 
 from sos.kernel import Capability
+
+
+def _now_iso() -> str:
+    """Return current UTC time as an ISO 8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class UsageEvent:
+    """One model-call telemetry event.
+
+    Canonical on-the-wire shape for the `POST /usage` economy endpoint. Matches
+    `sos.adapters.base.UsageInfo` conceptually but adds tenant/endpoint/
+    occurred_at so the record is self-describing without context.
+
+    All cost fields in **micros** (1e-6 of a currency unit). Edge tenants
+    computing cost from `PricingEntry.estimate_micros()` should pass the
+    integer result directly. USD ledger entries with cost_cents can be
+    converted: `cost_micros = cost_cents * 10_000`.
+    """
+    id: str = field(default_factory=lambda: str(uuid4()))
+    tenant: str = ""                         # tenant slug — must match the bus-token's project/tenant scope
+    provider: str = ""                       # "google" | "anthropic" | "openai" | "vertex" | ...
+    model: str = ""                          # provider model id, e.g. "gemini-flash-lite-latest"
+    endpoint: str = ""                       # tenant-side endpoint that triggered the call
+    input_tokens: int = 0
+    output_tokens: int = 0
+    image_count: int = 0                     # flat-billed image models
+    cost_micros: int = 0                     # integer micros in whatever unit the tenant uses
+    cost_currency: str = "USD"               # "USD" | "MIND" | operator-defined
+    metadata: dict[str, Any] = field(default_factory=dict)
+    occurred_at: str = field(default_factory=_now_iso)
+    received_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class TransactionType(Enum):
@@ -27,6 +64,9 @@ class TransactionType(Enum):
     WITHDRAWAL = "withdrawal"   # External withdrawal
     REWARD = "reward"           # Bonus/incentive reward
     FEE = "fee"                 # Service fee
+    USAGE_CHARGE = "usage_charge"   # Debit for a metered model-call (UsageEvent driven)
+    SKILL_PAYOUT = "skill_payout"   # 85% creator share from a usage charge
+    PLATFORM_FEE = "platform_fee"   # 15% platform share credited to agent:treasury
 
 
 class TransactionStatus(Enum):

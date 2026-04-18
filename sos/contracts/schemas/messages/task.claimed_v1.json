@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mumega.com/schemas/sos/messages/task.claimed_v1.json",
+  "title": "SOS Task Claimed Message",
+  "description": "Event emitted when an agent atomically claims a task. Published to the bus so dispatchers and other workers know the task is locked to a specific claimant.",
+  "type": "object",
+  "required": [
+    "type",
+    "source",
+    "target",
+    "timestamp",
+    "version",
+    "message_id",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "task.claimed",
+      "description": "Message type discriminator. Always 'task.claimed' for this schema."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^agent:[a-z][a-z0-9-]*$",
+      "description": "Bus address of the agent that claimed the task. Format: 'agent:<name>'."
+    },
+    "target": {
+      "type": "string",
+      "default": "sos:channel:tasks",
+      "description": "Bus channel this message is published to. Defaults to 'sos:channel:tasks'.",
+      "pattern": "^(agent:[a-z][a-z0-9-]*|sos:channel:[a-z][a-z0-9:_-]*)$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp at which this message was emitted."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+      "description": "Schema version of this message. SemVer \u2014 major.minor or major.minor.patch."
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier for this message instance. UUID v4 recommended."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Domain data for the task.claimed event.",
+      "required": [
+        "task_id",
+        "claimed_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Identifier of the task that was claimed. Alphanumeric, underscores, and dashes only."
+        },
+        "claimed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp at which the atomic claim was recorded."
+        },
+        "claim_expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 UTC timestamp after which the claim is considered stale and may be re-issued. Omit for non-expiring claims."
+        },
+        "worker_info": {
+          "type": "object",
+          "description": "Optional metadata about the worker that holds the claim.",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Model identifier the worker is running on (e.g. claude-sonnet-4-6, gpt-4o)."
+            },
+            "plan": {
+              "type": "string",
+              "description": "SaaS plan associated with the worker (e.g. starter, growth, scale, enterprise)."
+            },
+            "estimated_duration_s": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Worker's estimated time to complete the task, in seconds. Must be a non-negative integer."
+            }
+          }
+        }
+      }
+    }
+  }
+}
