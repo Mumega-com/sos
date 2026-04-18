@@ -1,5 +1,10 @@
 
 import asyncio
+
+import pytest
+
+pytest.importorskip("playwright", reason="playwright not installed; skip e2e UI test")
+
 from playwright.async_api import async_playwright, expect
 
 async def run_ui_test():

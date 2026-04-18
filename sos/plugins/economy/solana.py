@@ -1,18 +1,30 @@
 import os
 import logging
-import base58
 from typing import Optional, Dict, Any
 from datetime import datetime
-
-from solana.rpc.async_api import AsyncClient
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solders.transaction import Transaction
-from solders.system_program import TransferParams, transfer
 
 from sos.observability.logging import get_logger
 
 log = get_logger("solana_plugin")
+
+# On-chain deps live under the `solana` extra. Import lazily so
+# `import sos.plugins.economy.solana` works even without the extra
+# installed — construction raises a clear error instead.
+try:
+    import base58  # noqa: F401
+    from solana.rpc.async_api import AsyncClient
+    from solders.keypair import Keypair
+    from solders.pubkey import Pubkey
+    from solders.transaction import Transaction
+    from solders.system_program import TransferParams, transfer
+
+    _SOLANA_AVAILABLE = True
+    _SOLANA_IMPORT_ERROR: Optional[BaseException] = None
+except ImportError as _exc:  # pragma: no cover — env-dependent
+    _SOLANA_AVAILABLE = False
+    _SOLANA_IMPORT_ERROR = _exc
+    AsyncClient = Keypair = Pubkey = Transaction = None  # type: ignore[assignment]
+    TransferParams = transfer = None  # type: ignore[assignment]
 
 class SolanaWallet:
     """
@@ -20,6 +32,12 @@ class SolanaWallet:
     Enables on-chain settlement of RU balances and QNFT proofs.
     """
     def __init__(self, rpc_url: Optional[str] = None, private_key: Optional[str] = None):
+        if not _SOLANA_AVAILABLE:
+            raise RuntimeError(
+                "SolanaWallet requires the `solana` extra "
+                "(pip install 'mumega[solana]'). "
+                f"Underlying import error: {_SOLANA_IMPORT_ERROR!r}"
+            )
         self.rpc_url = rpc_url or os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com")
         self.private_key = private_key or os.getenv("SOLANA_PRIVATE_KEY")
         
