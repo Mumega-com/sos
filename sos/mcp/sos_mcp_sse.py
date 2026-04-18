@@ -34,6 +34,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+from sos.clients.billing import AsyncBillingClient
 from sos.clients.saas import AsyncSaasClient, SaasClient
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
@@ -57,6 +58,7 @@ SQUAD_SYSTEM_TOKEN = os.environ.get("SOS_SQUAD_SYSTEM_TOKEN") or os.environ.get(
 _squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
 _saas_client = SaasClient()
 _async_saas_client = AsyncSaasClient()
+_async_billing_client = AsyncBillingClient()
 
 
 def _audit_tool_call(
@@ -2345,10 +2347,27 @@ async def customer_signup(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @app.post("/webhook/stripe")
-async def stripe_webhook(request: Request) -> JSONResponse:
-    """Stripe webhook endpoint. Verifies signature, provisions tenant on checkout."""
-    from sos.services.billing.webhook import stripe_webhook_handler
-    return await stripe_webhook_handler(request)
+async def stripe_webhook(request: Request) -> Response:
+    """Stripe webhook proxy — forwards the raw request to the billing
+    service so Stripe signature verification (HMAC over the raw bytes)
+    happens inside billing, not in-process here. Body + headers pass
+    through unchanged.
+    """
+    raw_body = await request.body()
+    try:
+        billing_resp = await _async_billing_client.forward_stripe_webhook(
+            raw_body, dict(request.headers)
+        )
+    except Exception as exc:
+        log.exception("billing webhook proxy failed")
+        return JSONResponse(
+            {"status": "error", "detail": str(exc)}, status_code=502
+        )
+    return Response(
+        content=billing_resp.content,
+        status_code=billing_resp.status_code,
+        media_type=billing_resp.headers.get("content-type"),
+    )
 
 
 # ---------------------------------------------------------------------------

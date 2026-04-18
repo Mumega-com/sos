@@ -167,8 +167,10 @@ ignore_imports = [
   #   Phase 1 (squad) closed — SquadClient + /auth/verify + /api-keys.
   #   Phase 2 (saas) closed — SaasClient routes rate_limit, audit,
   #     marketplace, and notification preferences over HTTP.
-  #   Phases 3-4 (billing, integrations) still pending.
-  "sos.mcp.sos_mcp_sse -> sos.services.billing.**",
+  #   Phase 3 (billing) closed — AsyncBillingClient proxies the Stripe
+  #     webhook to sos.services.billing.app (signature verification
+  #     happens inside billing).
+  #   Phase 4 (integrations) still pending.
   "sos.mcp.sos_mcp_sse -> sos.services.integrations.**",
 ]
 

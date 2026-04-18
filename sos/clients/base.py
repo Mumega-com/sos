@@ -48,13 +48,22 @@ class BaseHTTPClient(BaseClient):
         *,
         json: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        content: Optional[bytes] = None,
     ) -> httpx.Response:
         request_headers: Dict[str, str] = {}
         if headers:
             request_headers.update(headers)
         inject_trace_context(request_headers)
 
-        response = self._client.request(method, path, json=json, headers=request_headers or None)
+        response = self._client.request(
+            method,
+            path,
+            json=json,
+            headers=request_headers or None,
+            params=params,
+            content=content,
+        )
         if response.is_error:
             body = None
             try:
@@ -89,6 +98,8 @@ class AsyncBaseHTTPClient(BaseClient):
         *,
         json: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        content: Optional[bytes] = None,
     ) -> httpx.Response:
         request_headers: Dict[str, str] = dict(self._headers)
         if headers:
@@ -100,7 +111,12 @@ class AsyncBaseHTTPClient(BaseClient):
             timeout=self._timeout,
         ) as client:
             response = await client.request(
-                method, path, json=json, headers=request_headers or None
+                method,
+                path,
+                json=json,
+                headers=request_headers or None,
+                params=params,
+                content=content,
             )
             if response.is_error:
                 body = None

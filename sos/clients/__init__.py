@@ -7,6 +7,7 @@ from sos.clients.mirror import MirrorClient
 from sos.clients.economy import EconomyClient
 from sos.clients.tools import ToolsClient
 from sos.clients.voice import VoiceClient
+from sos.clients.billing import AsyncBillingClient, BillingClient
 from sos.clients.bus import BusClient
 from sos.clients.operations import AsyncOperationsClient, OperationsClient
 from sos.clients.journeys import AsyncJourneysClient, JourneysClient
@@ -22,6 +23,8 @@ __all__ = [
     "ToolsClient",
     "VoiceClient",
     "BusClient",
+    "BillingClient",
+    "AsyncBillingClient",
     "OperationsClient",
     "AsyncOperationsClient",
     "JourneysClient",
