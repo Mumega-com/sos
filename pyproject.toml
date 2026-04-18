@@ -217,8 +217,6 @@ ignore_imports = [
   "sos.services.engine.** -> sos.services.tools.**",
   # P0-04, P0-05 closed in v0.4.5 wave 1 — squad emits task.completed;
   # health + journeys subscribe via their own bus consumers. Ignores removed.
-  # P0-06 analytics.ingest → integrations.oauth
-  "sos.services.analytics.** -> sos.services.integrations.**",
   # P0-07 autonomy.service → identity.avatar
   "sos.services.autonomy.** -> sos.services.identity.**",
   # P0-09 brain.service → registry.read_all (top-level registry package)
@@ -237,4 +235,5 @@ ignore_imports = [
   # P1-10 theme: services.bus.discovery is shared infra pending kernel move
   "sos.services.engine.** -> sos.services.bus.**",
   "sos.services.memory.** -> sos.services.bus.**",
+  "sos.services.integrations.** -> sos.services.bus.**",
 ]

@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import httpx
+
+from sos.clients.integrations import AsyncIntegrationsClient
 
 logger = logging.getLogger("sos.analytics.ingest")
 
@@ -33,6 +36,7 @@ class AnalyticsIngester:
         ga4_property_id: Optional[str] = None,
         gsc_domain: Optional[str] = None,
         clarity_project_id: Optional[str] = None,
+        integrations_client: Optional[AsyncIntegrationsClient] = None,
     ) -> None:
         self.tenant = tenant_name
         self.mirror_url = mirror_url.rstrip("/")
@@ -41,25 +45,30 @@ class AnalyticsIngester:
         self.gsc_domain = gsc_domain
         self.clarity_project_id = clarity_project_id
         self._client = httpx.Client(timeout=30)
+        self._integrations = integrations_client or AsyncIntegrationsClient(
+            base_url=os.environ.get("SOS_INTEGRATIONS_URL"),
+            token=os.environ.get("SOS_INTEGRATIONS_TOKEN")
+            or os.environ.get("SOS_SYSTEM_TOKEN"),
+        )
 
     # ------------------------------------------------------------------
     # GA4
     # ------------------------------------------------------------------
 
-    def ingest_ga4(self, days: int = 30) -> str:
+    async def ingest_ga4(self, days: int = 30) -> str:
         """Pull top pages, bounce rate, session duration from GA4.
 
         Endpoint: POST https://analyticsdata.googleapis.com/v1beta/properties/{id}:runReport
-        Auth: Bearer access_token from TenantIntegrations("google_analytics")
+        Auth: Bearer access_token fetched via the Integrations HTTP service
         Falls back to empty string (no mock) if credentials not configured.
         """
         if not self.ga4_property_id:
             logger.info("GA4 property not configured for %s, skipping", self.tenant)
             return ""
 
-        from sos.services.integrations.oauth import TenantIntegrations
-        integrations = TenantIntegrations(self.tenant)
-        creds = integrations.get_credentials("google_analytics")
+        creds = await self._integrations.get_credentials(
+            self.tenant, "google_analytics"
+        )
         if not creds:
             logger.warning("No GA4 credentials for %s — skipping", self.tenant)
             return ""
@@ -138,20 +147,20 @@ class AnalyticsIngester:
     # Google Search Console
     # ------------------------------------------------------------------
 
-    def ingest_gsc(self, days: int = 30) -> str:
+    async def ingest_gsc(self, days: int = 30) -> str:
         """Pull top queries, clicks, impressions, CTR, position from GSC.
 
         Endpoint: POST https://www.googleapis.com/webmasters/v3/sites/{domain}/searchAnalytics/query
-        Auth: Bearer access_token from TenantIntegrations("google_search_console")
+        Auth: Bearer access_token fetched via the Integrations HTTP service
         Falls back to empty string (no mock) if credentials not configured.
         """
         if not self.gsc_domain:
             logger.info("GSC domain not configured for %s, skipping", self.tenant)
             return ""
 
-        from sos.services.integrations.oauth import TenantIntegrations
-        integrations = TenantIntegrations(self.tenant)
-        creds = integrations.get_credentials("google_search_console")
+        creds = await self._integrations.get_credentials(
+            self.tenant, "google_search_console"
+        )
         if not creds:
             logger.warning("No GSC credentials for %s — skipping", self.tenant)
             return ""
@@ -229,11 +238,11 @@ class AnalyticsIngester:
     # Microsoft Clarity
     # ------------------------------------------------------------------
 
-    def ingest_clarity(self, days: int = 30) -> str:
+    async def ingest_clarity(self, days: int = 30) -> str:
         """Pull rage clicks, dead clicks, and scroll depth from Microsoft Clarity.
 
         Endpoint: GET https://www.clarity.ms/api/v1/projects/{id}/metrics
-        Auth: Bearer api_key from TenantIntegrations("clarity")
+        Auth: Bearer api_key fetched via the Integrations HTTP service
         Docs: https://learn.microsoft.com/en-us/clarity/setup-and-installation/clarity-api
         Falls back to empty string (no mock) if credentials not configured.
         """
@@ -241,9 +250,7 @@ class AnalyticsIngester:
             logger.info("Clarity not configured for %s, skipping", self.tenant)
             return ""
 
-        from sos.services.integrations.oauth import TenantIntegrations
-        integrations = TenantIntegrations(self.tenant)
-        creds = integrations.get_credentials("clarity")
+        creds = await self._integrations.get_credentials(self.tenant, "clarity")
         if not creds:
             logger.warning("No Clarity credentials for %s — skipping", self.tenant)
             return ""
@@ -311,19 +318,19 @@ class AnalyticsIngester:
     # Combined
     # ------------------------------------------------------------------
 
-    def ingest_all(self, days: int = 30) -> str:
+    async def ingest_all(self, days: int = 30) -> str:
         """Run all three sources and store a combined weekly summary."""
         parts: list[str] = []
 
-        ga4 = self.ingest_ga4(days=days)
+        ga4 = await self.ingest_ga4(days=days)
         if ga4:
             parts.append(ga4)
 
-        gsc = self.ingest_gsc(days=days)
+        gsc = await self.ingest_gsc(days=days)
         if gsc:
             parts.append(gsc)
 
-        clarity = self.ingest_clarity(days=days)
+        clarity = await self.ingest_clarity(days=days)
         if clarity:
             parts.append(clarity)
 
