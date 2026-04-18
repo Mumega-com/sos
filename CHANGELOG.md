@@ -2,6 +2,82 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.2] - 2026-04-18 — Arbitration: intent → proposal → ratification
+
+**Release theme: "The kernel enforces the blueprint — step 3 of 3."**
+
+v0.5.0 gave us the floor + audit spine. v0.5.1 gave us the unified gate.
+v0.5.2 closes the triptych: when two agents call the gate independently,
+arbitration looks across proposers and picks exactly one winner. The
+audit spine is the storage layer — proposals ARE `AuditEventKind.INTENT`
+events, arbitration is a read-over-audit + decision function. No new
+durability layer.
+
+### Arbitration (`sos.kernel.arbitration`)
+
+- **`sos/kernel/arbitration.py`** — three public coroutines:
+  - `propose_intent(agent, action, resource, tenant, priority, metadata)` →
+    writes an INTENT event tagged `metadata.arbitration=True` with
+    `metadata.priority=N`. Returns the proposal id (audit event id).
+  - `arbitrate(resource, tenant, window_ms=500, strategy="priority+coherence+recency")` →
+    `ArbitrationDecision`. Reads proposals in window, sorts, emits one
+    `ARBITRATION` audit event, returns a frozen decision. **Never raises**
+    — arbitration failures fall through to a no-winner decision so the
+    caller's denial path stays clean.
+  - `read_proposals(tenant, resource, window_ms=500)` — observability helper.
+- **Rank rule** — `priority → coherence → recency`:
+  1. `metadata.priority` (int, higher wins).
+  2. Conductance sum `sum(G[agent][skill])` from `sos.kernel.conductance`
+     — the agent's proven-flow signal; absent agents score 0.
+  3. Later `timestamp` wins.
+  Strategy name is recorded in `ArbitrationDecision`, so future strategies
+  (`fmaap-weighted`, `governance-tier-aware`) ship as new string values
+  without schema churn.
+- **`sos/contracts/arbitration.py`** — `ArbitrationDecision` + `LoserRecord`
+  frozen Pydantic v2 models. 4 required + 7 optional fields on the decision.
+  Additive-only. Baseline locked in `test_arbitration_schema_stable.py` (7 tests).
+
+### Gate integration (opt-in)
+
+- **`sos/kernel/policy/gate.py`** — `can_execute()` grows three kwargs:
+  `propose_first: bool = False`, `priority: int = 0`, `window_ms: int = 500`.
+  When `propose_first=True`: gate calls `propose_intent` + `arbitrate`;
+  winners add `"arbitration"` to `pillars_passed` and flow through normal
+  signals; losers short-circuit with a denial whose reason names the winner.
+  **Default `propose_first=False` preserves every existing caller unchanged.**
+
+### Legacy shim removed
+
+- **`sos/kernel/governance.py`** — the `~/.sos/governance/intents/{tenant}/`
+  file-writing block is gone, per the v0.5.0 CHANGELOG plan. Audit has been
+  authoritative for one full minor version. `get_intent_log()` now reads
+  from `sos.kernel.audit.read_events` so its return shape is unchanged for
+  callers.
+
+### Tests (new, all green)
+
+- **`tests/contracts/test_arbitration_schema_stable.py`** — 7 tests
+  (frozen, required/optional fields, no-removal, additive-only).
+- **`tests/kernel/test_arbitration.py`** — 7 tests (single-proposer wins,
+  higher priority wins, coherence tie-break, recency tie-break, empty
+  window no-winner, ARBITRATION event persisted, multi-tenant isolation).
+- **`tests/kernel/test_policy_gate_propose.py`** — 3 tests (winner allowed,
+  loser denied, `propose_first=False` path unchanged).
+
+### Docs
+
+- **`docs/kernel/arbitration.md`** — public contract doc matching
+  `audit.md` / `policy.md` style: why arbitration, architecture insight
+  (read-over-audit), surface, rank rule, contracts, gate integration,
+  durability, failure modes, end-to-end example.
+
+### Deferred to v0.5.3+
+
+- Per-squad arbitration windows (dynamic, based on coherence).
+- Arbitration replay tooling (`sos.cli arbitration replay`).
+- Migrating the remaining ~10 service-side permission checks to
+  `can_execute` (same mop-up deferred from v0.5.1).
+
 ## [0.5.1] - 2026-04-18 — Unified policy gate
 
 **Release theme: "The kernel enforces the blueprint — step 2 of 3."**

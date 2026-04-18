@@ -76,6 +76,9 @@ async def can_execute(
     authorization: Optional[str] = None,
     capability: Any = None,
     context: Optional[dict[str, Any]] = None,
+    propose_first: bool = False,
+    priority: int = 0,
+    window_ms: int = 500,
 ) -> PolicyDecision:
     """Unified policy check.
 
@@ -90,6 +93,15 @@ async def can_execute(
             populated it).
         context: Free-form dict — may carry ``squad_id``, ``skill``,
             ``fuel_grade``, ``estimated_cost_cents`` to light up FMAAP.
+        propose_first: v0.5.2 — when True, the caller's intent is posted
+            into the arbitration stream and arbitrate() picks a winner
+            across all recent proposals on the same ``(tenant, resource)``.
+            Losers get a denial decision without any further gate signals
+            running. Winners continue through bearer/scope/FMAAP as normal.
+        priority: v0.5.2 — higher-priority proposals win arbitration ties.
+            Default 0. Only meaningful with ``propose_first=True``.
+        window_ms: v0.5.2 — arbitration window. Only meaningful with
+            ``propose_first=True``.
 
     Returns:
         ``PolicyDecision`` — immutable, audited, written to the audit stream.
@@ -100,6 +112,66 @@ async def can_execute(
     capability_ok: bool | None = None
     metadata: dict[str, Any] = {}
     scope_basis: str = "kernel-internal"  # default when no auth header given
+
+    # --- 0. Arbitration (v0.5.2, opt-in) ------------------------------------
+    # When the caller asks for arbitration we post their intent, then
+    # resolve the window. Losers short-circuit here. Winners fall through
+    # to the normal gate signals.
+    if propose_first:
+        from sos.kernel.arbitration import arbitrate, propose_intent
+
+        proposer = agent or "unknown"
+        try:
+            proposal_id = await propose_intent(
+                agent=proposer,
+                action=action,
+                resource=resource,
+                tenant=tenant,
+                priority=priority,
+                metadata={"gate_proposal": True},
+            )
+            arbitration_decision = await arbitrate(
+                resource=resource,
+                tenant=tenant,
+                window_ms=window_ms,
+            )
+            metadata["arbitration_proposal_id"] = proposal_id
+            metadata["arbitration_winner"] = arbitration_decision.winner_agent
+            metadata["arbitration_audit_id"] = arbitration_decision.audit_id
+            metadata["arbitration_proposal_count"] = arbitration_decision.proposal_count
+            if arbitration_decision.winner_proposal_id != proposal_id:
+                pillars_failed.append("arbitration")
+                loser_reason = (
+                    f"lost arbitration to {arbitration_decision.winner_agent}"
+                    if arbitration_decision.winner_agent
+                    else "no arbitration winner"
+                )
+                return await _emit(
+                    agent=proposer,
+                    action=action,
+                    resource=resource,
+                    tenant=tenant,
+                    decision=PolicyDecision(
+                        allowed=False,
+                        reason=loser_reason,
+                        tier="denied",
+                        action=action,
+                        resource=resource,
+                        agent=proposer,
+                        tenant=tenant,
+                        pillars_passed=pillars_passed,
+                        pillars_failed=pillars_failed,
+                        capability_ok=capability_ok,
+                        metadata=metadata,
+                    ),
+                )
+            pillars_passed.append("arbitration")
+        except Exception as exc:
+            # Arbitration availability must not block the gate — fall through.
+            logger.debug(
+                "arbitration step failed (%s): %s — continuing", type(exc).__name__, exc
+            )
+            metadata["arbitration_error"] = type(exc).__name__
 
     # --- 1. Bearer verification ---------------------------------------------
     auth_ctx: AuthContext | None = verify_bearer(authorization) if authorization else None

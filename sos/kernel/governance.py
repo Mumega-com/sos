@@ -194,7 +194,7 @@ async def before_action(
         # Fail-open: economy unreachable should never block governance.
         logger.debug("budget check unavailable (%s): %s", type(exc).__name__, exc)
 
-    # Always log intent (accountability)
+    # Intent record (used by queue paths below + Mirror best-effort log).
     intent = {
         "id": intent_id,
         "agent": agent,
@@ -207,10 +207,10 @@ async def before_action(
         "metadata": metadata or {},
     }
 
-    # v0.5.0: unified audit stream. Disk-authoritative via kernel.audit.
-    # Shim below continues to write the legacy per-tenant intents file so
-    # external tooling reading ~/.sos/governance/intents/ is not broken.
-    # Planned removal of the shim: v0.5.2.
+    # v0.5.2: audit stream is the sole durable write path for intents.
+    # The legacy ~/.sos/governance/intents/{tenant}/{date}.jsonl shim was
+    # removed per the v0.5.0 CHANGELOG — audit has been authoritative for
+    # a full minor version.
     try:
         await _audit_append(_audit_new_event(
             agent=agent,
@@ -225,14 +225,6 @@ async def before_action(
         ))
     except Exception as audit_exc:
         logger.debug("audit append failed on intent log: %s", audit_exc)
-
-    # Legacy compat: per-tenant intent file (v0.5.x shim).
-    intent_dir = _governance_dir() / "intents" / tenant
-    intent_dir.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    intent_file = intent_dir / f"{date_str}.jsonl"
-    with open(intent_file, "a") as f:
-        f.write(json.dumps(intent) + "\n")
 
     # Log to Mirror (best effort)
     try:
@@ -356,14 +348,30 @@ def get_pending(tenant: str) -> list[dict]:
 
 
 def get_intent_log(tenant: str, date: str | None = None, limit: int = 50) -> list[dict]:
-    """Get intent log for a tenant. For audit trail."""
-    if date is None:
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    intent_file = _governance_dir() / "intents" / tenant / f"{date}.jsonl"
-    if not intent_file.exists():
-        return []
-    results = []
-    for line in intent_file.read_text().strip().split("\n"):
-        if line:
-            results.append(json.loads(line))
-    return results[-limit:]
+    """Get intent log for a tenant.
+
+    v0.5.2: reads from the audit spine (``sos.kernel.audit``) rather than
+    the removed ``~/.sos/governance/intents/`` shim. Returns dicts shaped
+    like the legacy records so existing callers keep working.
+    """
+    from sos.kernel.audit import read_events as _audit_read
+
+    events = _audit_read(tenant, date=date, kind=AuditEventKind.INTENT, limit=limit)
+    results: list[dict] = []
+    for ev in events:
+        meta = dict(ev.metadata or {})
+        intent_id = meta.pop("intent_id", ev.id)
+        results.append(
+            {
+                "id": intent_id,
+                "agent": ev.agent,
+                "action": ev.action,
+                "target": ev.target,
+                "reason": ev.reason,
+                "tier": ev.policy_tier,
+                "tenant": ev.tenant,
+                "timestamp": ev.timestamp,
+                "metadata": meta,
+            }
+        )
+    return results
