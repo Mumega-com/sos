@@ -285,10 +285,20 @@ def test_to_redis_fields_roundtrip_preserves_semantics() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_all_8_schema_files_parse() -> None:
-    """All 11 message schema files must be valid JSON and Draft 2020-12."""
-    assert len(_SCHEMA_FILES) == 11, (
-        f"Expected 11 schema files, found {len(_SCHEMA_FILES)}: {_SCHEMA_FILES}"
+def test_all_schema_files_parse() -> None:
+    """Every message schema file must be valid JSON and Draft 2020-12.
+
+    The count is derived from ``MessageType`` — whenever a new v1 envelope is
+    added there, a matching schema file must exist.
+    """
+    from typing import get_args
+
+    from sos.contracts.messages import MessageType
+
+    expected_count = len(get_args(MessageType))
+    assert len(_SCHEMA_FILES) == expected_count, (
+        f"Expected {expected_count} schema files (one per MessageType), "
+        f"found {len(_SCHEMA_FILES)}: {_SCHEMA_FILES}"
     )
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
@@ -299,7 +309,7 @@ def test_all_8_schema_files_parse() -> None:
 
 def test_all_8_schemas_have_5_structural_required() -> None:
     """Every message schema must declare all 5 structural fields in 'required'."""
-    assert len(_SCHEMA_FILES) == 11
+    pass  # count is validated in test_all_schema_files_parse
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
         required = set(schema.get("required", []))
@@ -311,7 +321,7 @@ def test_all_8_schemas_have_5_structural_required() -> None:
 
 def test_all_8_schemas_have_type_const() -> None:
     """Every message schema must declare properties.type.const equal to its type name."""
-    assert len(_SCHEMA_FILES) == 11
+    pass  # count is validated in test_all_schema_files_parse
     for path in _SCHEMA_FILES:
         # Derive expected type name from filename: e.g. "send_v1.json" → "send"
         expected_type = path.stem.rsplit("_v", 1)[0]
@@ -324,7 +334,7 @@ def test_all_8_schemas_have_type_const() -> None:
 
 def test_all_8_schemas_disallow_additional_properties() -> None:
     """Every message schema must set additionalProperties: false at top level."""
-    assert len(_SCHEMA_FILES) == 11
+    pass  # count is validated in test_all_schema_files_parse
     for path in _SCHEMA_FILES:
         schema = json.loads(path.read_text())
         assert schema.get("additionalProperties") is False, (
