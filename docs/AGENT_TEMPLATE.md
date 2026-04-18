@@ -11,8 +11,7 @@ This framework lets you build production-ready AI agents by simply providing a c
 ### 1. Create a New Agent
 
 ```bash
-cd agents/
-python create_agent.py my_bot
+python scripts/create_agent.py my_bot
 ```
 
 This creates:
@@ -467,8 +466,8 @@ agents/
 │   └── tools/                  # Optional tools
 │       └── base.py
 │
-├── create_agent.py             # Script to create new agents
-├── AGENT_TEMPLATE.md           # This documentation
+├── scripts/create_agent.py     # Script to create new agents
+├── docs/AGENT_TEMPLATE.md      # This documentation
 │
 └── examples/                   # Example agents
     └── shabrang_bot/           # Blog assistant example

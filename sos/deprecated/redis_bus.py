@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DEPRECATED — do not import. Kept for git history only.
+# Replacement: sos/mcp/sos_mcp_sse.py. See sos/deprecated/README.md.
 """
 Redis Bus MCP — inter-agent communication with project scoping.
 Uses SOS message format over Redis Streams + Pub/Sub.

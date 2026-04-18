@@ -20,7 +20,7 @@ The demo:
 
 Run:
     uv run --with pydantic --with jsonschema --with referencing \\
-        python3 -m scripts.demo_ai_to_ai_commerce
+        python3 -m examples.demo_ai_to_ai_commerce
 
 Expected result: a formatted transcript, the DNU skill's JSON file is
 updated with +1 invocation + the payment amount added to earnings.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DEPRECATED — do not import. Kept for git history only.
+# Replacement: sos/mcp/sos_mcp_sse.py. See sos/deprecated/README.md.
 """
 SOS MCP — Unified MCP server for the Sovereign Operating System.
 Replaces 3 separate MCPs (redis-bus, mumega-tasks, mirror-memory) with one.
