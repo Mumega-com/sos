@@ -11,7 +11,7 @@ import logging
 
 from fastapi import FastAPI
 
-from .routes import brain, health, login, customer, sos_operator, marketplace
+from .routes import brain, health, login, customer, sos_operator, marketplace, traces
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 logger = logging.getLogger("dashboard")
@@ -30,4 +30,5 @@ app.include_router(customer.router)
 app.include_router(sos_operator.router)
 app.include_router(marketplace.router)
 app.include_router(brain.router)
+app.include_router(traces.router)
 app.include_router(health.router)

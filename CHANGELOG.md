@@ -2,6 +2,94 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.6.0] - 2026-04-18 — Stability Polish (observability + schema + config)
+
+**Release theme: "Turn the knobs up: traces you can see, migrations you can replay, config you can type-check."**
+
+Closes Step 2 of the two-step stability plan
+(`docs/plans/2026-04-18-sos-stability-two-steps.md`). Four concerns:
+
+1. **OpenTelemetry bridge** — a single `sos.kernel.telemetry` module
+   bootstraps OTEL per service and bridges the v0.5.7 `trace_id`
+   contextvar into OTEL's `SpanContext`, so the same trace stitches
+   across HTTP hops, bus envelopes, and audit writes without
+   per-service glue.
+2. **Alembic migrations** — squad + identity schemas move out of
+   implicit `CREATE TABLE IF NOT EXISTS` at boot into versioned
+   revisions with a one-liner `scripts/migrate-db.sh` runner.
+3. **Typed kernel config** — `sos.kernel.settings` consolidates Redis,
+   service URLs, audit, gateway, feature flags, integrations, and
+   auth-gateway settings into seven `pydantic-settings` classes with
+   an LRU-cached `get_settings()`.
+4. **`/sos/traces` dashboard route** — disk audit log aggregated by
+   `trace_id`, giving operators a per-trace summary index and detail
+   view without leaving the dashboard.
+
+### Added — OpenTelemetry
+
+- `sos/kernel/telemetry.py` — `init_tracing(service_name)`,
+  `instrument_fastapi(app)`, `adopt_current_trace_id_as_otel_parent()`,
+  and `span_under_current_trace(name)` context manager. Full no-op
+  when neither `OTEL_EXPORTER_OTLP_ENDPOINT` nor `SOS_OTEL_CONSOLE=1`
+  is set — dev/test runs stay quiet by default. OTLP HTTP exporter +
+  console fallback + auto-instrumentation for FastAPI, httpx, redis.
+- `sos/services/{saas,brain,squad,engine,tools,economy,identity,integrations,registry,journeys,operations,dashboard,billing,memory,content}/app.py` —
+  wired to `init_tracing(<service>)` + `instrument_fastapi(app)` at
+  startup.
+- `sos/services/brain/service.py` — bus handler wrapped with
+  `span_under_current_trace("bus.handle.<stream>")` so every event
+  shows up as one span on the inbound trace.
+- `tests/test_kernel_telemetry.py` — 6 unit tests covering the no-op
+  path, console flag, `SpanContext.trace_id` matching, and the
+  no-active-trace pass-through.
+- `pyproject.toml` — new `telemetry` extra (OTEL SDK + OTLP HTTP +
+  fastapi/httpx/redis instrumentation); same six packages folded into
+  the existing `full` extra.
+
+### Added — Alembic migrations
+
+- `sos/services/squad/models.py` — 11 tables, SQLAlchemy 2.0
+  declarative.
+- `sos/services/identity/models.py` — 5 tables.
+- `sos/services/{squad,identity}/alembic.ini` + `alembic/env.py` +
+  `alembic/versions/0001_initial.py` — baseline revisions, parity
+  verified byte-for-byte against live on-disk DBs via
+  `PRAGMA table_info` + `sqlite_master.sql`.
+- `scripts/migrate-db.sh` — one-liner `alembic upgrade head` runner
+  for both services.
+- `alembic>=1.13` and `sqlalchemy>=2.0` promoted to core deps.
+
+### Added — Typed config
+
+- `sos/kernel/settings.py` — `RedisSettings`, `ServiceURLSettings`,
+  `AuditSettings`, `GatewaySettings`, `FeatureFlags`,
+  `IntegrationSettings`, `AuthGatewaySettings` (7 classes,
+  `pydantic-settings` + `SecretStr`). `get_settings()` is LRU-cached;
+  `reload_settings()` clears the cache for tests.
+
+### Added — `/sos/traces` dashboard
+
+- `sos/contracts/traces.py` — `TraceSummary`, `TraceIndexResponse`,
+  `TraceDetailResponse`.
+- `sos/services/dashboard/routes/traces.py` — `GET /sos/traces` (list
+  aggregated by `trace_id`, bounded to last N days + first M traces)
+  and `GET /sos/traces/{trace_id}` (oldest-first event detail). Reads
+  the authoritative disk audit log at
+  `~/.sos/audit/{tenant}/{YYYY-MM-DD}.jsonl` — Redis is observational
+  and skipped here.
+- `tests/services/test_dashboard_traces_route.py` — 4 tests covering
+  aggregation, detail ordering, unknown-trace 404, and bearer auth.
+
+### Fixed
+
+- `tests/test_identity.py` — Alembic migration removed the boot-time
+  `CREATE TABLE`; test now runs `alembic upgrade head` against a tmp
+  DB explicitly (mirrors what `scripts/migrate-db.sh` does in prod),
+  instead of relying on pre-existing schema in the shared
+  `~/.sos/data/identity.db`.
+
+---
+
 ## [0.5.7] - 2026-04-18 — Stability MVP (trace propagation + idempotency)
 
 **Release theme: "The spine keeps an unbroken thread; write endpoints stop double-billing."**
