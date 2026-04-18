@@ -28,8 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from sos import __version__
-from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+from sos.contracts.policy import PolicyDecision
 from sos.kernel.health import health_response
+from sos.kernel.policy.gate import can_execute
 from sos.observability.logging import get_logger
 from sos.services.operations.runner import load_template, run_operation
 
@@ -60,20 +61,28 @@ async def _startup() -> None:
         log.warning("operations discovery registration failed", error=str(exc))
 
 
-def _require_admin(authorization: Optional[str]) -> Dict[str, Any]:
-    ctx = _auth_verify_bearer(authorization)
-    if ctx is None:
-        raise HTTPException(status_code=401, detail="missing or invalid bearer token")
-    if not (ctx.is_system or ctx.is_admin):
-        raise HTTPException(
-            status_code=403, detail="operations.run requires system or admin token"
-        )
-    return {
-        "project": ctx.project,
-        "agent": ctx.agent,
-        "is_system": ctx.is_system,
-        "is_admin": ctx.is_admin,
-    }
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
+
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but operations are only meaningful
+    from MCP's system token.
+    """
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="operations require system or admin scope",
+            )
 
 
 class RunRequest(BaseModel):
@@ -91,7 +100,13 @@ async def health() -> Dict[str, Any]:
 async def run(
     req: RunRequest, authorization: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
-    _require_admin(authorization)
+    decision = await can_execute(
+        action="operations:run",
+        resource=req.product,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     try:
         return run_operation(req.customer, req.product, dry_run=req.dry_run)
     except FileNotFoundError as exc:
@@ -105,7 +120,13 @@ async def run(
 async def list_templates(
     authorization: Optional[str] = Header(default=None),
 ) -> Dict[str, List[str]]:
-    _require_admin(authorization)
+    decision = await can_execute(
+        action="operations:templates_list",
+        resource="all",
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     _sos_root = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
     ops_dir = Path(os.environ.get("SOS_OPERATIONS_DIR", str(_sos_root / "operations")))
     templates = sorted(f.stem for f in ops_dir.glob("*.yaml")) if ops_dir.exists() else []
@@ -116,7 +137,13 @@ async def list_templates(
 async def get_template(
     product: str, authorization: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
-    _require_admin(authorization)
+    decision = await can_execute(
+        action="operations:template_read",
+        resource=product,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     try:
         return load_template(product)
     except FileNotFoundError:

@@ -6,10 +6,13 @@ to sibling services over HTTP. Added in v0.4.5 Wave 4 (P0-07) so
 ``sos.services.autonomy`` no longer imports ``sos.services.identity.avatar``
 directly.
 
-Auth: ``_verify_bearer`` / ``_check_scope`` mirror ``integrations/app.py`` —
-system/admin tokens allowed; non-system tokens must carry a matching
-``project``/``tenant_slug`` scope (or a non-empty scope, since avatar
-endpoints aren't tenant-keyed).
+Auth: v0.5.3 — inline ``_verify_bearer`` / ``_check_scope`` replaced with
+``sos.kernel.policy.gate.can_execute`` + ``_raise_on_deny`` (same pattern as
+integrations/app.py v0.5.1). Identity endpoints are scope-gated, not
+tenant-keyed: the caller's own tenant (from their bearer token) is used as
+both ``tenant`` and ``resource`` prefix so the gate's tenant-scope pillar
+trivially passes for any valid scoped token, while system/admin tokens
+short-circuit as usual.
 """
 
 from __future__ import annotations
@@ -20,7 +23,9 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from sos.contracts.identity import UV16D
+from sos.contracts.policy import PolicyDecision
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+from sos.kernel.policy.gate import can_execute
 from sos.services.identity.core import get_identity_core
 
 app = FastAPI(title="SOS Identity Service", version="0.1.0")
@@ -53,40 +58,68 @@ def _get_social_automation():
 
 
 # ---------------------------------------------------------------------------
-# Auth helpers — same shape as integrations/app.py
+# Gate helper — turn a PolicyDecision into the appropriate HTTP response
+# (copied verbatim from integrations/app.py v0.5.1)
 # ---------------------------------------------------------------------------
 
 
-def _verify_bearer(authorization: Optional[str]) -> Dict[str, Any]:
-    """Return a token record dict or raise 401 on failure."""
-    ctx = _auth_verify_bearer(authorization)
-    if ctx is None:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=401, detail="missing bearer token")
-        raise HTTPException(status_code=401, detail="invalid or inactive token")
-    return {
-        "project": ctx.project,
-        "tenant_slug": ctx.tenant_slug,
-        "agent": ctx.agent,
-        "label": ctx.label,
-        "is_system": ctx.is_system,
-        "is_admin": ctx.is_admin,
-        "active": True,
-    }
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
+
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but OAuth callbacks are only meaningful
+    from MCP's system token.
+    """
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="oauth callbacks require system or admin scope",
+            )
 
 
-def _check_scope(entry: Dict[str, Any]) -> None:
-    """Avatar endpoints aren't tenant-keyed; accept system/admin or any
-    scoped token. A bare token with neither project nor tenant_slug and
-    no system/admin flag is rejected."""
-    if entry.get("is_system") or entry.get("is_admin"):
-        return
-    scope = entry.get("project") or entry.get("tenant_slug") or entry.get("agent")
-    if not scope:
-        raise HTTPException(
-            status_code=403,
-            detail="token has no scope; avatar endpoints require a scoped or system token",
+async def _emit_identity_deny(
+    *,
+    action: str,
+    target: str,
+    reason: str,
+    tenant: str = "unknown",
+) -> None:
+    """Audit a pre-gate rejection so it hits the unified spine (v0.5.6.1).
+
+    Identity peeks at the token scope *before* calling ``can_execute`` to
+    pick the gate's ``tenant`` arg (any-valid-scope semantics). Pre-gate
+    rejections (invalid bearer, scopeless token) would otherwise bypass
+    the audit write the gate would have done. This helper closes that
+    gap. Never raises.
+    """
+    try:
+        from sos.contracts.audit import AuditDecision, AuditEventKind
+        from sos.kernel.audit import append_event, new_event
+
+        await append_event(
+            new_event(
+                agent="anonymous",
+                tenant=tenant,
+                kind=AuditEventKind.POLICY_DECISION,
+                action=action,
+                target=target,
+                decision=AuditDecision.DENY,
+                reason=reason,
+                policy_tier="identity_pregate",
+            )
         )
+    except Exception:
+        pass
 
 
 # --- Schemas ---
@@ -222,9 +255,46 @@ async def avatar_generate(
 
     Wraps ``AvatarGenerator.generate`` so siblings (notably autonomy) can
     request avatars without importing ``sos.services.identity.avatar``.
+
+    Auth: scope-gated — any valid scoped or system/admin token is accepted.
+    The caller's own tenant (project or tenant_slug) is used as the gate
+    tenant so the tenant-scope pillar trivially passes for scoped tokens.
     """
-    entry = _verify_bearer(authorization)
-    _check_scope(entry)
+    if not authorization:
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="missing bearer token",
+        )
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    # Resolve the caller's tenant from their token so the gate can verify scope.
+    ctx = _auth_verify_bearer(authorization)
+    if ctx is None:
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="invalid or inactive token",
+        )
+        raise HTTPException(status_code=401, detail="invalid or inactive token")
+    caller_tenant = ctx.project or ctx.tenant_slug or ctx.agent
+    if caller_tenant is None and not (ctx.is_system or ctx.is_admin):
+        # Preserves pre-migration 403 for scopeless-but-verified tokens.
+        await _emit_identity_deny(
+            action="identity:avatar_generate",
+            target=req.agent_id,
+            reason="token has no tenant scope",
+        )
+        raise HTTPException(status_code=403, detail="token has no tenant scope")
+    caller_tenant = caller_tenant or "mumega"
+
+    decision = await can_execute(
+        action="identity:avatar_generate",
+        resource=f"{caller_tenant}/{req.agent_id}",
+        tenant=caller_tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
 
     uv = UV16D.from_dict(req.uv)
     try:
@@ -248,9 +318,45 @@ async def avatar_on_alpha_drift(
 
     Wraps ``SocialAutomation.on_alpha_drift`` so autonomy can drive the
     drift-triggered social post without importing identity internals.
+
+    Auth: scope-gated — any valid scoped or system/admin token is accepted.
+    The caller's own tenant (project or tenant_slug) is used as the gate
+    tenant so the tenant-scope pillar trivially passes for scoped tokens.
     """
-    entry = _verify_bearer(authorization)
-    _check_scope(entry)
+    if not authorization:
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="missing bearer token",
+        )
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    # Resolve the caller's tenant from their token so the gate can verify scope.
+    ctx = _auth_verify_bearer(authorization)
+    if ctx is None:
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="invalid or inactive token",
+        )
+        raise HTTPException(status_code=401, detail="invalid or inactive token")
+    caller_tenant = ctx.project or ctx.tenant_slug or ctx.agent
+    if caller_tenant is None and not (ctx.is_system or ctx.is_admin):
+        await _emit_identity_deny(
+            action="identity:avatar_social_drift",
+            target=req.agent_id,
+            reason="token has no tenant scope",
+        )
+        raise HTTPException(status_code=403, detail="token has no tenant scope")
+    caller_tenant = caller_tenant or "mumega"
+
+    decision = await can_execute(
+        action="identity:avatar_social_drift",
+        resource=f"{caller_tenant}/{req.agent_id}",
+        tenant=caller_tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
 
     uv = UV16D.from_dict(req.uv)
     try:

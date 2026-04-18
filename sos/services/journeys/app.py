@@ -14,6 +14,10 @@ Endpoints:
 
 Auth: system / admin tokens only. Milestones carry $MIND rewards, so scoped
 or user tokens must not drive enrollment.
+
+v0.5.3: Replaced inline ``_require_admin`` with a single
+``sos.kernel.policy.gate.can_execute`` call per route, matching the v0.5.1
+POC pattern from the integrations service.
 """
 
 from __future__ import annotations
@@ -27,8 +31,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from sos import __version__
-from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+from sos.contracts.policy import PolicyDecision
 from sos.kernel.health import health_response
+from sos.kernel.policy.gate import can_execute
 from sos.observability.logging import get_logger
 from sos.services.journeys.tracker import JourneyTracker
 
@@ -59,20 +64,34 @@ async def _startup() -> None:
         log.warn("journeys discovery registration failed", error=str(exc))
 
 
-def _require_admin(authorization: Optional[str]) -> Dict[str, Any]:
-    ctx = _auth_verify_bearer(authorization)
-    if ctx is None:
-        raise HTTPException(status_code=401, detail="missing or invalid bearer token")
-    if not (ctx.is_system or ctx.is_admin):
-        raise HTTPException(
-            status_code=403, detail="journeys endpoints require system or admin token"
-        )
-    return {
-        "project": ctx.project,
-        "agent": ctx.agent,
-        "is_system": ctx.is_system,
-        "is_admin": ctx.is_admin,
-    }
+# ---------------------------------------------------------------------------
+# Gate helper — turn a PolicyDecision into the appropriate HTTP response
+# ---------------------------------------------------------------------------
+
+
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
+
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but OAuth callbacks are only meaningful
+    from MCP's system token.
+    """
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        pillars = set(decision.pillars_passed)
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="oauth callbacks require system or admin scope",
+            )
 
 
 def _tracker() -> JourneyTracker:
@@ -95,7 +114,15 @@ async def health() -> Dict[str, Any]:
 async def recommend(
     agent: str, authorization: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
-    _require_admin(authorization)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="journeys:recommend",
+        resource=agent,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     path = _tracker().recommend_journey(agent)
     return {"agent": agent, "path": path}
 
@@ -104,7 +131,15 @@ async def recommend(
 async def start(
     req: StartRequest, authorization: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
-    _require_admin(authorization)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="journeys:start",
+        resource=req.path,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     result = _tracker().start_journey(req.agent, req.path)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
@@ -115,7 +150,15 @@ async def start(
 async def status(
     agent: str, authorization: Optional[str] = Header(default=None)
 ) -> Dict[str, Any]:
-    _require_admin(authorization)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="journeys:status",
+        resource=agent,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     progress = _tracker().check_progress(agent)
     return {"agent": agent, "progress": progress}
 
@@ -125,6 +168,14 @@ async def leaderboard(
     path: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> Dict[str, List[Dict[str, Any]]]:
-    _require_admin(authorization)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="journeys:leaderboard",
+        resource="leaderboard",
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
     leaders = _tracker().get_leaderboard(path)
     return {"leaders": leaders}

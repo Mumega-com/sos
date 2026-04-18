@@ -135,6 +135,42 @@ def get_tenant_by_key(api_key: str) -> Optional[Dict[str, Any]]:
 
 # --- Auth Dependency ---
 
+
+async def _emit_gateway_policy(
+    *,
+    agent: str,
+    action: str,
+    target: str,
+    tenant: str,
+    allowed: bool,
+    reason: str,
+) -> None:
+    """Emit one POLICY_DECISION event on the unified audit spine.
+
+    v0.5.6 — external-agent API keys live in a registry separate from
+    kernel auth, so we keep the native `require_tenant` enforcement but
+    route every decision to the kernel audit log. Never raises.
+    """
+    try:
+        from sos.contracts.audit import AuditDecision, AuditEventKind
+        from sos.kernel.audit import append_event, new_event
+
+        await append_event(
+            new_event(
+                agent=agent,
+                tenant=tenant,
+                kind=AuditEventKind.POLICY_DECISION,
+                action=action,
+                target=target,
+                decision=AuditDecision.ALLOW if allowed else AuditDecision.DENY,
+                reason=reason,
+                policy_tier="gateway_bridge",
+            )
+        )
+    except Exception:
+        pass
+
+
 async def require_tenant(
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None),
@@ -151,17 +187,49 @@ async def require_tenant(
         api_key = x_api_key
 
     if not api_key:
+        await _emit_gateway_policy(
+            agent="anonymous",
+            action="gateway:request",
+            target="bridge",
+            tenant="unknown",
+            allowed=False,
+            reason="missing_api_key",
+        )
         raise HTTPException(status_code=401, detail="API key required")
 
     # Internal key bypass — set MUMEGA_INTERNAL_KEY env var to enable
     internal_key = os.environ.get("MUMEGA_INTERNAL_KEY", "")
     if internal_key and api_key == internal_key:
+        await _emit_gateway_policy(
+            agent="internal",
+            action="gateway:request",
+            target="bridge",
+            tenant="mumega",
+            allowed=True,
+            reason="internal_key",
+        )
         return "mumega"
 
     tenant = get_tenant_by_key(api_key)
     if not tenant:
+        await _emit_gateway_policy(
+            agent="anonymous",
+            action="gateway:request",
+            target="bridge",
+            tenant="unknown",
+            allowed=False,
+            reason="invalid_api_key",
+        )
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+    await _emit_gateway_policy(
+        agent=tenant["id"],
+        action="gateway:request",
+        target="bridge",
+        tenant=tenant["id"],
+        allowed=True,
+        reason="tenant_key",
+    )
     return tenant["id"]
 
 

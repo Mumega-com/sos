@@ -2,6 +2,468 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.6.1] - 2026-04-18 — Identity pre-gate audit gap
+
+**Hotfix** found by runtime smoke of the v0.5.0→v0.5.6 arc.
+
+`identity/app.py` peeks at the bearer token *before* calling
+`can_execute()` because it uses the caller's own tenant as the gate's
+`tenant` arg (any-valid-scope semantics). The three pre-gate deny paths
+— missing bearer, invalid token, scopeless-but-verified token — raised
+401/403 without writing to the audit spine.
+
+### Added (`sos/services/identity/app.py`)
+
+- `_emit_identity_deny(action, target, reason, tenant="unknown")` — async
+  helper around `kernel.audit.append_event` with
+  `policy_tier="identity_pregate"`. Try/except-wrapped.
+
+### Modified
+
+Both `/avatar/generate` and `/avatar/social/on_alpha_drift` emit a
+`POLICY_DECISION` DENY event on each pre-gate rejection before the
+existing 401/403. Any-valid-scope semantics preserved
+(`test_avatar_generate_403_on_scopeless_token` still green).
+
+### Verification
+
+- `pytest tests/services/test_identity_avatar_endpoints.py` — 6/6 green.
+- Inline smoke confirmed 3 `identity_pregate` DENY events on a fresh run.
+
+### Follow-up
+
+`integrations/app.py` has the same pre-gate pattern and the same gap
+class — tracked separately; out of scope for this hotfix.
+
+## [0.5.6] - 2026-04-18 — Gateway bridge audit-wrapper
+
+**Release theme: "The external front door joins the spine."**
+
+`sos/services/gateway/bridge.py` is the public entry for external agents
+(ChatGPT, Claude, custom integrations). Its auth table lives in
+`~/.sos/data/gateway/tenants.json` — a flat registry separate from the
+kernel's `tokens.json`, populated by self-service `POST /register` calls.
+There is also a `MUMEGA_INTERNAL_KEY` env bypass that returns
+`tenant_id="mumega"`.
+
+v0.5.6 wraps the existing `require_tenant` dependency with
+`POLICY_DECISION` audit emission so every external-agent call lands on
+the unified kernel spine. No route-decorator changes, no re-registration
+of external keys in kernel auth.
+
+### Added (`sos/services/gateway/bridge.py`)
+
+- `_emit_gateway_policy(agent, action, target, tenant, allowed, reason)` —
+  async helper around `kernel.audit.append_event` + `new_event` with
+  `policy_tier="gateway_bridge"`. Try/except-wrapped so audit outages
+  never block a request.
+
+### Modified `require_tenant`
+
+All four code paths now audit:
+
+- Missing API key (no `Authorization: Bearer` and no `X-API-Key`) →
+  emit deny `missing_api_key`, raise 401.
+- Internal-key bypass (`MUMEGA_INTERNAL_KEY`) → emit allow `internal_key`
+  with `agent="internal"`, `tenant="mumega"`, return `"mumega"`.
+- Invalid API key → emit deny `invalid_api_key`, raise 401.
+- Valid tenant key → emit allow `tenant_key` with
+  `agent=tenant["id"]`, return the tenant id.
+
+`action` is uniformly `gateway:request` — the dep doesn't know which
+route it's guarding. Operators reading the audit stream see one event
+per authenticated external-agent call, with `tenant` indicating *who* and
+the access log indicating *where*.
+
+### Routes covered (6)
+
+All callers of `Depends(require_tenant)`:
+`GET /manifest`, `POST /chat`, `POST /tasks/create`, `POST /memory/store`,
+`POST /memory/search`, `GET /system/status`.
+
+Public routes (`GET /`, `POST /register`) are untouched.
+
+### Proof
+
+- `python -c "from sos.services.gateway.bridge import app, require_tenant, _emit_gateway_policy"` — module imports clean.
+- `pytest tests/kernel/ tests/contracts/` — 447/451 passing (4 failures
+  are pre-existing schema-count drift in `test_messages_integration.py`,
+  unrelated to this sprint).
+
+### Arc complete
+
+v0.5.0 → v0.5.6 closes the "kernel enforces the blueprint" arc:
+
+- **v0.5.0** — R0 floor + disk-authoritative audit stream.
+- **v0.5.1** — Unified `can_execute()` gate.
+- **v0.5.2** — Arbitration (intent → proposal → ratification, read-over-audit).
+- **v0.5.3** — Gate wave 1: economy, registry, identity, journeys, operations (15 routes).
+- **v0.5.4** — saas audit-wrapper (40 routes).
+- **v0.5.5** — squad in-dep audit (26 routes).
+- **v0.5.6** — gateway/bridge in-dep audit (6 routes).
+
+Every authenticated route in every SOS service now writes one
+`POLICY_DECISION` audit event per call on the unified kernel spine:
+6 services via `can_execute()`, 3 services via native-auth wrappers. The
+audit spine is load-bearing. The gate contract is frozen. New signals
+compose *inside* `can_execute()`; new event kinds add to
+`AuditEventKind`. Kernel shape holds.
+
+---
+
+## [0.5.5] - 2026-04-18 — Squad audit (in-dep)
+
+**Release theme: "Squad's capability check joins the spine."**
+
+Squad already does the strongest per-service auth in the codebase: every
+protected route calls `require_capability(resource, operation)` which
+resolves a `sos.kernel.capability.Capability` via bcrypt/sqlite token
+lookup and runs `verify_capability(capability, action, resource)` — a
+signed-capability model richer than the kernel gate's generic pillars.
+What was missing: those decisions never showed up in the unified audit
+log.
+
+v0.5.5 adds audit emission at the only place it belongs — inside
+`require_capability` itself, so **no route decorator changes** and the
+capability enforcement stays exactly where it was.
+
+### Added (`sos/services/squad/auth.py`)
+
+- `_emit_squad_policy(agent, action, target, tenant, allowed, reason)` —
+  async helper around `kernel.audit.append_event` + `new_event` with
+  `policy_tier="squad_capability"`. Wraps the call in try/except so
+  audit hiccups never break a request.
+
+### Modified `require_capability`
+
+The inner `dependency` coroutine now emits one `POLICY_DECISION` event
+on every code path:
+
+- Missing bearer → emit deny (`missing_authorization`), raise 401.
+- Invalid token → emit deny (`invalid_token`), raise 401.
+- System token → emit allow (`system_token`), return auth.
+- Capability denial → emit deny (reason from `verify_capability`), raise 403.
+- Capability allow → emit allow (`capability_ok`), return auth.
+
+`action` on the audit event is formatted as `squad:<resource>_<operation>`
+(e.g. `squad:tasks_write`, `squad:squads_read`). `tenant` is the
+authenticated `tenant_id` on allow (or `"mumega"` for system), `"unknown"`
+on pre-auth denials.
+
+### Routes covered (26)
+
+All callers of `Depends(require_capability(...))` in `sos/services/squad/app.py`
+benefit transparently:
+
+- squads (write/read) — create, list, read, update, delete
+- tasks (write/read) — create, list, read, update, close, reassign
+- skills (register/read/execute) — register, list, execute
+- state (read/write), pipeline (read/write/execute)
+
+### Why not `can_execute()` directly
+
+`can_execute()` accepts a `capability=` kwarg but only activates it under
+`SOS_REQUIRE_CAPABILITIES=1`. Squad's native check is always on and runs
+the signed `verify_capability` logic — stronger than the gate's default.
+Re-routing squad through the gate would either weaken the check (flag
+off) or duplicate it (flag on). The in-dep audit emission gives us full
+observability on the unified spine without touching the enforcement
+semantics.
+
+### Proof
+
+- `pytest tests/test_squad_runtime.py tests/contracts/test_squad_task.py tests/clients/test_squad_client.py`
+  — 70/70 green, no regressions.
+- Zero changes to `sos/services/squad/app.py` — all 26 route decorators
+  unchanged.
+- `verify_capability` still runs at the same call site with the same
+  arguments. Enforcement logic untouched.
+
+### Deferred to v0.5.6
+
+- **v0.5.6** — `sos/services/gateway/bridge.py` (external-agent API keys,
+  independent tenant registry). Same audit-wrapper pattern as saas.
+
+---
+
+## [0.5.4] - 2026-04-18 — SaaS audit-wrapper
+
+**Release theme: "The audit spine reaches the services the gate cannot."**
+
+v0.5.3 generalized `can_execute()` across every service whose auth fit the
+kernel gate's 5-pillar model. `saas` doesn't — it runs two orthogonal auth
+systems (master-key admin + tokens.json-hash customer lookup with sqlite
+fallback) that the gate was never designed for. Rather than cram the saas
+tables into kernel auth (duplication), v0.5.4 wraps the native auth deps
+with audit emission so every authenticated saas call writes one
+`POLICY_DECISION` event on the kernel spine.
+
+### Added (`sos/services/saas/app.py`)
+
+- `_emit_policy(agent, action, target, tenant, allowed, reason, tier)` —
+  async helper around `kernel.audit.append_event` + `new_event`. Wraps the
+  call in try/except at debug so audit failures never break a request.
+- `audited_admin(action: str)` — FastAPI dep factory. Wraps `require_admin`;
+  emits `POLICY_DECISION` with `policy_tier="saas_admin"` on both allow
+  (agent="admin", reason="master_key") and deny (agent="anonymous", reason
+  from HTTPException detail). Re-raises on deny.
+- `audited_customer(action: str)` — mirror of above for `require_customer`;
+  `policy_tier="saas_customer"`. Preserves the `-> str` (tenant_slug)
+  return contract so existing route bodies are unchanged.
+
+### Routes migrated (40)
+
+- **Admin (29):** every `_: None = Depends(require_admin)` now reads
+  `_: None = Depends(audited_admin("saas:<action>"))`. Actions cover
+  tenants (create/list/read/update/activate/suspend), seats, billing/usage,
+  rate-limit, marketplace, notifications, onboarding, builds, domains.
+- **Customer (11):** every `tenant_slug: str = Depends(require_customer)`
+  now reads `tenant_slug: str = Depends(audited_customer("saas:<action>"))`.
+  Covers my_connect/dashboard/wallet/transactions/tasks/squads/activity/
+  invite/chat.
+
+Public/webhook routes (`/`, `/health`, `/auth/*`, `/webhooks/*`, `/signup`,
+`/billing/webhook`, `/resolve/{hostname}`) are untouched — they have their
+own signature/IP verification.
+
+### Why not `can_execute()`
+
+`saas` admin is an env-secret (`MUMEGA_MASTER_KEY`), not a token row.
+`saas` customer auth hashes `sk-{slug}-{hex}` into `tokens.json` with a
+sqlite `bus_token` fallback. Forcing these through the gate would either
+register every secret in kernel auth (two sources of truth) or short-
+circuit the gate's first pillar (defeats the point). Audit-wrapper is the
+honest middle path: keep the service-native auth, add the kernel-
+observable record.
+
+### Proof
+
+- `pytest tests/test_saas_api.py` — 9/9 green, no regressions.
+- `require_admin` / `require_customer` still exist at the exact same call
+  sites inside the new factories — the real auth work is unchanged.
+- Every authenticated route emits one `POLICY_DECISION` event per call
+  (allow or deny path).
+
+### Deferred to v0.5.5 + v0.5.6
+
+- **v0.5.5** — `sos/services/squad/*`. Squad's auth fits the gate's
+  existing `capability` parameter; direct `can_execute` integration.
+- **v0.5.6** — `sos/services/gateway/bridge.py`. External-agent API keys;
+  same audit-wrapper pattern as saas.
+
+---
+
+## [0.5.3] - 2026-04-18 — Gate mop-up, wave 1
+
+**Release theme: "The gate's reach expands."**
+
+v0.5.1 shipped `can_execute()` + one POC migration (`integrations`). v0.5.3
+generalizes the gate across 5 more services. Every authenticated route on
+these services now calls the unified gate and writes exactly one
+`POLICY_DECISION` audit event — no more service-local `_verify_bearer`,
+`_check_scope`, or `_require_admin` reimplementations.
+
+### Services migrated (15 routes, all in parallel)
+
+- **`sos/services/economy/app.py`** (4 routes): `GET /budget/can-spend`,
+  `POST /usage`, `GET /usage`, `POST /settle/{usage_event_id}` (admin-only).
+  Removed `_verify_bearer`, `_resolve_tenant`, `_auth_ctx_to_entry` helpers.
+- **`sos/services/registry/app.py`** (2 routes): `GET /agents`,
+  `GET /agents/{id}`. `_resolve_project_scope` retained — handles
+  sub-tenant project filtering the gate intentionally doesn't cover.
+- **`sos/services/identity/app.py`** (2 routes): `POST /avatar/generate`,
+  `POST /avatar/social/on_alpha_drift`. Scopeless-but-verified tokens now
+  short-circuit with a 403 before the gate runs (preserves pre-migration
+  behaviour).
+- **`sos/services/journeys/app.py`** (4 routes): `GET /recommend/{agent}`,
+  `POST /start`, `GET /status/{agent}`, `GET /leaderboard`. All admin-only —
+  use `_raise_on_deny(decision, require_system=True)`.
+- **`sos/services/operations/app.py`** (3 routes): `POST /run`,
+  `GET /templates`, `GET /templates/{product}`. All admin-only.
+
+### Pattern
+
+Every migrated route follows the v0.5.1 POC pattern verbatim:
+
+```python
+decision = await can_execute(
+    action="<service>:<verb>",
+    resource=<resource_id>,
+    tenant=<tenant>,
+    authorization=authorization,
+)
+_raise_on_deny(decision, require_system=<True for admin-only>)
+```
+
+`_raise_on_deny()` maps denial reason to 401 (bearer/auth) vs 403 (scope/admin)
+and enforces `require_system` post-allow. Every service carries a verbatim
+copy of the helper — small enough that a shared module would be premature
+abstraction.
+
+### Proof
+
+- All `tests/kernel/` + `tests/contracts/` pass (442 tests, 0 failures).
+- Per-service test suites pass where they were passing on v0.5.2:
+  registry 21/21, journeys 14/14, operations 7/7, identity avatars all
+  green. Pre-existing failures in `test_economy_usage.py`,
+  `test_auth_migration.py`, `test_settlement.py` (all `base58` /
+  sqlite / brain-registry issues unrelated to the kernel) are unchanged.
+- `lint-imports`: 4 contracts kept, 0 broken.
+
+### Deferred
+
+- **v0.5.4:** `sos/services/saas/app.py` — 39 routes, custom slug-based
+  scoping. Needs a deliberate pass, not a parallel sprint.
+- **v0.5.5:** `sos/services/squad/` — 28 routes + a capability→gate bridge
+  that still wants a design doc before code.
+- **v0.5.6+:** `sos/services/gateway/bridge.py` and any remaining sites.
+
+## [0.5.2] - 2026-04-18 — Arbitration: intent → proposal → ratification
+
+**Release theme: "The kernel enforces the blueprint — step 3 of 3."**
+
+v0.5.0 gave us the floor + audit spine. v0.5.1 gave us the unified gate.
+v0.5.2 closes the triptych: when two agents call the gate independently,
+arbitration looks across proposers and picks exactly one winner. The
+audit spine is the storage layer — proposals ARE `AuditEventKind.INTENT`
+events, arbitration is a read-over-audit + decision function. No new
+durability layer.
+
+### Arbitration (`sos.kernel.arbitration`)
+
+- **`sos/kernel/arbitration.py`** — three public coroutines:
+  - `propose_intent(agent, action, resource, tenant, priority, metadata)` →
+    writes an INTENT event tagged `metadata.arbitration=True` with
+    `metadata.priority=N`. Returns the proposal id (audit event id).
+  - `arbitrate(resource, tenant, window_ms=500, strategy="priority+coherence+recency")` →
+    `ArbitrationDecision`. Reads proposals in window, sorts, emits one
+    `ARBITRATION` audit event, returns a frozen decision. **Never raises**
+    — arbitration failures fall through to a no-winner decision so the
+    caller's denial path stays clean.
+  - `read_proposals(tenant, resource, window_ms=500)` — observability helper.
+- **Rank rule** — `priority → coherence → recency`:
+  1. `metadata.priority` (int, higher wins).
+  2. Conductance sum `sum(G[agent][skill])` from `sos.kernel.conductance`
+     — the agent's proven-flow signal; absent agents score 0.
+  3. Later `timestamp` wins.
+  Strategy name is recorded in `ArbitrationDecision`, so future strategies
+  (`fmaap-weighted`, `governance-tier-aware`) ship as new string values
+  without schema churn.
+- **`sos/contracts/arbitration.py`** — `ArbitrationDecision` + `LoserRecord`
+  frozen Pydantic v2 models. 4 required + 7 optional fields on the decision.
+  Additive-only. Baseline locked in `test_arbitration_schema_stable.py` (7 tests).
+
+### Gate integration (opt-in)
+
+- **`sos/kernel/policy/gate.py`** — `can_execute()` grows three kwargs:
+  `propose_first: bool = False`, `priority: int = 0`, `window_ms: int = 500`.
+  When `propose_first=True`: gate calls `propose_intent` + `arbitrate`;
+  winners add `"arbitration"` to `pillars_passed` and flow through normal
+  signals; losers short-circuit with a denial whose reason names the winner.
+  **Default `propose_first=False` preserves every existing caller unchanged.**
+
+### Legacy shim removed
+
+- **`sos/kernel/governance.py`** — the `~/.sos/governance/intents/{tenant}/`
+  file-writing block is gone, per the v0.5.0 CHANGELOG plan. Audit has been
+  authoritative for one full minor version. `get_intent_log()` now reads
+  from `sos.kernel.audit.read_events` so its return shape is unchanged for
+  callers.
+
+### Tests (new, all green)
+
+- **`tests/contracts/test_arbitration_schema_stable.py`** — 7 tests
+  (frozen, required/optional fields, no-removal, additive-only).
+- **`tests/kernel/test_arbitration.py`** — 7 tests (single-proposer wins,
+  higher priority wins, coherence tie-break, recency tie-break, empty
+  window no-winner, ARBITRATION event persisted, multi-tenant isolation).
+- **`tests/kernel/test_policy_gate_propose.py`** — 3 tests (winner allowed,
+  loser denied, `propose_first=False` path unchanged).
+
+### Docs
+
+- **`docs/kernel/arbitration.md`** — public contract doc matching
+  `audit.md` / `policy.md` style: why arbitration, architecture insight
+  (read-over-audit), surface, rank rule, contracts, gate integration,
+  durability, failure modes, end-to-end example.
+
+### Deferred to v0.5.3+
+
+- Per-squad arbitration windows (dynamic, based on coherence).
+- Arbitration replay tooling (`sos.cli arbitration replay`).
+- Migrating the remaining ~10 service-side permission checks to
+  `can_execute` (same mop-up deferred from v0.5.1).
+
+## [0.5.1] - 2026-04-18 — Unified policy gate
+
+**Release theme: "The kernel enforces the blueprint — step 2 of 3."**
+
+v0.5.0 gave us the floor (R0 lock) and the audit spine. v0.5.1 adds the
+single gate every HTTP route, every agent action, every kernel-governed
+decision asks: *may this agent perform this action on this resource?*
+One question, one call, one audited answer. No service reinvents it.
+
+### The gate (`sos.kernel.policy.gate`)
+
+- **`sos/kernel/policy/gate.py`** — new async function
+  `can_execute(agent, action, resource, tenant, authorization, capability, context)`.
+  Composes five signals in one place:
+  1. Bearer verification (`sos.kernel.auth.verify_bearer`)
+  2. Tenant scope enforcement (system/admin bypass or exact-match)
+  3. Capability (if `SOS_REQUIRE_CAPABILITIES=1`)
+  4. FMAAP 5-pillar validation when squad context is present
+  5. Governance tier lookup
+  Writes exactly one `AuditEventKind.POLICY_DECISION` event per call.
+  **Fail-open for availability** (FMAAP DB down → warn + allow),
+  **fail-closed for security** (missing/invalid bearer, scope mismatch).
+- **`sos/contracts/policy.py`** — `PolicyDecision` frozen Pydantic v2
+  model. 5 required + 7 optional fields. Additive-only — new signals
+  land as new list members or metadata keys, never schema churn.
+  Snapshot baseline locked in `test_policy_schema_stable.py`.
+- **`sos/kernel/governance.py::before_action`** now consults the gate
+  first. FMAAP pillar failures become authoritative denials without
+  governance having to re-implement the checks. Fail-open on gate
+  error preserves governance availability.
+
+### Proof-of-concept migration
+
+- **`sos/services/integrations/app.py`** — all 3 authenticated routes
+  (`GET /oauth/credentials/{tenant}/{provider}`,
+  `POST /oauth/ghl/callback/{tenant}`,
+  `POST /oauth/google/callback/{tenant}`) now make one `can_execute()`
+  call + `_raise_on_deny()` handoff. The inline `_verify_bearer`,
+  `_check_tenant_scope`, and `_require_system_or_admin` helpers are
+  gone. Behaviour preserved (same 401/403/200 semantics); every call
+  now writes an audit event.
+
+### Tests (new, all green)
+
+- **`tests/contracts/test_policy_schema_stable.py`** — 5 tests snapshotting
+  the `PolicyDecision` baseline (frozen, required fields, optional fields,
+  no-removal, instance-immutability).
+- **`tests/kernel/test_policy_gate.py`** — 7 tests covering system-token
+  cross-tenant allow, scoped-token own-tenant allow, scoped-token
+  cross-tenant deny, no-scope deny, invalid-bearer deny,
+  kernel-internal (no auth) allow, audit event persisted.
+- **`tests/services/test_integrations_gate.py`** — FastAPI TestClient
+  tests proving the migration preserves 401/403/200/404/400 behaviour.
+
+### Docs
+
+- **`docs/kernel/policy.md`** — public contract doc matching
+  `docs/kernel/audit.md` style: what the gate is, what it isn't,
+  surface, signals, fail-open/fail-closed, durability, migration guide
+  for sibling services.
+
+### Deferred
+
+- **v0.5.1.1+ mop-up:** migrate the ~10 other permission sites across
+  `economy`, `registry`, `squad`, `mcp`, `tools` to the gate. Each is
+  a ~15-line commit — they do not block v0.5.1.
+- **v0.5.2:** `sos/kernel/arbitration.py` conflict-resolution layer
+  (needs design work before code). Remove the
+  `~/.sos/governance/intents/` legacy compat shim.
+
 ## [0.5.0] - 2026-04-18 — Kernel floor lock + unified audit stream
 
 **Release theme: "The kernel enforces the blueprint — step 1 of 3."**

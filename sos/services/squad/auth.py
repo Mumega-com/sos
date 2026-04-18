@@ -126,9 +126,46 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
     )
 
 
+async def _emit_squad_policy(
+    *,
+    agent: str,
+    action: str,
+    target: str,
+    tenant: str,
+    allowed: bool,
+    reason: str,
+) -> None:
+    """Emit one POLICY_DECISION event on the unified audit spine.
+
+    v0.5.5 — squad's native capability check keeps enforcing permissions;
+    this wrapper only ensures the decision lands in the kernel audit log
+    alongside every other service. Never raises — audit failures never
+    break a request.
+    """
+    try:
+        from sos.contracts.audit import AuditDecision, AuditEventKind
+        from sos.kernel.audit import append_event, new_event
+
+        await append_event(
+            new_event(
+                agent=agent,
+                tenant=tenant,
+                kind=AuditEventKind.POLICY_DECISION,
+                action=action,
+                target=target,
+                decision=AuditDecision.ALLOW if allowed else AuditDecision.DENY,
+                reason=reason,
+                policy_tier="squad_capability",
+            )
+        )
+    except Exception:
+        pass
+
+
 def require_capability(resource: str, operation: str, db: SquadDB | None = None) -> Callable[[Request, HTTPAuthorizationCredentials | None], AuthContext]:
     action = OPERATION_MAP[(resource, operation)]
     database = db or SquadDB()
+    action_name = f"squad:{resource}_{operation}"
 
     async def dependency(
         request: Request,
@@ -136,19 +173,60 @@ def require_capability(resource: str, operation: str, db: SquadDB | None = None)
     ) -> AuthContext:
         token = credentials.credentials if credentials else ""
         if not token:
+            await _emit_squad_policy(
+                agent="anonymous",
+                action=action_name,
+                target=resource,
+                tenant="unknown",
+                allowed=False,
+                reason="missing_authorization",
+            )
             raise HTTPException(status_code=401, detail="missing_authorization")
         auth = _lookup_token(token, database)
         if not auth:
+            await _emit_squad_policy(
+                agent="anonymous",
+                action=action_name,
+                target=resource,
+                tenant="unknown",
+                allowed=False,
+                reason="invalid_token",
+            )
             raise HTTPException(status_code=401, detail="invalid_token")
         if auth.is_system:
+            await _emit_squad_policy(
+                agent=auth.identity.id,
+                action=action_name,
+                target=resource,
+                tenant="mumega",
+                allowed=True,
+                reason="system_token",
+            )
             return auth
         # TODO: Capability signatures are still not enforced on these request paths.
         # This route currently verifies identity + action mapping only; signed/delegated
         # capability verification needs a broader kernel-integrated rollout.
         capability = _capability_for(auth.identity, auth.tenant_id, action)
         ok, reason = verify_capability(capability, action, _resource_name(resource, auth.tenant_id))
+        tenant_for_audit = auth.tenant_id or "mumega"
         if not ok:
+            await _emit_squad_policy(
+                agent=auth.identity.id,
+                action=action_name,
+                target=resource,
+                tenant=tenant_for_audit,
+                allowed=False,
+                reason=reason or "capability_denied",
+            )
             raise HTTPException(status_code=403, detail=reason)
+        await _emit_squad_policy(
+            agent=auth.identity.id,
+            action=action_name,
+            target=resource,
+            tenant=tenant_for_audit,
+            allowed=True,
+            reason="capability_ok",
+        )
         return auth
 
     return dependency
