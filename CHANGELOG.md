@@ -62,6 +62,82 @@ packaging pattern pending the v0.5 CLI split).
   `sos.services.bus.discovery.register_service` on startup (R1 carve-out
   for `services→bus` is the documented P1-10 theme).
 
+## [0.4.7] - 2026-04-18 — MCP R2 sweep (P1-01 closure)
+
+Closes the P1-01 backlog: `sos.mcp.sos_mcp_sse` no longer imports any
+`sos.services.*` module. Every cross-namespace reach-in is now replaced
+with an HTTP client call. Shipped in four phases so each half-commit is
+independently revertable. `lint-imports`: **4 kept, 0 broken.** R2
+`ignore_imports` shrinks from 5 to 4 (all four MCP→services entries
+dropped; the remaining ignores are `sos.adapters.telegram` → economy
+metabolism and three `sos.cli` → service `__main__` dispatcher entries
+— out of scope, pending v0.5 CLI split).
+
+### Phase closures
+
+- **Phase 1 — MCP ↔ squad via `SquadClient`.** Dropped in-process
+  imports of squad `auth`/`api_keys`. MCP's `/auth/verify` and
+  `/api-keys` routes now proxy to the squad service (`:8060`) via
+  `sos.clients.squad.SquadClient`. Kernel auth (`sos.kernel.auth`)
+  replaces squad's token lookup.
+- **Phase 2 — MCP ↔ saas via `SaasClient`.** New endpoints on
+  `sos.services.saas.app`: `POST /rate-limit/check`, `POST
+  /audit/tool-call`, `GET/POST /marketplace/*`, notification prefs.
+  MCP's hot path now awaits `_async_saas_client.check_rate_limit(...)`
+  (with fail-open on exception) and fire-and-forgets
+  `log_tool_call(...)` via `loop.create_task` so audit never blocks
+  the request.
+- **Phase 3 — MCP ↔ billing via `AsyncBillingClient`.** New wrapper at
+  `sos.services.billing.app` (`:8077`) exposing `/webhook/stripe`.
+  MCP proxies the raw Stripe request (bytes + `stripe-signature`
+  header) unchanged via `AsyncBillingClient.forward_stripe_webhook`;
+  HMAC verification still runs inside the billing handler. MCP no
+  longer imports `sos.services.billing.webhook`.
+- **Phase 4 — MCP ↔ integrations via `AsyncIntegrationsClient`.** New
+  POST endpoints on `sos.services.integrations.app`:
+  `/oauth/ghl/callback/{tenant}`, `/oauth/google/callback/{tenant}`.
+  MCP's `/oauth/ghl/callback` and `/oauth/google/callback` routes
+  now proxy via `AsyncIntegrationsClient`; inline
+  `TenantIntegrations` imports removed.
+
+### Client additions
+
+- `sos/clients/billing.py` — new. `BillingClient` (sync, health only)
+  + `AsyncBillingClient` with `forward_stripe_webhook(raw_body,
+  headers)` that preserves byte-exact payload for HMAC verification.
+- `sos/clients/integrations.py` — extends existing client with
+  `handle_ghl_callback(tenant, code)` and
+  `handle_google_callback(tenant, code, service)` on both sync and
+  async variants.
+- `sos/clients/saas.py` — extends with `check_rate_limit`,
+  `log_tool_call`, `browse_marketplace`, `subscribe_marketplace`,
+  `my_subscriptions`, `create_listing`, `my_earnings`, notification
+  preferences. 9 new methods × 2 (sync + async).
+- `sos/clients/base.py` — `_request()` now accepts `params=` and
+  `content=` on both sync and async paths (needed for saas query
+  params and billing raw-body forwarding).
+
+### Service additions
+
+- `sos/services/billing/app.py` — new. Minimal FastAPI wrapper around
+  the existing `sos.services.billing.webhook.stripe_webhook_handler`.
+  Runs on port 8077.
+- `sos/services/saas/app.py` — adds rate-limit, audit, marketplace
+  (browse/subscribe/my_subscriptions/create_listing/my_earnings), and
+  notification preference endpoints. All admin-auth'd.
+- `sos/services/integrations/app.py` — adds
+  `POST /oauth/{ghl,google}/callback/{tenant}` with
+  `_require_system_or_admin` (callbacks require system scope; no
+  tenant-scoped caller can complete another tenant's OAuth).
+
+### Tests
+
+- `tests/contracts/test_mcp_no_service_imports.py` — AST sweep on
+  `sos/mcp/sos_mcp_sse.py` asserting zero `sos.services.*` imports
+  (top-level or inline) with `sos.services.bus.discovery` whitelisted
+  as the sole exempt infra shim. Any future MCP→services leak fails
+  this test in CI.
+
 ## [0.4.8] - 2026-04-18 — Repo hygiene
 
 Pure `git mv` + path updates. Zero behavior change. `lint-imports`:
