@@ -2,6 +2,82 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.6] - 2026-04-18 — Gateway bridge audit-wrapper
+
+**Release theme: "The external front door joins the spine."**
+
+`sos/services/gateway/bridge.py` is the public entry for external agents
+(ChatGPT, Claude, custom integrations). Its auth table lives in
+`~/.sos/data/gateway/tenants.json` — a flat registry separate from the
+kernel's `tokens.json`, populated by self-service `POST /register` calls.
+There is also a `MUMEGA_INTERNAL_KEY` env bypass that returns
+`tenant_id="mumega"`.
+
+v0.5.6 wraps the existing `require_tenant` dependency with
+`POLICY_DECISION` audit emission so every external-agent call lands on
+the unified kernel spine. No route-decorator changes, no re-registration
+of external keys in kernel auth.
+
+### Added (`sos/services/gateway/bridge.py`)
+
+- `_emit_gateway_policy(agent, action, target, tenant, allowed, reason)` —
+  async helper around `kernel.audit.append_event` + `new_event` with
+  `policy_tier="gateway_bridge"`. Try/except-wrapped so audit outages
+  never block a request.
+
+### Modified `require_tenant`
+
+All four code paths now audit:
+
+- Missing API key (no `Authorization: Bearer` and no `X-API-Key`) →
+  emit deny `missing_api_key`, raise 401.
+- Internal-key bypass (`MUMEGA_INTERNAL_KEY`) → emit allow `internal_key`
+  with `agent="internal"`, `tenant="mumega"`, return `"mumega"`.
+- Invalid API key → emit deny `invalid_api_key`, raise 401.
+- Valid tenant key → emit allow `tenant_key` with
+  `agent=tenant["id"]`, return the tenant id.
+
+`action` is uniformly `gateway:request` — the dep doesn't know which
+route it's guarding. Operators reading the audit stream see one event
+per authenticated external-agent call, with `tenant` indicating *who* and
+the access log indicating *where*.
+
+### Routes covered (6)
+
+All callers of `Depends(require_tenant)`:
+`GET /manifest`, `POST /chat`, `POST /tasks/create`, `POST /memory/store`,
+`POST /memory/search`, `GET /system/status`.
+
+Public routes (`GET /`, `POST /register`) are untouched.
+
+### Proof
+
+- `python -c "from sos.services.gateway.bridge import app, require_tenant, _emit_gateway_policy"` — module imports clean.
+- `pytest tests/kernel/ tests/contracts/` — 447/451 passing (4 failures
+  are pre-existing schema-count drift in `test_messages_integration.py`,
+  unrelated to this sprint).
+
+### Arc complete
+
+v0.5.0 → v0.5.6 closes the "kernel enforces the blueprint" arc:
+
+- **v0.5.0** — R0 floor + disk-authoritative audit stream.
+- **v0.5.1** — Unified `can_execute()` gate.
+- **v0.5.2** — Arbitration (intent → proposal → ratification, read-over-audit).
+- **v0.5.3** — Gate wave 1: economy, registry, identity, journeys, operations (15 routes).
+- **v0.5.4** — saas audit-wrapper (40 routes).
+- **v0.5.5** — squad in-dep audit (26 routes).
+- **v0.5.6** — gateway/bridge in-dep audit (6 routes).
+
+Every authenticated route in every SOS service now writes one
+`POLICY_DECISION` audit event per call on the unified kernel spine:
+6 services via `can_execute()`, 3 services via native-auth wrappers. The
+audit spine is load-bearing. The gate contract is frozen. New signals
+compose *inside* `can_execute()`; new event kinds add to
+`AuditEventKind`. Kernel shape holds.
+
+---
+
 ## [0.5.5] - 2026-04-18 — Squad audit (in-dep)
 
 **Release theme: "Squad's capability check joins the spine."**
