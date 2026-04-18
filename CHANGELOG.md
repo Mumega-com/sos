@@ -2,6 +2,67 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.7.0] - 2026-04-18 — Brain hardening: ProviderMatrix feedback + operator HTML
+
+**Release theme: "Breakers that reflect real traffic, and a dashboard you can actually read."**
+
+Hardens the provider fallback path introduced in v0.4.3 and surfaces
+BrainService state to operators via an HTML render. No new services
+— only primitives around existing `sos/providers/matrix.py` and a
+second response mode on the existing `/sos/brain` route.
+
+### Added
+
+- `sos/providers/matrix.py`:
+  - `select_with_fallback(matrix, tiers, healthy_only=True)` — lazy
+    iterator that walks tier preference in order and skips open
+    breakers at iteration time, so callers no longer reimplement
+    fallback.
+  - `call_with_breaker(card)` async context manager — records
+    success/failure on the card's breaker from real adapter calls,
+    raises `ProviderMatrixError` up front when the breaker is open.
+  - `probe_provider(card, timeout=None)` — drives `health_probe_url`
+    via httpx; 2xx closes the breaker, non-2xx/exception opens it,
+    cards without a probe URL no-op without recording.
+  - `reset_breakers()` — test helper.
+- `GET /sos/brain/html` — operator-facing HTML render of the
+  `BrainSnapshot` plus live ProviderMatrix breaker state. Auth +
+  503 semantics match the JSON route. Fail-soft: if the matrix YAML
+  is missing the page still renders with an empty-state row.
+- `sos/services/dashboard/templates/brain.py` — inline HTML template
+  matching the login.py pattern (no Jinja2 dep).
+- Tests:
+  - `tests/providers/test_matrix_hardening.py` — 12 tests covering
+    breaker state transitions, probe 2xx/5xx/exception/no-url paths,
+    and the three tier-walk invariants.
+  - `tests/services/test_dashboard_brain_html.py` — 4 HTML smoke
+    tests: snapshot render, provider row breaker classes, 503 on
+    miss, 401 without bearer.
+
+### Why this matters for federation
+
+The dashboard now shows breaker state per provider card at a glance,
+which is the precondition for any peer organism trusting this one's
+self-reported health. v0.8.x spore federation will reuse
+`call_with_breaker` + `probe_provider` to mark peer links unhealthy.
+
+### Changed
+
+- Moved `tests/contracts/test_alembic_orm_parity.py` (introduced in
+  v0.6.3) to `tests/migrations/test_alembic_orm_parity.py`. The test
+  legitimately imports `sos.services.squad.models` to inspect ORM
+  columns, which violates R6 ("contract tests don't import
+  services"). Relocating is the right fix — the test is a
+  migration/ORM coherence check, not a contract.
+
+### Verified
+
+- 12/12 matrix hardening tests, 4/4 HTML smoke tests, 4/4 parity
+  tests green.
+- `.venv/bin/lint-imports` green (4 contracts kept, R6 restored).
+
+---
+
 ## [0.6.3] - 2026-04-18 — Env hygiene + migration parity contract
 
 **Release theme: "Your venv should be able to run your tests."**

@@ -3,16 +3,30 @@
 Not a bespoke LLM router. Just a YAML-driven table of ProviderCards with
 circuit breakers and tier-based selection. Actual execution goes through the
 existing adapters in sos/adapters/.
+
+v0.7.0 additions
+----------------
+- ``call_with_breaker`` async context manager — records adapter call
+  outcomes on the breaker so state reflects real traffic, not just
+  aggregate heuristics.
+- ``probe_provider`` async helper — drives health_probe_url periodically
+  to close the feedback loop even when no user traffic is flowing.
+- ``select_with_fallback`` iterator — walks tier preferences in order so
+  the brain doesn't have to reimplement fallback logic at every call site.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Iterator, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger("sos.providers.matrix")
 
 # ---------------------------------------------------------------------------
 # Schema loader
@@ -188,3 +202,108 @@ def select_provider(
     raise ProviderMatrixError(
         f"All providers for tier={tier!r} have open circuit breakers"
     )
+
+
+# ---------------------------------------------------------------------------
+# v0.7.0 — hardening primitives
+# ---------------------------------------------------------------------------
+
+
+def select_with_fallback(
+    matrix: list[ProviderCard],
+    tiers: Sequence[TierLiteral],
+    healthy_only: bool = True,
+) -> Iterator[ProviderCard]:
+    """Yield healthy cards in *tiers* order, skipping open breakers.
+
+    Usage::
+
+        for card in select_with_fallback(matrix, ["primary", "fallback", "cheap"]):
+            try:
+                async with call_with_breaker(card):
+                    return await adapter.call(card, prompt)
+            except Exception:
+                continue  # next card
+        raise ProviderMatrixError("all tiers exhausted")
+
+    The iterator is lazy — ``get_breaker(card).is_open()`` is evaluated at
+    iteration time, so a breaker that transitions open mid-sweep is respected.
+    """
+    for tier in tiers:
+        for card in matrix:
+            if card.tier != tier:
+                continue
+            if healthy_only and get_breaker(card).is_open():
+                continue
+            yield card
+
+
+@contextlib.asynccontextmanager
+async def call_with_breaker(card: ProviderCard):
+    """Async context manager that records success/failure on *card*'s breaker.
+
+    Raises :class:`ProviderMatrixError` up front if the breaker is open, so
+    callers don't have to double-check. Any exception from the ``async with``
+    body is recorded as a failure and re-raised.
+
+    Example::
+
+        async with call_with_breaker(card):
+            return await some_adapter.call(card, prompt)
+    """
+    breaker = get_breaker(card)
+    if breaker.is_open():
+        raise ProviderMatrixError(
+            f"circuit breaker for provider_id={card.id!r} is open"
+        )
+    try:
+        yield card
+    except Exception:
+        breaker.record_failure()
+        raise
+    else:
+        breaker.record_success()
+
+
+async def probe_provider(card: ProviderCard, timeout: float | None = None) -> bool:
+    """Probe *card*'s health_probe_url, record the outcome on its breaker.
+
+    Returns ``True`` on 2xx, ``False`` on timeout / non-2xx / no URL. A card
+    without a ``health_probe_url`` is treated as "not probeable" — the
+    function returns ``False`` but does *not* record a failure (breaker state
+    is untouched), so static config doesn't trigger false opens.
+
+    ``timeout`` defaults to ``card.timeout_seconds``. Uses ``httpx.AsyncClient``
+    so it respects trust_env + any OTEL instrumentation already configured.
+    """
+    if not card.health_probe_url:
+        return False
+
+    try:
+        import httpx  # imported lazily so the matrix module stays importable
+    except ImportError:  # pragma: no cover — httpx is a hard dep
+        logger.warning("httpx not available; cannot probe %s", card.id)
+        return False
+
+    effective_timeout = timeout if timeout is not None else float(card.timeout_seconds)
+    breaker = get_breaker(card)
+    try:
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
+            resp = await client.get(card.health_probe_url)
+        if 200 <= resp.status_code < 300:
+            breaker.record_success()
+            return True
+        breaker.record_failure()
+        logger.info(
+            "probe failed for %s: HTTP %d", card.id, resp.status_code
+        )
+        return False
+    except Exception as exc:
+        breaker.record_failure()
+        logger.info("probe failed for %s: %s", card.id, exc)
+        return False
+
+
+def reset_breakers() -> None:
+    """Clear the module-level breaker registry. Test-only helper."""
+    _breakers.clear()
