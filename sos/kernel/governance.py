@@ -22,6 +22,13 @@ v0.5.0:
   - Every intent also written to the unified audit stream
     (`sos.kernel.audit`). Legacy `~/.sos/governance/intents/` files
     still populated for one version as a read-side compat shim.
+
+v0.5.1:
+  - ``before_action`` consults ``sos.kernel.policy.gate.can_execute``
+    first. FMAAP pillar failures are now authoritative denials without
+    governance having to re-implement the check. The gate also writes
+    its own ``POLICY_DECISION`` audit event; governance still writes
+    the ``INTENT`` event (different concern, different kind).
 """
 from __future__ import annotations
 
@@ -111,6 +118,38 @@ async def before_action(
     tier = get_tier(tenant, action)
     now = datetime.now(timezone.utc).isoformat()
     intent_id = f"{agent}:{action}:{int(datetime.now(timezone.utc).timestamp())}"
+
+    # v0.5.1: consult the unified policy gate first. FMAAP pillar failures
+    # (missing squad, insufficient coherence, budget-grade mismatch) are
+    # authoritative denials — budget/scope/capability all roll up here.
+    # Kernel-internal callers pass no authorization header; gate still
+    # runs FMAAP + tier lookup in that mode.
+    try:
+        from sos.kernel.policy.gate import can_execute as _gate_can_execute
+
+        gate_decision = await _gate_can_execute(
+            agent=agent,
+            action=action,
+            resource=target,
+            tenant=tenant,
+            authorization=None,
+            context={**(metadata or {}), "agent_id": agent},
+        )
+        if not gate_decision.allowed:
+            logger.warning(
+                f"GATE DENIED: {agent} → {action} on {target} "
+                f"(tier={gate_decision.tier}): {gate_decision.reason}"
+            )
+            return {
+                "allowed": False,
+                "tier": gate_decision.tier,
+                "intent_id": intent_id,
+                "reason": gate_decision.reason,
+                "audit_id": gate_decision.audit_id,
+            }
+    except Exception as exc:
+        # Fail-open: gate unavailability must not block legitimate actions.
+        logger.debug("policy gate unavailable (%s): %s", type(exc).__name__, exc)
 
     # v0.5.0: Budget check via HTTP — kernel never imports services directly.
     # Fail-open on any error (connection refused, timeout, economy down) so

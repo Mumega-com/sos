@@ -2,6 +2,76 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.1] - 2026-04-18 — Unified policy gate
+
+**Release theme: "The kernel enforces the blueprint — step 2 of 3."**
+
+v0.5.0 gave us the floor (R0 lock) and the audit spine. v0.5.1 adds the
+single gate every HTTP route, every agent action, every kernel-governed
+decision asks: *may this agent perform this action on this resource?*
+One question, one call, one audited answer. No service reinvents it.
+
+### The gate (`sos.kernel.policy.gate`)
+
+- **`sos/kernel/policy/gate.py`** — new async function
+  `can_execute(agent, action, resource, tenant, authorization, capability, context)`.
+  Composes five signals in one place:
+  1. Bearer verification (`sos.kernel.auth.verify_bearer`)
+  2. Tenant scope enforcement (system/admin bypass or exact-match)
+  3. Capability (if `SOS_REQUIRE_CAPABILITIES=1`)
+  4. FMAAP 5-pillar validation when squad context is present
+  5. Governance tier lookup
+  Writes exactly one `AuditEventKind.POLICY_DECISION` event per call.
+  **Fail-open for availability** (FMAAP DB down → warn + allow),
+  **fail-closed for security** (missing/invalid bearer, scope mismatch).
+- **`sos/contracts/policy.py`** — `PolicyDecision` frozen Pydantic v2
+  model. 5 required + 7 optional fields. Additive-only — new signals
+  land as new list members or metadata keys, never schema churn.
+  Snapshot baseline locked in `test_policy_schema_stable.py`.
+- **`sos/kernel/governance.py::before_action`** now consults the gate
+  first. FMAAP pillar failures become authoritative denials without
+  governance having to re-implement the checks. Fail-open on gate
+  error preserves governance availability.
+
+### Proof-of-concept migration
+
+- **`sos/services/integrations/app.py`** — all 3 authenticated routes
+  (`GET /oauth/credentials/{tenant}/{provider}`,
+  `POST /oauth/ghl/callback/{tenant}`,
+  `POST /oauth/google/callback/{tenant}`) now make one `can_execute()`
+  call + `_raise_on_deny()` handoff. The inline `_verify_bearer`,
+  `_check_tenant_scope`, and `_require_system_or_admin` helpers are
+  gone. Behaviour preserved (same 401/403/200 semantics); every call
+  now writes an audit event.
+
+### Tests (new, all green)
+
+- **`tests/contracts/test_policy_schema_stable.py`** — 5 tests snapshotting
+  the `PolicyDecision` baseline (frozen, required fields, optional fields,
+  no-removal, instance-immutability).
+- **`tests/kernel/test_policy_gate.py`** — 7 tests covering system-token
+  cross-tenant allow, scoped-token own-tenant allow, scoped-token
+  cross-tenant deny, no-scope deny, invalid-bearer deny,
+  kernel-internal (no auth) allow, audit event persisted.
+- **`tests/services/test_integrations_gate.py`** — FastAPI TestClient
+  tests proving the migration preserves 401/403/200/404/400 behaviour.
+
+### Docs
+
+- **`docs/kernel/policy.md`** — public contract doc matching
+  `docs/kernel/audit.md` style: what the gate is, what it isn't,
+  surface, signals, fail-open/fail-closed, durability, migration guide
+  for sibling services.
+
+### Deferred
+
+- **v0.5.1.1+ mop-up:** migrate the ~10 other permission sites across
+  `economy`, `registry`, `squad`, `mcp`, `tools` to the gate. Each is
+  a ~15-line commit — they do not block v0.5.1.
+- **v0.5.2:** `sos/kernel/arbitration.py` conflict-resolution layer
+  (needs design work before code). Remove the
+  `~/.sos/governance/intents/` legacy compat shim.
+
 ## [0.5.0] - 2026-04-18 — Kernel floor lock + unified audit stream
 
 **Release theme: "The kernel enforces the blueprint — step 1 of 3."**

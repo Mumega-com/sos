@@ -15,8 +15,11 @@ Endpoints:
 - `POST /oauth/google/callback/{tenant}` — complete a Google OAuth round-trip.
   System/admin scope only.
 
-Auth scope: the Bearer token's `project` must match the `tenant` path param,
-OR the token must be system/admin scope. Otherwise 403.
+v0.5.1: Replaced inline `_verify_bearer` / `_check_tenant_scope` /
+`_require_system_or_admin` with a single ``sos.kernel.policy.gate.can_execute``
+call per route. This is the proof-of-concept migration for the unified
+policy gate — see ``docs/kernel/policy.md``. Every authenticated route now
+writes exactly one ``AuditEventKind.POLICY_DECISION`` event.
 """
 
 from __future__ import annotations
@@ -30,8 +33,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from sos import __version__
-from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+from sos.contracts.policy import PolicyDecision
 from sos.kernel.health import health_response
+from sos.kernel.policy.gate import can_execute
 from sos.observability.logging import get_logger
 
 SERVICE_NAME = "integrations"
@@ -63,59 +67,33 @@ async def _startup() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Auth helper — same pattern as economy/app.py::_verify_bearer
+# Gate helper — turn a PolicyDecision into the appropriate HTTP response
 # ---------------------------------------------------------------------------
 
 
-def _verify_bearer(authorization: Optional[str]) -> Dict[str, Any]:
-    """Return a token record dict or raise 401 on failure."""
-    ctx = _auth_verify_bearer(authorization)
-    if ctx is None:
-        if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=401, detail="missing bearer token")
-        raise HTTPException(status_code=401, detail="invalid or inactive token")
-    return {
-        "project": ctx.project,
-        "tenant_slug": ctx.tenant_slug,
-        "agent": ctx.agent,
-        "label": ctx.label,
-        "is_system": ctx.is_system,
-        "is_admin": ctx.is_admin,
-        "active": True,
-    }
+def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) -> None:
+    """Map a gate decision to 401/403 if denied.
 
-
-def _check_tenant_scope(entry: Dict[str, Any], tenant: str) -> None:
-    """Raise 403 unless the token is scoped to *tenant* or is system/admin."""
-    if entry.get("is_system") or entry.get("is_admin"):
-        return
-    scope = entry.get("project") or entry.get("tenant_slug")
-    if scope is None:
-        # Non-system token with no scope — reject to avoid accidental tenant cross.
-        raise HTTPException(
-            status_code=403,
-            detail="token has no tenant scope",
-        )
-    if scope != tenant:
-        raise HTTPException(
-            status_code=403,
-            detail=f"token is scoped to tenant '{scope}', cannot read credentials for '{tenant}'",
-        )
-
-
-def _require_system_or_admin(entry: Dict[str, Any]) -> None:
-    """Raise 403 unless the caller holds a system or admin token.
-
-    OAuth callbacks arrive at MCP from external providers; MCP proxies them
-    here with a system token. No tenant-scoped caller should be completing
-    a callback on another tenant's behalf.
+    When ``require_system`` is True, also enforce that the successful
+    decision came via system/admin scope — the gate allows tenant-scoped
+    callers into their own tenant, but OAuth callbacks are only meaningful
+    from MCP's system token.
     """
-    if entry.get("is_system") or entry.get("is_admin"):
-        return
-    raise HTTPException(
-        status_code=403,
-        detail="oauth callbacks require system or admin scope",
-    )
+    if not decision.allowed:
+        reason = decision.reason or "unauthorized"
+        if "bearer" in reason.lower() or "auth" in reason.lower():
+            raise HTTPException(status_code=401, detail=reason)
+        raise HTTPException(status_code=403, detail=reason)
+
+    if require_system:
+        pillars = set(decision.pillars_passed)
+        # system/admin callers never get 'tenant_scope' added because the
+        # gate short-circuits with 'system/admin scope' reason. Check that.
+        if "system/admin" not in decision.reason:
+            raise HTTPException(
+                status_code=403,
+                detail="oauth callbacks require system or admin scope",
+            )
 
 
 class GhlCallbackRequest(BaseModel):
@@ -148,8 +126,16 @@ async def get_oauth_credentials(
     Local import of TenantIntegrations is intentional: this service IS the
     owner of that class, so the boundary rule does not apply.
     """
-    entry = _verify_bearer(authorization)
-    _check_tenant_scope(entry, tenant)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="oauth_credentials_read",
+        resource=f"{tenant}/{provider}",
+        tenant=tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
 
     from sos.services.integrations.oauth import TenantIntegrations
 
@@ -177,8 +163,16 @@ async def post_ghl_callback(
     MCP proxies external GHL redirects here with a system token. Returns
     the stored credentials dict.
     """
-    entry = _verify_bearer(authorization)
-    _require_system_or_admin(entry)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="oauth_ghl_callback",
+        resource=tenant,
+        tenant=tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
 
     from sos.services.integrations.oauth import TenantIntegrations
 
@@ -197,14 +191,22 @@ async def post_google_callback(
     MCP proxies external Google redirects here with a system token.
     ``service`` must be one of analytics, search_console, ads.
     """
-    entry = _verify_bearer(authorization)
-    _require_system_or_admin(entry)
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
 
     if req.service not in _GOOGLE_SERVICES:
         raise HTTPException(
             status_code=400,
             detail=f"unknown google service: {req.service}",
         )
+
+    decision = await can_execute(
+        action="oauth_google_callback",
+        resource=f"{tenant}/{req.service}",
+        tenant=tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
 
     from sos.services.integrations.oauth import TenantIntegrations
 
