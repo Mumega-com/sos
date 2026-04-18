@@ -7,6 +7,7 @@ Usage:
     python -m sos.services.journeys --agent worker --evaluate
     python -m sos.services.journeys --leaderboard
     python -m sos.services.journeys --leaderboard --path builder
+    python -m sos.services.journeys --serve-bus-consumer
 """
 
 from __future__ import annotations
@@ -30,7 +31,20 @@ def main() -> None:
     parser.add_argument("--evaluate", action="store_true", help="Auto-evaluate milestones")
     parser.add_argument("--leaderboard", action="store_true", help="Show leaderboard")
     parser.add_argument("--path", help="Filter leaderboard by path")
+    parser.add_argument(
+        "--serve-bus-consumer",
+        action="store_true",
+        help="Run the task.completed bus consumer (long-running)",
+    )
     args = parser.parse_args()
+
+    if args.serve_bus_consumer:
+        import asyncio
+        from sos.services.journeys.bus_consumer import JourneysBusConsumer
+
+        consumer = JourneysBusConsumer()
+        asyncio.run(consumer.run())
+        return
 
     tracker = JourneyTracker()
 

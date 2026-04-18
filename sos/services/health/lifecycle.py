@@ -932,6 +932,32 @@ def run_cycle(cycle_num: int) -> dict:
     return results
 
 
+def _start_bus_consumer_thread() -> None:
+    """Launch the health bus consumer on a daemon thread alongside lifecycle.
+
+    The consumer subscribes to ``sos:stream:global:squad:*`` and updates the
+    conductance network on ``task.completed`` events. Opt out by setting
+    ``SOS_HEALTH_BUS_CONSUMER=0``.
+    """
+    if os.environ.get("SOS_HEALTH_BUS_CONSUMER", "1") == "0":
+        logger.info("HealthBusConsumer disabled via SOS_HEALTH_BUS_CONSUMER=0")
+        return
+
+    import threading
+
+    def _run() -> None:
+        try:
+            from sos.services.health.bus_consumer import HealthBusConsumer
+            consumer = HealthBusConsumer()
+            asyncio.run(consumer.run())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("HealthBusConsumer crashed: %s", exc, exc_info=True)
+
+    t = threading.Thread(target=_run, name="health-bus-consumer", daemon=True)
+    t.start()
+    logger.info("HealthBusConsumer thread started")
+
+
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Agent Lifecycle Manager")
@@ -945,6 +971,10 @@ def main() -> None:
         results = run_cycle(1)
         print(json.dumps(results, indent=2))
         return
+
+    # Launch the task.completed bus consumer in a daemon thread so we react to
+    # squad events in real time while the lifecycle poller keeps its cadence.
+    _start_bus_consumer_thread()
 
     cycle_num = 0
     while True:

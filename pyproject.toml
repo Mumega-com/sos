@@ -217,9 +217,8 @@ ignore_imports = [
   "sos.services.engine.** -> sos.services.tools.**",
   # P0-03 content.app → engine internals
   "sos.services.content.** -> sos.services.engine.**",
-  # P0-04, P0-05 squad.tasks → health / journeys
-  "sos.services.squad.** -> sos.services.health.**",
-  "sos.services.squad.** -> sos.services.journeys.**",
+  # P0-04, P0-05 closed in v0.4.5 wave 1 — squad emits task.completed;
+  # health + journeys subscribe via their own bus consumers. Ignores removed.
   # P0-06 analytics.ingest → integrations.oauth
   "sos.services.analytics.** -> sos.services.integrations.**",
   # P0-07 autonomy.service → identity.avatar

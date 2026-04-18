@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import sqlite3
+import uuid as _uuid
 from dataclasses import asdict
 from typing import Any
 
+from sos.contracts.messages import TaskCompletedMessage, TaskCompletedPayload
 from sos.contracts.squad import RoutingDecision, SquadTask, TaskClaim, TaskPriority, TaskStatus
 from sos.kernel import Response, ResponseStatus
 from sos.observability.logging import get_logger
@@ -12,6 +16,117 @@ from sos.services.squad.service import DEFAULT_TENANT_ID, SquadBus, SquadDB, now
 
 
 log = get_logger("squad_tasks")
+
+
+# --- Bus envelope helpers -----------------------------------------------------
+# Squad emits v1 TaskCompletedMessage on the global squad stream so that health
+# (conductance) and journeys (milestones) consumers can react without squad
+# reaching into either service in-process. See P0-04, P0-05 in the 2026-04-17
+# structural audit.
+
+_SOURCE_AGENT_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_CONTRACT_TASK_STATUS = {"done", "failed", "cancelled", "timeout"}
+
+
+def _normalize_agent_source(agent_name: str | None) -> str:
+    """Coerce an arbitrary agent name into a v1-valid `source` envelope field.
+
+    The BusMessage envelope requires ``source`` to match
+    ``^agent:[a-z][a-z0-9-]*$``. Squad task assignees come from user-supplied
+    data so we normalize rather than reject: lowercase, non-alnum becomes ``-``,
+    leading non-letters get an ``agent-`` prefix, empty falls back to ``squad``.
+    """
+    if not agent_name:
+        return "agent:squad"
+    slug = re.sub(r"[^a-z0-9-]+", "-", agent_name.strip().lower()).strip("-")
+    if not slug:
+        return "agent:squad"
+    if not slug[0].isalpha():
+        slug = f"agent-{slug}"
+    return f"agent:{slug}" if _SOURCE_AGENT_RE.match(slug) else "agent:squad"
+
+
+def _coerce_contract_status(status: TaskStatus) -> str:
+    """Map squad's TaskStatus enum onto the contract's Literal type.
+
+    Squad's enum has more terminal states (canceled/failed/done) plus
+    intermediate ones. For task.completed we only ever emit terminal states;
+    this collapses spelling differences (e.g. ``canceled`` → ``cancelled``).
+    """
+    raw = status.value if hasattr(status, "value") else str(status)
+    if raw in _CONTRACT_TASK_STATUS:
+        return raw
+    if raw == "canceled":
+        return "cancelled"
+    if raw in {"failed"}:
+        return "failed"
+    # Any other terminal state is treated as success on the contract side.
+    return "done"
+
+
+def _emit_task_completed(task: SquadTask, actor: str, completed_at: str) -> None:
+    """Publish a v1 TaskCompletedMessage to the per-squad global stream.
+
+    Downstream consumers (health, journeys) pick up from
+    ``sos:stream:global:squad:<squad_id>`` via SCAN, so we xadd to the same
+    shape SquadBus.emit already uses.
+
+    ``result`` carries fields outside the v1 envelope — ``agent_addr``,
+    ``labels``, ``reward_mind``, ``squad_id``, ``bounty_id`` — so consumers
+    can do their work without extra round-trips.
+    """
+    import redis as _redis  # local import keeps the module importable without redis
+    agent_name = task.assignee or actor or "squad"
+    source = _normalize_agent_source(agent_name)
+
+    reward = 0.0
+    try:
+        if task.bounty and task.bounty.get("reward"):
+            reward = float(task.bounty.get("reward") or 0.0)
+    except (TypeError, ValueError):
+        reward = 0.0
+
+    result_extras: dict[str, Any] = {
+        "agent_addr": agent_name,
+        "labels": list(task.labels or []),
+        "reward_mind": reward,
+        "squad_id": task.squad_id,
+    }
+    if task.bounty and task.bounty.get("bounty_id"):
+        result_extras["bounty_id"] = task.bounty["bounty_id"]
+    if task.project:
+        result_extras["project"] = task.project
+    # Fold the original result dict in underneath so nothing is lost.
+    if isinstance(task.result, dict):
+        for k, v in task.result.items():
+            result_extras.setdefault(k, v)
+
+    try:
+        message = TaskCompletedMessage(
+            source=source,
+            target="sos:channel:tasks",
+            timestamp=completed_at,
+            message_id=str(_uuid.uuid4()),
+            payload=TaskCompletedPayload(
+                task_id=task.id,
+                status=_coerce_contract_status(task.status),  # type: ignore[arg-type]
+                completed_at=completed_at,
+                result=result_extras,
+            ),
+        )
+    except Exception as exc:
+        log.warn("task.completed envelope construction failed", task_id=task.id, error=str(exc))
+        return
+
+    stream = f"sos:stream:global:squad:{task.squad_id}"
+    try:
+        pw = os.environ.get("REDIS_PASSWORD", "")
+        host = os.environ.get("REDIS_HOST", "127.0.0.1")
+        port = int(os.environ.get("REDIS_PORT", "6379"))
+        r = _redis.Redis(host=host, port=port, password=pw or None, decode_responses=True)
+        r.xadd(stream, message.to_redis_fields(), maxlen=1000)
+    except Exception as exc:
+        log.warn("task.completed xadd failed", task_id=task.id, error=str(exc))
 
 
 def _loads(value: str | None, fallback: Any) -> Any:
@@ -364,6 +479,13 @@ class SquadTaskService:
             )
         self.bus.emit("task.completed", task.squad_id, actor, {"task_id": task.id, "result": result})
 
+        # v1 TaskCompletedMessage on the global squad stream for health +
+        # journeys consumers. Replaces in-process reach into
+        # sos.services.health.calcifer.conductance_update (P0-04) and
+        # sos.services.journeys.tracker.JourneyTracker (P0-05). Fire-and-forget;
+        # consumers are idempotent on message_id and fail-open.
+        _emit_task_completed(task, actor, task.completed_at or timestamp)
+
         # Deliver result to customer project agent via bus
         project = task.project
         if project:
@@ -412,14 +534,8 @@ class SquadTaskService:
                         payout_msg = await board.approve_and_pay(bounty_id)
                         log.info(f"Wire 4 payout for {task.id}: {payout_msg}")
 
-                        # Wire 6: Update conductance after payout
-                        try:
-                            from sos.services.health.calcifer import conductance_update
-                            reward = float(task.bounty.get("reward", 0))
-                            for label in (task.labels or []):
-                                conductance_update(agent_addr, label, reward)
-                        except Exception:
-                            pass
+                        # Wire 6: conductance update moved to the health
+                        # consumer listening on task.completed (P0-04).
 
                         # If pending approval (>100 MIND), notify via bus for Telegram relay
                         if "Pending" in payout_msg:
@@ -465,20 +581,8 @@ class SquadTaskService:
             except Exception as exc:
                 log.warning(f"Wire 4 bounty payout failed (non-blocking) for {task.id}: {exc}")
 
-        # Journey: Auto-evaluate milestones on task completion
-        agent_name = task.assignee or actor
-        if agent_name and agent_name != "system":
-            try:
-                from sos.services.journeys.tracker import JourneyTracker
-                tracker = JourneyTracker()
-                completions = tracker.auto_evaluate(agent_name)
-                for c in completions:
-                    log.info(
-                        "Journey milestone: %s completed %s/%s (+%d MIND, badge: %s)",
-                        agent_name, c["path"], c["milestone"], c["reward_mind"], c["badge"],
-                    )
-            except Exception as exc:
-                log.debug(f"Journey evaluation skipped: {exc}")
+        # Journey milestone auto-evaluation moved to the journeys bus consumer
+        # listening on task.completed (P0-05). No in-process reach.
 
         # ── Economy: wallet charge + conductance update + transaction log ──
         # Two costs tracked: internal (fuel) and billable (customer-facing)
