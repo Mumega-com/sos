@@ -158,8 +158,8 @@ ignore_imports = [
   # Kernel governance has a lazy import into economy.metabolism for
   # budget enforcement (Gap 7). v0.5 flips to HTTP/contracts.
   "sos.adapters.telegram -> sos.services.economy.metabolism",
-  # P1-04 agents/shabrang
-  "sos.agents.shabrang.agent -> sos.services.engine.core",
+  # P1-04 closed in v0.4.6 Step 3 — agents/shabrang no longer inherits
+  # SOSEngine; it's a standalone mining daemon using kernel + MirrorClient.
   # P1-05 agents.join
   "sos.agents.join -> sos.services.squad.auth",
   "sos.agents.join -> sos.services.journeys.tracker",
