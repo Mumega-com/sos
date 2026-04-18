@@ -25,17 +25,24 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from sos import __version__
+from sos.contracts.agent_card import AgentCard
 from sos.contracts.policy import PolicyDecision
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.health import health_response
 from sos.kernel.policy.gate import can_execute
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
-from sos.services.registry import read_all, read_all_cards, read_card, read_one
+from sos.services.registry import (
+    read_all,
+    read_all_cards,
+    read_card,
+    read_one,
+    write_card,
+)
 
 SERVICE_NAME = "registry"
 DEFAULT_PORT = 6067
@@ -224,6 +231,64 @@ async def list_agent_cards(
     cards = read_all_cards(project=effective_project)
     items: List[Dict[str, Any]] = [c.model_dump() for c in cards]
     return {"cards": items, "count": len(items)}
+
+
+@app.post("/agents/cards")
+async def upsert_agent_card(
+    payload: Dict[str, Any] = Body(...),
+    project: Optional[str] = None,
+    ttl_seconds: int = 300,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Upsert an AgentCard into Redis under ``sos:cards[:<project>]:<name>``.
+
+    Agents call this on boot and on a short heartbeat cadence to keep
+    their runtime overlay fresh. The TTL expires stale cards so dead
+    agents disappear without explicit cleanup.
+
+    Auth:
+    - Bearer required.
+    - Scoped tokens are forced to their own project; trying to write
+      into a different project (or with no scope at all) is 403.
+    - ``project`` query param takes the same override behaviour as the
+      read routes.
+
+    Validation: the body is parsed through ``AgentCard`` — a malformed
+    payload returns 422 via FastAPI's standard validation.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    try:
+        card = AgentCard(**payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"invalid agent card: {exc}")
+
+    decision = await can_execute(
+        action="registry:card_write",
+        resource=card.name,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    entry = _verify_bearer(authorization)
+    effective_project = _resolve_project_scope(entry, project)
+
+    # If the card carries its own ``project``, it must not cross the
+    # caller's effective scope. System/admin tokens skip this check.
+    if not (entry.get("is_system") or entry.get("is_admin")):
+        if card.project and effective_project and card.project != effective_project:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"card.project '{card.project}' does not match "
+                    f"token scope '{effective_project}'"
+                ),
+            )
+
+    write_card(card, project=effective_project, ttl_seconds=ttl_seconds)
+    return {"ok": True, "name": card.name, "project": effective_project}
 
 
 @app.get("/agents/cards/{agent_name}")

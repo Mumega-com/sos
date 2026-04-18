@@ -282,6 +282,119 @@ def test_list_cards_scoped_token_forced_to_own_project(
 
 
 # ---------------------------------------------------------------------------
+# POST /agents/cards — v0.7.3 self-register
+# ---------------------------------------------------------------------------
+
+
+def test_post_card_missing_bearer_is_401(client: TestClient) -> None:
+    resp = client.post("/agents/cards", json={})
+    assert resp.status_code == 401
+
+
+def test_post_card_invalid_payload_is_422(
+    client: TestClient,
+    system_token: str,
+) -> None:
+    resp = client.post(
+        "/agents/cards",
+        json={"nonsense": True},
+        headers={"Authorization": f"Bearer {system_token}"},
+    )
+    assert resp.status_code == 422
+
+
+def test_post_card_system_token_writes_through(
+    client: TestClient,
+    system_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_write_card(
+        card: AgentCard, project: str | None = None, ttl_seconds: int = 300
+    ) -> None:
+        captured["name"] = card.name
+        captured["project"] = project
+        captured["ttl"] = ttl_seconds
+
+    monkeypatch.setattr(
+        "sos.services.registry.app.write_card",
+        fake_write_card,
+        raising=True,
+    )
+
+    card = _make_card("kasra")
+    resp = client.post(
+        "/agents/cards?ttl_seconds=120",
+        json=card.model_dump(mode="json"),
+        headers={"Authorization": f"Bearer {system_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "name": "kasra", "project": None}
+    assert captured == {"name": "kasra", "project": None, "ttl": 120}
+
+
+def test_post_card_scoped_token_cross_project_payload_is_403(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scoped token cannot write a card whose ``project`` differs from
+    its own scope — blocks a viamar-scoped agent from impersonating a
+    dentalnearyou card."""
+    from sos.contracts.policy import PolicyDecision
+    from sos.kernel.auth import AuthContext
+
+    def fake_verify(authz: str | None) -> AuthContext | None:
+        if authz and authz.endswith("scoped-viamar"):
+            return AuthContext(
+                agent="viamar-agent",
+                project="viamar",
+                tenant_slug="mumega",
+                is_system=False,
+                is_admin=False,
+                label="scoped",
+            )
+        return None
+
+    async def fake_can_execute(**kwargs: Any) -> PolicyDecision:
+        return PolicyDecision(
+            allowed=True,
+            reason="test: gate bypassed",
+            tier="act_freely",
+            action=kwargs.get("action", ""),
+            resource=kwargs.get("resource", ""),
+            agent="viamar-agent",
+            tenant="mumega",
+            pillars_passed=["tenant_scope"],
+            pillars_failed=[],
+            capability_ok=None,
+            metadata={},
+        )
+
+    monkeypatch.setattr(
+        "sos.services.registry.app._auth_verify_bearer",
+        fake_verify,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "sos.services.registry.app.can_execute",
+        fake_can_execute,
+        raising=True,
+    )
+
+    card = _make_card("evil-card", project="dentalnearyou")
+    resp = client.post(
+        "/agents/cards",
+        json=card.model_dump(mode="json"),
+        headers={"Authorization": "Bearer scoped-viamar"},
+    )
+    assert resp.status_code == 403
+    detail = resp.json().get("detail", "")
+    assert "dentalnearyou" in detail or "viamar" in detail
+
+
+# ---------------------------------------------------------------------------
 # Route ordering — ``cards`` must not be captured as an ``agent_id``
 # ---------------------------------------------------------------------------
 

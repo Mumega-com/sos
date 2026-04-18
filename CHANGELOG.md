@@ -2,6 +2,59 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.7.3] - 2026-04-18 — AgentCard self-register + heartbeat helper
+
+**Release theme: "Close the v0.7.2 loop so the endpoint actually returns data."**
+
+v0.7.2 exposed a read surface for AgentCards but nothing wrote them, so
+`GET /agents/cards` returned empty. v0.7.3 adds the write side: a POST
+endpoint on the registry and a fail-soft kernel helper agents call from
+their boot + heartbeat path.
+
+### Added
+
+- `sos/services/registry/app.py`:
+  - `POST /agents/cards` — upserts an `AgentCard` into
+    `sos:cards[:<project>]:<name>` with a configurable TTL. Bearer
+    auth, `registry:card_write` gate action.
+  - Scope enforcement: a scoped token cannot write a card whose
+    `card.project` mismatches its own scope (403). System/admin
+    tokens bypass. Malformed payloads return 422.
+- `sos/kernel/heartbeat.py` — new primitive:
+  - `emit_card(card, *, project=None, ttl_seconds=300, base_url=None,
+    token=None, timeout_s=5.0)` — thin `httpx.post` wrapper that
+    reads `SOS_REGISTRY_URL` / `SOS_REGISTRY_TOKEN` /
+    `SOS_SYSTEM_TOKEN` from env. Returns `True`/`False` and never
+    raises — a dead registry must not crash a working agent.
+  - No token → no network call, return `False`.
+- Tests:
+  - `tests/services/test_registry_cards.py` — 4 new POST tests (401
+    without bearer, 422 on invalid payload, happy-path system write,
+    403 on cross-project scope mismatch).
+  - `tests/kernel/test_heartbeat.py` — 6 new tests (no-token
+    short-circuit, happy path captures URL/params/headers/JSON,
+    project-from-card, explicit project wins, non-2xx → False,
+    exception → False).
+
+### Redis
+
+- Write path: `POST /agents/cards` → `write_card` →
+  `HSET sos:cards[:<project>]:<name>` with `EXPIRE ttl_seconds`.
+- Suggested heartbeat cadence: every 60s with `ttl_seconds=300`
+  (3× margin for network blips).
+
+### Verified
+
+- 19/19 new tests green (13 card route tests + 6 heartbeat tests).
+- Full registry regression: 44 passed + 5 skipped across
+  `tests/services/test_registry*.py`, `tests/contracts/test_agent_card.py`,
+  and `tests/kernel/test_heartbeat.py`.
+- `.venv/bin/lint-imports` green (4 contracts kept). Kernel→contracts
+  is clean; `sos.kernel.heartbeat` imports only
+  `sos.contracts.agent_card`, not the registry service.
+
+---
+
 ## [0.7.2] - 2026-04-18 — AgentCard registry surface
 
 **Release theme: "Inkwell (and anyone else) can now ask *which agent is live right now.*"**
