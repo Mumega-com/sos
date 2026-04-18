@@ -9,6 +9,7 @@ from sos.clients.tools import ToolsClient
 from sos.clients.voice import VoiceClient
 from sos.clients.billing import AsyncBillingClient, BillingClient
 from sos.clients.bus import BusClient
+from sos.clients.integrations import AsyncIntegrationsClient, IntegrationsClient
 from sos.clients.operations import AsyncOperationsClient, OperationsClient
 from sos.clients.journeys import AsyncJourneysClient, JourneysClient
 from sos.clients.saas import AsyncSaasClient, SaasClient
@@ -25,6 +26,8 @@ __all__ = [
     "BusClient",
     "BillingClient",
     "AsyncBillingClient",
+    "IntegrationsClient",
+    "AsyncIntegrationsClient",
     "OperationsClient",
     "AsyncOperationsClient",
     "JourneysClient",

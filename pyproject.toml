@@ -163,15 +163,18 @@ ignore_imports = [
   # directly and drives journeys via sos.clients.journeys (HTTP). Ignores removed.
   # P1-07 closed in v0.4.6 Step 1 — clients/operations POSTs to runner via
   # BaseHTTPClient. Ignore removed.
-  # P1-01 MCP gateway — v0.4.7 closes each service namespace in a phase:
-  #   Phase 1 (squad) closed — SquadClient + /auth/verify + /api-keys.
-  #   Phase 2 (saas) closed — SaasClient routes rate_limit, audit,
+  # P1-01 MCP gateway — all phases closed in v0.4.7:
+  #   Phase 1 (squad) — SquadClient + /auth/verify + /api-keys.
+  #   Phase 2 (saas) — SaasClient routes rate_limit, audit,
   #     marketplace, and notification preferences over HTTP.
-  #   Phase 3 (billing) closed — AsyncBillingClient proxies the Stripe
+  #   Phase 3 (billing) — AsyncBillingClient proxies the Stripe
   #     webhook to sos.services.billing.app (signature verification
   #     happens inside billing).
-  #   Phase 4 (integrations) still pending.
-  "sos.mcp.sos_mcp_sse -> sos.services.integrations.**",
+  #   Phase 4 (integrations) — AsyncIntegrationsClient proxies GHL +
+  #     Google OAuth callbacks to sos.services.integrations.app.
+  #   No MCP→services ignores remain. The AST sweep test
+  #   tests/contracts/test_mcp_no_service_imports.py enforces zero
+  #   regressions.
 ]
 
 [[tool.importlinter.contracts]]

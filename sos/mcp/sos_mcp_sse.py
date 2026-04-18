@@ -35,6 +35,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from sos.clients.billing import AsyncBillingClient
+from sos.clients.integrations import AsyncIntegrationsClient
 from sos.clients.saas import AsyncSaasClient, SaasClient
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
@@ -59,6 +60,7 @@ _squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
 _saas_client = SaasClient()
 _async_saas_client = AsyncSaasClient()
 _async_billing_client = AsyncBillingClient()
+_async_integrations_client = AsyncIntegrationsClient()
 
 
 def _audit_tool_call(
@@ -2379,17 +2381,20 @@ async def ghl_oauth_callback(request: Request) -> Response:
     """Handle GHL OAuth callback after tenant grants access.
 
     Query params: code, tenant (passed via state or custom param).
+    Proxies to integrations service — MCP no longer touches
+    TenantIntegrations directly (v0.4.7 Phase 4, R2 closure).
     """
-    from sos.services.integrations.oauth import TenantIntegrations
-
     code = request.query_params.get("code", "")
     tenant = request.query_params.get("tenant", "")
 
     if not code or not tenant:
         raise HTTPException(status_code=400, detail="code and tenant required")
 
-    integrations = TenantIntegrations(tenant)
-    result = await integrations.handle_ghl_callback(code)
+    try:
+        result = await _async_integrations_client.handle_ghl_callback(tenant, code)
+    except Exception as exc:
+        log.exception("integrations ghl callback proxy failed")
+        raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
     return JSONResponse({
@@ -2405,9 +2410,9 @@ async def google_oauth_callback(request: Request) -> Response:
     """Handle Google OAuth callback after tenant grants access.
 
     Query params: code, state (contains tenant:service).
+    Proxies to integrations service — MCP no longer touches
+    TenantIntegrations directly (v0.4.7 Phase 4, R2 closure).
     """
-    from sos.services.integrations.oauth import TenantIntegrations
-
     code = request.query_params.get("code", "")
     state = request.query_params.get("state", "")
 
@@ -2424,8 +2429,11 @@ async def google_oauth_callback(request: Request) -> Response:
     if service not in ("analytics", "search_console", "ads"):
         raise HTTPException(status_code=400, detail=f"unknown service: {service}")
 
-    integrations = TenantIntegrations(tenant)
-    result = await integrations.handle_google_callback(code, service)  # type: ignore[arg-type]
+    try:
+        await _async_integrations_client.handle_google_callback(tenant, code, service)
+    except Exception as exc:
+        log.exception("integrations google callback proxy failed")
+        raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
     return JSONResponse({

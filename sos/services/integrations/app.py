@@ -10,6 +10,10 @@ Endpoints:
 - `GET /oauth/credentials/{tenant}/{provider}` — Bearer-auth'd read-through
   to `TenantIntegrations(tenant).get_credentials(provider)`. Returns 404 if
   the tenant has no credentials for that provider.
+- `POST /oauth/ghl/callback/{tenant}` — complete a GHL OAuth round-trip.
+  System/admin scope only (MCP proxies external provider callbacks here).
+- `POST /oauth/google/callback/{tenant}` — complete a Google OAuth round-trip.
+  System/admin scope only.
 
 Auth scope: the Bearer token's `project` must match the `tenant` path param,
 OR the token must be system/admin scope. Otherwise 403.
@@ -23,6 +27,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from sos import __version__
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
@@ -98,6 +103,30 @@ def _check_tenant_scope(entry: Dict[str, Any], tenant: str) -> None:
         )
 
 
+def _require_system_or_admin(entry: Dict[str, Any]) -> None:
+    """Raise 403 unless the caller holds a system or admin token.
+
+    OAuth callbacks arrive at MCP from external providers; MCP proxies them
+    here with a system token. No tenant-scoped caller should be completing
+    a callback on another tenant's behalf.
+    """
+    if entry.get("is_system") or entry.get("is_admin"):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="oauth callbacks require system or admin scope",
+    )
+
+
+class GhlCallbackRequest(BaseModel):
+    code: str
+
+
+class GoogleCallbackRequest(BaseModel):
+    code: str
+    service: str  # "analytics" | "search_console" | "ads"
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -132,3 +161,52 @@ async def get_oauth_credentials(
             detail=f"no credentials for {tenant}/{provider}",
         )
     return creds
+
+
+_GOOGLE_SERVICES = ("analytics", "search_console", "ads")
+
+
+@app.post("/oauth/ghl/callback/{tenant}")
+async def post_ghl_callback(
+    tenant: str,
+    req: GhlCallbackRequest,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Complete a GHL OAuth round-trip for *tenant*.
+
+    MCP proxies external GHL redirects here with a system token. Returns
+    the stored credentials dict.
+    """
+    entry = _verify_bearer(authorization)
+    _require_system_or_admin(entry)
+
+    from sos.services.integrations.oauth import TenantIntegrations
+
+    integrations = TenantIntegrations(tenant)
+    return await integrations.handle_ghl_callback(req.code)
+
+
+@app.post("/oauth/google/callback/{tenant}")
+async def post_google_callback(
+    tenant: str,
+    req: GoogleCallbackRequest,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Complete a Google OAuth round-trip for *tenant* + *service*.
+
+    MCP proxies external Google redirects here with a system token.
+    ``service`` must be one of analytics, search_console, ads.
+    """
+    entry = _verify_bearer(authorization)
+    _require_system_or_admin(entry)
+
+    if req.service not in _GOOGLE_SERVICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown google service: {req.service}",
+        )
+
+    from sos.services.integrations.oauth import TenantIntegrations
+
+    integrations = TenantIntegrations(tenant)
+    return await integrations.handle_google_callback(req.code, req.service)  # type: ignore[arg-type]

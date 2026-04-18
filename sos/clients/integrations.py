@@ -76,6 +76,37 @@ class AsyncIntegrationsClient(AsyncBaseHTTPClient):
             raise
         return resp.json()
 
+    async def handle_ghl_callback(
+        self, tenant: str, code: str
+    ) -> Dict[str, Any]:
+        """POST /oauth/ghl/callback/{tenant} — finalize GHL OAuth.
+
+        MCP proxies here after the external GHL redirect lands. The
+        integrations service owns the token exchange and storage.
+        """
+        resp = await self._request(
+            "POST",
+            f"/oauth/ghl/callback/{tenant}",
+            json={"code": code},
+            headers=_auth_headers(self._token),
+        )
+        return resp.json()
+
+    async def handle_google_callback(
+        self, tenant: str, code: str, service: str
+    ) -> Dict[str, Any]:
+        """POST /oauth/google/callback/{tenant} — finalize Google OAuth.
+
+        ``service`` is one of ``analytics``, ``search_console``, ``ads``.
+        """
+        resp = await self._request(
+            "POST",
+            f"/oauth/google/callback/{tenant}",
+            json={"code": code, "service": service},
+            headers=_auth_headers(self._token),
+        )
+        return resp.json()
+
 
 class IntegrationsClient(BaseHTTPClient):
     """Synchronous HTTP client for the Integrations service."""
@@ -107,4 +138,28 @@ class IntegrationsClient(BaseHTTPClient):
             if exc.status_code == 404:
                 return None
             raise
+        return resp.json()
+
+    def handle_ghl_callback(
+        self, tenant: str, code: str
+    ) -> Dict[str, Any]:
+        """POST /oauth/ghl/callback/{tenant} — finalize GHL OAuth."""
+        resp = self._request(
+            "POST",
+            f"/oauth/ghl/callback/{tenant}",
+            json={"code": code},
+            headers=_auth_headers(self._token),
+        )
+        return resp.json()
+
+    def handle_google_callback(
+        self, tenant: str, code: str, service: str
+    ) -> Dict[str, Any]:
+        """POST /oauth/google/callback/{tenant} — finalize Google OAuth."""
+        resp = self._request(
+            "POST",
+            f"/oauth/google/callback/{tenant}",
+            json={"code": code, "service": service},
+            headers=_auth_headers(self._token),
+        )
         return resp.json()
