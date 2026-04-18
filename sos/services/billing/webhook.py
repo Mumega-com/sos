@@ -18,11 +18,17 @@ from fastapi.responses import JSONResponse
 
 from sos.services.billing.provision import provision_tenant
 from sos.contracts.tenant import TenantCreate, TenantPlan, TenantUpdate, TenantStatus
-from sos.services.saas.registry import TenantRegistry
+from sos.clients.saas import AsyncSaasClient
 
 log = logging.getLogger("sos.billing.webhook")
 
-_registry = TenantRegistry()
+
+def _saas_client() -> AsyncSaasClient:
+    """Lazy construction so tests can override SOS_SAAS_URL/token per test."""
+    return AsyncSaasClient(
+        base_url=os.environ.get("SOS_SAAS_URL", "http://localhost:8075")
+    )
+
 
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
@@ -69,16 +75,21 @@ async def handle_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
 
     log.info("Provisioning tenant %s (%s) from Stripe checkout", slug, customer_email)
 
-    # Register in SaaS tenant registry
+    saas = _saas_client()
+
+    # Register in SaaS tenant registry — TenantCreate is kept as the type
+    # contract (sos.contracts.tenant) but we serialize it to a dict for
+    # the HTTP boundary.
     plan_map = {"seo": TenantPlan.STARTER, "seo-ads": TenantPlan.GROWTH, "full": TenantPlan.SCALE}
     plan = plan_map.get(metadata.get("plan", ""), TenantPlan.STARTER)
     try:
-        tenant = _registry.create(TenantCreate(
+        payload = TenantCreate(
             slug=slug, label=label, email=customer_email, plan=plan,
             domain=metadata.get("domain"),
             industry=metadata.get("industry"),
             tagline=metadata.get("tagline"),
-        ))
+        ).model_dump(mode="json")
+        await saas.create_tenant(payload)
         log.info("Tenant %s registered in SaaS registry (plan=%s)", slug, plan.value)
     except Exception as exc:
         log.error("SaaS registry insert failed for %s (non-blocking): %s", slug, exc)
@@ -89,7 +100,7 @@ async def handle_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
     bus_token = result.get("bus_token", "")
     if bus_token and result.get("status") == "provisioned":
         try:
-            _registry.activate(slug, squad_id=slug, bus_token=bus_token)
+            await saas.activate_tenant(slug, squad_id=slug, bus_token=bus_token)
             log.info("Tenant %s activated in SaaS registry", slug)
         except Exception as exc:
             log.error("SaaS registry activation failed for %s: %s", slug, exc)
@@ -125,7 +136,10 @@ async def handle_subscription_deleted(subscription: dict[str, Any]) -> dict[str,
     # Suspend in SaaS registry
     if slug:
         try:
-            _registry.update(slug, TenantUpdate(status=TenantStatus.CANCELLED))
+            update = TenantUpdate(status=TenantStatus.CANCELLED).model_dump(
+                mode="json", exclude_none=True
+            )
+            await _saas_client().update_tenant(slug, update)
             log.info("Tenant %s cancelled in SaaS registry", slug)
         except Exception as exc:
             log.error("SaaS registry cancel failed for %s: %s", slug, exc)

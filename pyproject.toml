@@ -210,9 +210,9 @@ modules = [
 unmatched_ignore_imports_alerting = "none"
 ignore_imports = [
   # Known P0 violations — v0.4.5 closes each via bus events or HTTP.
-  # P0-01 billing.webhook → saas
-  "sos.services.billing.** -> sos.services.saas.**",
-  "sos.services.billing.** -> sos.services.economy.**",
+  # P0-01 closed in v0.4.5 wave 9 — billing.webhook now uses
+  # sos.clients.saas.AsyncSaasClient (HTTP). No billing→economy leak
+  # remains either (provisioning never imported economy directly).
   # P0-02 closed in v0.4.5 wave 7 — engine.core used redundant in-proc
   # ToolsCore alongside ToolsClient; removed and routed through HTTP client.
   # P0-04, P0-05 closed in v0.4.5 wave 1 — squad emits task.completed;
