@@ -2,6 +2,57 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.7.2] - 2026-04-18 — AgentCard registry surface
+
+**Release theme: "Inkwell (and anyone else) can now ask *which agent is live right now.*"**
+
+Exposes the runtime AgentCard overlay (session/pid/host/warm_policy/
+last_seen/cache_ttl_s/plan) as a first-class HTTP surface on the
+registry, parallel to the existing soul-level `/agents` endpoint. The
+`AgentCard` Pydantic contract + JSON Schema have existed since v0.4;
+v0.7.2 wires Redis read/write helpers and the HTTP routes that let
+operator UIs consume them.
+
+### Added
+
+- `sos/services/registry/__init__.py`:
+  - `read_all_cards(project)` — scan `sos:cards[:<project>]:*`, return
+    parsed `AgentCard` list. Fail-soft (`[]` on Redis miss) to match
+    `read_all`.
+  - `read_card(agent_name, project)` — single-card lookup, strips
+    `agent:` prefix for convenience.
+  - `write_card(card, project, ttl_seconds=300)` — HSET the card's
+    flat Redis hash under `sos:cards[:<project>]:<name>` with a
+    heartbeat-style TTL so dead agents expire on their own.
+- `sos/services/registry/app.py`:
+  - `GET /agents/cards?project=<slug>` — Bearer auth,
+    `registry:cards_list` gate action, reuses
+    `_resolve_project_scope` so scoped tokens are forced to their own
+    project.
+  - `GET /agents/cards/{agent_name}` — 404 when no card is
+    registered, 403 on cross-project scope mismatch.
+  - Both routes are declared *before* `/agents/{agent_id}` so
+    `cards` is never captured as an agent_id path param.
+- Tests: `tests/services/test_registry_cards.py` — 9 tests covering
+  401/empty/full-roundtrip/404/cross-project-403/scope-forced-to-own-
+  project/route-ordering-regression-guard.
+
+### Redis key format
+
+- `sos:cards:<agent_name>` (no project)
+- `sos:cards:<project>:<agent_name>` (project-scoped)
+
+Cards never collide with `sos:registry:` identity hashes.
+
+### Verified
+
+- 9/9 new tests green.
+- Existing registry regression: 25 passed + 5 skipped in
+  `tests/services/test_registry*.py` + `tests/contracts/test_agent_card.py`.
+- `.venv/bin/lint-imports` green (4 contracts kept).
+
+---
+
 ## [0.7.1] - 2026-04-18 — /sos/traces HTML UI
 
 **Release theme: "Read one trace without `jq`."**

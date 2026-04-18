@@ -35,7 +35,7 @@ from sos.kernel.health import health_response
 from sos.kernel.policy.gate import can_execute
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
-from sos.services.registry import read_all, read_one
+from sos.services.registry import read_all, read_all_cards, read_card, read_one
 
 SERVICE_NAME = "registry"
 DEFAULT_PORT = 6067
@@ -188,6 +188,72 @@ async def list_agents(
     agents = read_all(project=effective_project)
     items: List[Dict[str, Any]] = [a.to_dict() for a in agents]
     return {"agents": items, "count": len(items)}
+
+
+# ---------------------------------------------------------------------------
+# AgentCard routes — v0.7.2 runtime overlay (registered BEFORE ``/agents/{id}``
+# so ``cards`` is never captured as an ``agent_id`` path param).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/agents/cards")
+async def list_agent_cards(
+    project: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Return all runtime AgentCards, optionally filtered by ``project``.
+
+    Cards carry operational state (session/pid/host/warm_policy/last_seen)
+    on top of the soul-level AgentIdentity returned by ``/agents``.
+    Returns an empty list if Redis is unreachable — matches ``read_all_cards``.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:cards_list",
+        resource=project or "mumega",
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    entry = _verify_bearer(authorization)
+    effective_project = _resolve_project_scope(entry, project)
+
+    cards = read_all_cards(project=effective_project)
+    items: List[Dict[str, Any]] = [c.model_dump() for c in cards]
+    return {"cards": items, "count": len(items)}
+
+
+@app.get("/agents/cards/{agent_name}")
+async def get_agent_card(
+    agent_name: str,
+    project: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Return a single AgentCard by name, or 404 if no card is registered."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:card_read",
+        resource=agent_name,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    entry = _verify_bearer(authorization)
+    effective_project = _resolve_project_scope(entry, project)
+
+    card = read_card(agent_name, project=effective_project)
+    if card is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no card for agent {agent_name!r}",
+        )
+    return card.model_dump()
 
 
 @app.get("/agents/{agent_id}")

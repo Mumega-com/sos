@@ -6,6 +6,16 @@ hashes directly. This guarantees every agent entry is deserialized through
 AgentIdentity so the shape is always typed and consistent.
 
 Redis key format: sos:registry[:<project>]:<agent_name_or_id>
+
+v0.7.2 adds a second, parallel keyspace for runtime AgentCards:
+
+    sos:cards[:<project>]:<agent_name>
+
+AgentCard is the operational overlay (session, pid, host, warm_policy,
+last_seen, cache_ttl_s, plan) that Inkwell and other operator UIs need
+to render *which* agent is alive *right now* on *what* host. The
+soul-level AgentIdentity keyspace above is unchanged — cards reference
+their identity via ``identity_id`` (pattern ``agent:<slug>``).
 """
 from __future__ import annotations
 
@@ -14,6 +24,7 @@ import logging
 import os
 from typing import Any, Optional
 
+from sos.contracts.agent_card import AgentCard
 from sos.kernel.identity import (
     AgentDNA,
     AgentEconomics,
@@ -217,3 +228,82 @@ def write(
             r.expire(key, ttl_seconds)
     except Exception:
         logger.warning("Failed to write agent %s to registry", ident.name, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# AgentCard helpers (runtime overlay) — v0.7.2
+# ---------------------------------------------------------------------------
+#
+# Cards live under ``sos:cards[:<project>]:<agent_name>`` so they never
+# collide with AgentIdentity hashes under ``sos:registry:``.  The contract
+# (sos/contracts/agent_card.py) already defines to_redis_hash /
+# from_redis_hash; this module just wires Redis I/O and scope handling
+# around those helpers.
+
+
+def _cards_key_prefix(project: str | None = None) -> str:
+    if project:
+        return f"sos:cards:{project}:"
+    return "sos:cards:"
+
+
+def read_all_cards(project: str | None = None) -> list[AgentCard]:
+    """Scan ``sos:cards[:<project>]:*`` and return every parseable AgentCard.
+
+    Returns an empty list if Redis is unreachable or no cards are
+    registered — matches the fail-soft behaviour of ``read_all``.
+    """
+    try:
+        r = _get_redis()
+        prefix = _cards_key_prefix(project)
+        keys = r.keys(f"{prefix}*")
+        cards: list[AgentCard] = []
+        for key in keys:
+            try:
+                data = r.hgetall(key)
+                if not data:
+                    continue
+                cards.append(AgentCard.from_redis_hash(data))
+            except Exception:
+                logger.debug("Failed to parse card at %s", key, exc_info=True)
+        return cards
+    except Exception:
+        logger.debug("Redis unreachable in registry.read_all_cards", exc_info=True)
+        return []
+
+
+def read_card(agent_name: str, project: str | None = None) -> Optional[AgentCard]:
+    """Read one AgentCard by agent name (strips an ``agent:`` prefix)."""
+    name = agent_name.removeprefix("agent:")
+    try:
+        r = _get_redis()
+        key = f"{_cards_key_prefix(project)}{name}"
+        data = r.hgetall(key)
+        if not data:
+            return None
+        return AgentCard.from_redis_hash(data)
+    except Exception:
+        logger.debug("Redis unreachable in registry.read_card", exc_info=True)
+        return None
+
+
+def write_card(
+    card: AgentCard,
+    project: str | None = None,
+    ttl_seconds: int = 300,
+) -> None:
+    """HSET an AgentCard under ``sos:cards[:<project>]:<card.name>`` with TTL.
+
+    Cards are heartbeat-style state: the TTL defaults to 300s so stale
+    entries expire on their own if an agent dies without cleanup. The
+    ``project`` arg should match ``card.project`` when that is set;
+    callers that mix the two get whatever they asked for, no enforcement.
+    """
+    try:
+        r = _get_redis()
+        key = f"{_cards_key_prefix(project)}{card.name}"
+        r.hset(key, mapping=card.to_redis_hash())
+        if ttl_seconds > 0:
+            r.expire(key, ttl_seconds)
+    except Exception:
+        logger.warning("Failed to write card %s to registry", card.name, exc_info=True)
