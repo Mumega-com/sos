@@ -21,6 +21,18 @@ from sos.kernel.identity import AgentIdentity
 from sos.services.brain import service as brain_service
 from sos.services.brain.service import BrainService
 
+
+def _patch_registry(monkeypatch: pytest.MonkeyPatch, agents: list) -> None:
+    """Mock the Brain's AsyncRegistryClient.list_agents to return *agents*.
+
+    P0-09 replaced the direct ``registry_read_all`` function import with an
+    async HTTP client on the module (``_registry_client``). Tests monkeypatch
+    that client's ``list_agents`` coroutine so no real registry is needed.
+    """
+    async def _list_agents():
+        return list(agents)
+    monkeypatch.setattr(brain_service._registry_client, "list_agents", _list_agents)
+
 _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
 _TASKS_STREAM = "sos:stream:global:squad:tasks"
 _AGENTS_STREAM = "sos:stream:global:agent:events"
@@ -110,11 +122,7 @@ async def test_task_created_dispatches_when_matching_agent_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc, fake = await _make_service()
-    monkeypatch.setattr(
-        brain_service,
-        "registry_read_all",
-        lambda: [_agent("hermes", ["wordpress"])],
-    )
+    _patch_registry(monkeypatch, [_agent("hermes", ["wordpress"])])
 
     await fake.xadd(
         _TASKS_STREAM,
@@ -134,11 +142,7 @@ async def test_task_created_no_match_keeps_in_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc, fake = await _make_service()
-    monkeypatch.setattr(
-        brain_service,
-        "registry_read_all",
-        lambda: [_agent("rusty", ["rust"])],
-    )
+    _patch_registry(monkeypatch, [_agent("rusty", ["rust"])])
 
     await fake.xadd(
         _TASKS_STREAM,
@@ -160,7 +164,7 @@ async def test_agent_joined_triggers_drain(
     svc, fake = await _make_service()
 
     # Phase 1 — registry empty; both tasks queue up with no routing.
-    monkeypatch.setattr(brain_service, "registry_read_all", lambda: [])
+    _patch_registry(monkeypatch, [])
     await fake.xadd(
         _TASKS_STREAM,
         _make_task_created_fields(
@@ -178,11 +182,7 @@ async def test_agent_joined_triggers_drain(
     assert await _emitted_routed(fake) == []
 
     # Phase 2 — hermes registers; agent_joined triggers drain.
-    monkeypatch.setattr(
-        brain_service,
-        "registry_read_all",
-        lambda: [_agent("hermes", ["wordpress"])],
-    )
+    _patch_registry(monkeypatch, [_agent("hermes", ["wordpress"])])
     await fake.xadd(_AGENTS_STREAM, _make_agent_joined_fields("hermes"))
     await svc._tick()
 
@@ -196,11 +196,7 @@ async def test_routed_payload_is_valid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc, fake = await _make_service()
-    monkeypatch.setattr(
-        brain_service,
-        "registry_read_all",
-        lambda: [_agent("hermes", ["wordpress"])],
-    )
+    _patch_registry(monkeypatch, [_agent("hermes", ["wordpress"])])
 
     await fake.xadd(
         _TASKS_STREAM,
@@ -228,11 +224,7 @@ async def test_routing_decision_recorded_in_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc, fake = await _make_service()
-    monkeypatch.setattr(
-        brain_service,
-        "registry_read_all",
-        lambda: [_agent("hermes", ["wordpress"])],
-    )
+    _patch_registry(monkeypatch, [_agent("hermes", ["wordpress"])])
 
     await fake.xadd(
         _TASKS_STREAM,
