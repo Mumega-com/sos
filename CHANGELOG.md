@@ -2,6 +2,66 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.6] - 2026-04-18 — R2 sweep (clients/adapters/cli/agents)
+
+Closes the P1 micro-kernel violations where non-service code reached into
+service internals. Every fix routes through an HTTP client (or inlined env
+read). `lint-imports`: **4 kept, 0 broken.** R2 `ignore_imports` shrinks
+from 10 entries to 5; the remaining 5 are a documented R2 backlog
+(P1-01 MCP gateway, `sos.adapters.telegram` → economy metabolism, and
+three `sos.cli` → service `__main__` dispatcher entries — legitimate
+packaging pattern pending the v0.5 CLI split).
+
+### P1 closures
+
+- **P1-07 — `clients/operations` → runner over HTTP.** Was importing
+  `sos.services.operations.runner` in-process. Now routes through
+  `BaseHTTPClient` against the ops runner.
+- **P1-02 — `adapters/router` → `clients/economy`.** `ModelRouter` no
+  longer imports `sos.services.economy.wallet.SovereignWallet`; it debits
+  via `EconomyClient` (HTTP). Concrete LLM adapters (`ClaudeAdapter`,
+  `GeminiAdapter`, `OpenAIAdapter`) are now lazy-loaded through a module
+  `__getattr__` so optional extras (`gemini`, `openai`) don't fail at
+  import time.
+- **P1-04 — `agents/shabrang` standalone mining daemon.** Dropped the
+  `SOSEngine` base class (never used its chat capability). Now a plain
+  `ShabrangAgent` built on `CoherencePhysics` + `MirrorClient` + `Config`.
+- **P1-05 — `agents/join` drives journeys via HTTP.** New FastAPI app at
+  `sos/services/journeys/app.py` (port 6070) and matching
+  `sos.clients.journeys.{JourneysClient, AsyncJourneysClient}`.
+  `agents/join` no longer imports `JourneyTracker` or `SYSTEM_TOKEN` from
+  squad — admin token resolves from `SOS_ADMIN_TOKEN` /
+  `SOS_SYSTEM_TOKEN` env.
+- **P1-06 — `cli/onboard` uses `SaasClient`.** Tenant CRUD now flows
+  through `sos.clients.saas.SaasClient` +
+  `sos.contracts.tenant.TenantCreate` (`model_dump(mode="json")` for
+  enum serialization). Drops the two in-process imports of
+  `sos.services.saas.registry` and `.models`.
+
+### Tests
+
+- `tests/clients/test_no_service_imports.py` — AST sweep asserting
+  no module under `sos/clients/` imports `sos.services.*`.
+- `tests/adapters/test_router_economy_client.py` — 6 tests covering
+  `_record_cost` debit flow + default wallet factory.
+- `tests/agents/shabrang/test_shabrang_decoupled.py` — 3 tests: no engine
+  leak, no `SOSEngine` base, constructs without LLM SDKs.
+- `tests/clients/test_journeys_client.py` — 7 tests for sync + async
+  client endpoint mapping and token resolution.
+- `tests/agents/test_join_decoupled.py` — 4 tests for no squad/journeys
+  leak + env-driven admin token.
+- `tests/cli/test_onboard_decoupled.py` — 4 tests: AST sweep, SaasClient
+  import, singleton cache, end-to-end mock of `create_tenant` +
+  `activate_tenant`.
+
+### Side fixes
+
+- `SOSLogger` has no `.warning` method — fixed 4 pre-existing
+  `log.warning(...)` calls in `sos/adapters/router.py` to use `.warn`.
+- `sos/services/journeys/app.py` registers via
+  `sos.services.bus.discovery.register_service` on startup (R1 carve-out
+  for `services→bus` is the documented P1-10 theme).
+
 ## [0.4.8] - 2026-04-18 — Repo hygiene
 
 Pure `git mv` + path updates. Zero behavior change. `lint-imports`:
