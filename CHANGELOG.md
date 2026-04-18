@@ -2,6 +2,73 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.5.4] - 2026-04-18 — SaaS audit-wrapper
+
+**Release theme: "The audit spine reaches the services the gate cannot."**
+
+v0.5.3 generalized `can_execute()` across every service whose auth fit the
+kernel gate's 5-pillar model. `saas` doesn't — it runs two orthogonal auth
+systems (master-key admin + tokens.json-hash customer lookup with sqlite
+fallback) that the gate was never designed for. Rather than cram the saas
+tables into kernel auth (duplication), v0.5.4 wraps the native auth deps
+with audit emission so every authenticated saas call writes one
+`POLICY_DECISION` event on the kernel spine.
+
+### Added (`sos/services/saas/app.py`)
+
+- `_emit_policy(agent, action, target, tenant, allowed, reason, tier)` —
+  async helper around `kernel.audit.append_event` + `new_event`. Wraps the
+  call in try/except at debug so audit failures never break a request.
+- `audited_admin(action: str)` — FastAPI dep factory. Wraps `require_admin`;
+  emits `POLICY_DECISION` with `policy_tier="saas_admin"` on both allow
+  (agent="admin", reason="master_key") and deny (agent="anonymous", reason
+  from HTTPException detail). Re-raises on deny.
+- `audited_customer(action: str)` — mirror of above for `require_customer`;
+  `policy_tier="saas_customer"`. Preserves the `-> str` (tenant_slug)
+  return contract so existing route bodies are unchanged.
+
+### Routes migrated (40)
+
+- **Admin (29):** every `_: None = Depends(require_admin)` now reads
+  `_: None = Depends(audited_admin("saas:<action>"))`. Actions cover
+  tenants (create/list/read/update/activate/suspend), seats, billing/usage,
+  rate-limit, marketplace, notifications, onboarding, builds, domains.
+- **Customer (11):** every `tenant_slug: str = Depends(require_customer)`
+  now reads `tenant_slug: str = Depends(audited_customer("saas:<action>"))`.
+  Covers my_connect/dashboard/wallet/transactions/tasks/squads/activity/
+  invite/chat.
+
+Public/webhook routes (`/`, `/health`, `/auth/*`, `/webhooks/*`, `/signup`,
+`/billing/webhook`, `/resolve/{hostname}`) are untouched — they have their
+own signature/IP verification.
+
+### Why not `can_execute()`
+
+`saas` admin is an env-secret (`MUMEGA_MASTER_KEY`), not a token row.
+`saas` customer auth hashes `sk-{slug}-{hex}` into `tokens.json` with a
+sqlite `bus_token` fallback. Forcing these through the gate would either
+register every secret in kernel auth (two sources of truth) or short-
+circuit the gate's first pillar (defeats the point). Audit-wrapper is the
+honest middle path: keep the service-native auth, add the kernel-
+observable record.
+
+### Proof
+
+- `pytest tests/test_saas_api.py` — 9/9 green, no regressions.
+- `require_admin` / `require_customer` still exist at the exact same call
+  sites inside the new factories — the real auth work is unchanged.
+- Every authenticated route emits one `POLICY_DECISION` event per call
+  (allow or deny path).
+
+### Deferred to v0.5.5 + v0.5.6
+
+- **v0.5.5** — `sos/services/squad/*`. Squad's auth fits the gate's
+  existing `capability` parameter; direct `can_execute` integration.
+- **v0.5.6** — `sos/services/gateway/bridge.py`. External-agent API keys;
+  same audit-wrapper pattern as saas.
+
+---
+
 ## [0.5.3] - 2026-04-18 — Gate mop-up, wave 1
 
 **Release theme: "The gate's reach expands."**

@@ -125,6 +125,68 @@ def require_customer(credentials: HTTPAuthorizationCredentials | None = Depends(
     raise HTTPException(401, detail="unauthorized")
 
 
+# --- Audit-wrapper helpers ---
+
+
+async def _emit_policy(
+    *, agent: str, action: str, target: str, tenant: str,
+    allowed: bool, reason: str, tier: str,
+) -> None:
+    """Emit one POLICY_DECISION to the audit spine. Never raises."""
+    from sos.kernel.audit import append_event, new_event
+    from sos.contracts.audit import AuditDecision, AuditEventKind
+    try:
+        await append_event(new_event(
+            agent=agent,
+            tenant=tenant,
+            kind=AuditEventKind.POLICY_DECISION,
+            action=action,
+            target=target,
+            decision=AuditDecision.ALLOW if allowed else AuditDecision.DENY,
+            reason=reason,
+            policy_tier=tier,
+        ))
+    except Exception as exc:
+        log.debug("audit emit failed (non-fatal): %s", exc)
+
+
+def audited_admin(action: str):
+    """Factory: FastAPI dep that enforces admin auth AND audits the decision."""
+    async def _dep(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
+        try:
+            require_admin(credentials)
+        except HTTPException as exc:
+            await _emit_policy(
+                agent="anonymous", action=action, target="admin", tenant="mumega",
+                allowed=False, reason=str(exc.detail), tier="saas_admin",
+            )
+            raise
+        await _emit_policy(
+            agent="admin", action=action, target="admin", tenant="mumega",
+            allowed=True, reason="master_key", tier="saas_admin",
+        )
+    return _dep
+
+
+def audited_customer(action: str):
+    """Factory: FastAPI dep that enforces customer auth, audits, returns tenant_slug."""
+    async def _dep(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> str:
+        try:
+            tenant_slug = require_customer(credentials)
+        except HTTPException as exc:
+            await _emit_policy(
+                agent="anonymous", action=action, target="customer", tenant="unknown",
+                allowed=False, reason=str(exc.detail), tier="saas_customer",
+            )
+            raise
+        await _emit_policy(
+            agent="customer", action=action, target=tenant_slug, tenant=tenant_slug,
+            allowed=True, reason="tenant_token", tier="saas_customer",
+        )
+        return tenant_slug
+    return _dep
+
+
 @app.get("/", response_class=HTMLResponse)
 def landing():
     """Self-serve signup page."""
@@ -139,7 +201,7 @@ def health():
 
 
 @app.post("/tenants")
-async def create_tenant(req: TenantCreate, _: None = Depends(require_admin)):
+async def create_tenant(req: TenantCreate, _: None = Depends(audited_admin("saas:tenant_create"))):
     existing = registry.get(req.slug)
     if existing:
         raise HTTPException(409, f"Tenant {req.slug} already exists")
@@ -150,13 +212,13 @@ async def create_tenant(req: TenantCreate, _: None = Depends(require_admin)):
 
 
 @app.get("/tenants")
-def list_tenants(status: Optional[str] = None, _: None = Depends(require_admin)):
+def list_tenants(status: Optional[str] = None, _: None = Depends(audited_admin("saas:tenants_list"))):
     tenants = registry.list(status=status)
     return {"tenants": [t.model_dump() for t in tenants], "count": len(tenants)}
 
 
 @app.get("/tenants/{slug}")
-def get_tenant(slug: str, _: None = Depends(require_admin)):
+def get_tenant(slug: str, _: None = Depends(audited_admin("saas:tenant_read"))):
     tenant = registry.get(slug)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -164,7 +226,7 @@ def get_tenant(slug: str, _: None = Depends(require_admin)):
 
 
 @app.put("/tenants/{slug}")
-def update_tenant(slug: str, req: TenantUpdate, _: None = Depends(require_admin)):
+def update_tenant(slug: str, req: TenantUpdate, _: None = Depends(audited_admin("saas:tenant_update"))):
     tenant = registry.update(slug, req)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -177,7 +239,7 @@ class ActivateRequest(BaseModel):
 
 
 @app.post("/tenants/{slug}/activate")
-def activate_tenant(slug: str, req: ActivateRequest, _: None = Depends(require_admin)):
+def activate_tenant(slug: str, req: ActivateRequest, _: None = Depends(audited_admin("saas:tenant_activate"))):
     tenant = registry.activate(slug, req.squad_id, req.bus_token)
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -186,7 +248,7 @@ def activate_tenant(slug: str, req: ActivateRequest, _: None = Depends(require_a
 
 
 @app.post("/tenants/{slug}/suspend")
-def suspend_tenant(slug: str, _: None = Depends(require_admin)):
+def suspend_tenant(slug: str, _: None = Depends(audited_admin("saas:tenant_suspend"))):
     tenant = registry.update(slug, TenantUpdate(status=TenantStatus.SUSPENDED))
     if not tenant:
         raise HTTPException(404, f"Tenant {slug} not found")
@@ -198,7 +260,7 @@ def suspend_tenant(slug: str, _: None = Depends(require_admin)):
 
 
 @app.post("/tenants/{slug}/seats")
-def create_seat(slug: str, req: CreateSeatRequest, _: None = Depends(require_admin)):
+def create_seat(slug: str, req: CreateSeatRequest, _: None = Depends(audited_admin("saas:seat_create"))):
     """Create a new seat (additional MCP token) for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -237,7 +299,7 @@ def create_seat(slug: str, req: CreateSeatRequest, _: None = Depends(require_adm
 
 
 @app.get("/tenants/{slug}/seats")
-def list_seats(slug: str, _: None = Depends(require_admin)):
+def list_seats(slug: str, _: None = Depends(audited_admin("saas:seats_list"))):
     """List all seats (team members) for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -255,7 +317,7 @@ def list_seats(slug: str, _: None = Depends(require_admin)):
 
 
 @app.delete("/tenants/{slug}/seats/{token_id}")
-def revoke_seat(slug: str, token_id: str, _: None = Depends(require_admin)):
+def revoke_seat(slug: str, token_id: str, _: None = Depends(audited_admin("saas:seat_revoke"))):
     """Revoke a seat by revoking its MCP token."""
     tenant = registry.get(slug)
     if not tenant:
@@ -278,13 +340,13 @@ def resolve_hostname(hostname: str):
 
 
 @app.post("/tenants/{slug}/usage")
-def record_usage(slug: str, metric: str, quantity: int, _: None = Depends(require_admin)):
+def record_usage(slug: str, metric: str, quantity: int, _: None = Depends(audited_admin("saas:usage_record"))):
     billing.record_usage(slug, metric, quantity)
     return {"ok": True}
 
 
 @app.get("/tenants/{slug}/usage")
-def get_usage(slug: str, period: Optional[str] = None, _: None = Depends(require_admin)):
+def get_usage(slug: str, period: Optional[str] = None, _: None = Depends(audited_admin("saas:usage_read"))):
     return billing.get_usage(slug, period)
 
 
@@ -295,7 +357,7 @@ def record_transaction(
     amount_cents: int,
     description: str = "",
     stripe_id: str = "",
-    _: None = Depends(require_admin),
+    _: None = Depends(audited_admin("saas:transaction_record")),
 ):
     tx_id = billing.record_transaction(
         slug, tx_type, amount_cents, description, stripe_id
@@ -304,17 +366,17 @@ def record_transaction(
 
 
 @app.get("/tenants/{slug}/invoice")
-def get_invoice(slug: str, _: None = Depends(require_admin)):
+def get_invoice(slug: str, _: None = Depends(audited_admin("saas:invoice_read"))):
     return billing.get_tenant_invoice(slug)
 
 
 @app.get("/revenue")
-def platform_revenue(period: Optional[str] = None, _: None = Depends(require_admin)):
+def platform_revenue(period: Optional[str] = None, _: None = Depends(audited_admin("saas:revenue_read"))):
     return billing.get_revenue(period=period)
 
 
 @app.get("/tenants/{slug}/audit")
-def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100, _: None = Depends(require_admin)):
+def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100, _: None = Depends(audited_admin("saas:audit_read"))):
     """Query audit log for a tenant."""
     return {"events": get_audit().query(tenant_slug=slug, event_type=event_type, limit=limit)}
 
@@ -332,7 +394,7 @@ class RateLimitCheckRequest(BaseModel):
 
 
 @app.post("/rate-limit/check")
-def rate_limit_check(req: RateLimitCheckRequest, _: None = Depends(require_admin)):
+def rate_limit_check(req: RateLimitCheckRequest, _: None = Depends(audited_admin("saas:rate_limit_check"))):
     """Sliding-window rate-limit check for a tenant."""
     allowed, remaining = _check_rate_limit(req.tenant, req.plan)
     return {"allowed": allowed, "remaining": remaining}
@@ -347,7 +409,7 @@ class AuditToolCallRequest(BaseModel):
 
 
 @app.post("/audit/tool-call")
-def audit_tool_call(req: AuditToolCallRequest, _: None = Depends(require_admin)):
+def audit_tool_call(req: AuditToolCallRequest, _: None = Depends(audited_admin("saas:audit_tool_call"))):
     """Append a tool-call entry to the audit log."""
     _audit_log_tool_call(
         req.tenant, req.tool, actor=req.actor, ip=req.ip, details=req.details
@@ -363,7 +425,7 @@ def marketplace_browse(
     category: Optional[str] = None,
     query: Optional[str] = None,
     limit: int = 20,
-    _: None = Depends(require_admin),
+    _: None = Depends(audited_admin("saas:marketplace_listings_read")),
 ):
     """Browse marketplace listings."""
     return {"listings": _marketplace.browse(category=category, query=query, limit=limit)}
@@ -376,7 +438,7 @@ class MarketplaceSubscribeRequest(BaseModel):
 
 @app.post("/marketplace/subscriptions")
 def marketplace_subscribe(
-    req: MarketplaceSubscribeRequest, _: None = Depends(require_admin)
+    req: MarketplaceSubscribeRequest, _: None = Depends(audited_admin("saas:marketplace_subscribe"))
 ):
     """Subscribe a tenant to a listing."""
     return _marketplace.subscribe(req.tenant, req.listing_id)
@@ -384,7 +446,7 @@ def marketplace_subscribe(
 
 @app.get("/marketplace/subscriptions")
 def marketplace_my_subscriptions(
-    tenant: str = Query(...), _: None = Depends(require_admin)
+    tenant: str = Query(...), _: None = Depends(audited_admin("saas:marketplace_subscriptions_read"))
 ):
     """List active subscriptions for a tenant."""
     return {"subscriptions": _marketplace.my_subscriptions(tenant)}
@@ -403,7 +465,7 @@ class MarketplaceListingCreateRequest(BaseModel):
 
 @app.post("/marketplace/listings")
 def marketplace_create_listing(
-    req: MarketplaceListingCreateRequest, _: None = Depends(require_admin)
+    req: MarketplaceListingCreateRequest, _: None = Depends(audited_admin("saas:marketplace_listing_create"))
 ):
     """Create a new marketplace listing."""
     return _marketplace.create_listing(
@@ -420,7 +482,7 @@ def marketplace_create_listing(
 
 @app.get("/marketplace/earnings")
 def marketplace_earnings(
-    tenant: str = Query(...), _: None = Depends(require_admin)
+    tenant: str = Query(...), _: None = Depends(audited_admin("saas:marketplace_earnings_read"))
 ):
     """Seller earnings summary for a tenant."""
     return _marketplace.my_earnings(tenant)
@@ -439,7 +501,7 @@ class NotificationPreferencesRequest(BaseModel):
 
 
 @app.post("/tenants/{slug}/notifications")
-def set_notification_prefs(slug: str, req: NotificationPreferencesRequest, _: None = Depends(require_admin)):
+def set_notification_prefs(slug: str, req: NotificationPreferencesRequest, _: None = Depends(audited_admin("saas:notifications_set"))):
     """Configure notification preferences for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -460,7 +522,7 @@ def set_notification_prefs(slug: str, req: NotificationPreferencesRequest, _: No
 
 
 @app.get("/tenants/{slug}/notifications")
-def get_notification_prefs(slug: str, _: None = Depends(require_admin)):
+def get_notification_prefs(slug: str, _: None = Depends(audited_admin("saas:notifications_read"))):
     """Get notification preferences for a tenant."""
     tenant = registry.get(slug)
     if not tenant:
@@ -492,7 +554,7 @@ class OnboardRequest(BaseModel):
 
 
 @app.post("/onboard")
-async def onboard_customer(req: OnboardRequest, _: None = Depends(require_admin)):
+async def onboard_customer(req: OnboardRequest, _: None = Depends(audited_admin("saas:customer_onboard"))):
     """Full onboarding: questionnaire -> tenant -> squad -> build -> live site."""
     # Generate slug from business name
     slug = re.sub(r"[^a-z0-9]+", "-", req.business_name.lower()).strip("-")[:32]
@@ -748,13 +810,13 @@ build_queue = BuildQueue()
 
 
 @app.post("/builds/enqueue/{slug}")
-def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0, _: None = Depends(require_admin)):
+def enqueue_build(slug: str, trigger: str = "manual", priority: int = 0, _: None = Depends(audited_admin("saas:build_enqueue"))):
     build_queue.enqueue(slug, trigger, priority)
     return {"queued": True, "queue_length": build_queue.queue_length()}
 
 
 @app.get("/builds/status")
-def build_status(_: None = Depends(require_admin)):
+def build_status(_: None = Depends(audited_admin("saas:build_status"))):
     return build_queue.get_status()
 
 
@@ -766,13 +828,13 @@ domain_mgr = DomainManager(registry)
 
 
 @app.post("/tenants/{slug}/domain")
-async def set_custom_domain(slug: str, domain: str, _: None = Depends(require_admin)):
+async def set_custom_domain(slug: str, domain: str, _: None = Depends(audited_admin("saas:domain_set"))):
     result = await domain_mgr.provision_custom_domain(slug, domain)
     return result
 
 
 @app.delete("/tenants/{slug}/domain")
-async def remove_custom_domain(slug: str, _: None = Depends(require_admin)):
+async def remove_custom_domain(slug: str, _: None = Depends(audited_admin("saas:domain_remove"))):
     result = await domain_mgr.remove_custom_domain(slug)
     return result
 
@@ -1113,7 +1175,7 @@ class CreateTaskRequest(BaseModel):
 
 
 @app.get("/my/connect")
-def my_connect(tenant_slug: str = Depends(require_customer)):
+def my_connect(tenant_slug: str = Depends(audited_customer("saas:my_connect"))):
     """Return MCP connection configs so the customer can always find their connect instructions."""
     tenant = registry.get(tenant_slug)
     if not tenant:
@@ -1137,7 +1199,7 @@ def my_connect(tenant_slug: str = Depends(require_customer)):
 
 
 @app.get("/my/dashboard")
-def my_dashboard(tenant_slug: str = Depends(require_customer)):
+def my_dashboard(tenant_slug: str = Depends(audited_customer("saas:my_dashboard"))):
     """Return tenant info + KPIs: wallet balance, task counts, content count."""
     tenant = registry.get(tenant_slug)
     if not tenant:
@@ -1188,7 +1250,7 @@ def my_dashboard(tenant_slug: str = Depends(require_customer)):
 
 
 @app.get("/my/wallet")
-def my_wallet(tenant_slug: str = Depends(require_customer)):
+def my_wallet(tenant_slug: str = Depends(audited_customer("saas:my_wallet"))):
     """Return wallet balance and totals for this tenant."""
     try:
         conn = _squads_db()
@@ -1209,7 +1271,7 @@ def my_wallet(tenant_slug: str = Depends(require_customer)):
 
 @app.get("/my/transactions")
 def my_transactions(
-    tenant_slug: str = Depends(require_customer),
+    tenant_slug: str = Depends(audited_customer("saas:my_transactions")),
     limit: int = Query(50, ge=1, le=200),
     type: Optional[str] = Query(None, description="earn | spend"),
 ):
@@ -1236,7 +1298,7 @@ def my_transactions(
 
 @app.get("/my/tasks")
 def my_tasks(
-    tenant_slug: str = Depends(require_customer),
+    tenant_slug: str = Depends(audited_customer("saas:my_tasks_list")),
     status: Optional[str] = Query(None, description="backlog | claimed | done"),
     limit: int = Query(50, ge=1, le=200),
 ):
@@ -1262,7 +1324,7 @@ def my_tasks(
 
 
 @app.post("/my/tasks")
-async def create_my_task(req: CreateTaskRequest, tenant_slug: str = Depends(require_customer)):
+async def create_my_task(req: CreateTaskRequest, tenant_slug: str = Depends(audited_customer("saas:my_task_create"))):
     """Create a task for this tenant via the Squad Service."""
     squad_id = req.squad_id or tenant_slug  # default to tenant's own squad
 
@@ -1295,7 +1357,7 @@ async def create_my_task(req: CreateTaskRequest, tenant_slug: str = Depends(requ
 
 
 @app.get("/my/squads")
-def my_squads(tenant_slug: str = Depends(require_customer)):
+def my_squads(tenant_slug: str = Depends(audited_customer("saas:my_squads"))):
     """Return squads that serve this tenant."""
     try:
         conn = _squads_db()
@@ -1312,7 +1374,7 @@ def my_squads(tenant_slug: str = Depends(require_customer)):
 
 
 @app.get("/my/activity")
-def my_activity(tenant_slug: str = Depends(require_customer)):
+def my_activity(tenant_slug: str = Depends(audited_customer("saas:my_activity"))):
     """Return recent completed tasks + events for this tenant (last 20 items)."""
     try:
         conn = _squads_db()
@@ -1360,7 +1422,7 @@ class InviteRequest(BaseModel):
 
 
 @app.post("/my/invite")
-async def invite_team_member(req: InviteRequest, tenant_slug: str = Depends(require_customer)):
+async def invite_team_member(req: InviteRequest, tenant_slug: str = Depends(audited_customer("saas:my_invite"))):
     """Invite a team member by email. Creates a seat token and sends invite email."""
     tenant = registry.get(tenant_slug)
     if not tenant:
@@ -1458,7 +1520,7 @@ class ChatMessage(BaseModel):
 
 
 @app.post("/my/chat")
-async def my_chat(req: ChatMessage, tenant_slug: str = Depends(require_customer)):
+async def my_chat(req: ChatMessage, tenant_slug: str = Depends(audited_customer("saas:my_chat"))):
     """Customer sends a message to their AI squad via chat.
     Proxies to the MCP SSE server's tools or to a configured model."""
     # For v1: create a task from the chat message and return acknowledgment
