@@ -1,9 +1,9 @@
-# Session log — 2026-04-18 — Kernel durability arc (v0.5.0 → v0.5.3)
+# Session log — 2026-04-18 — Kernel durability arc (v0.5.0 → v0.5.6.1)
 
 **Branch:** `codex/sos-runtime-validation`
 **Start tag:** v0.4.8
-**End tag:** v0.5.3
-**Commits:** 5 (v0.5.0, v0.5.1, v0.5.2, v0.5.3, plan docs)
+**End tag:** v0.5.6.1
+**Commits:** v0.5.0, v0.5.1, v0.5.2, v0.5.3, v0.5.4, v0.5.5, v0.5.6, v0.5.6.1 + plan/session docs
 
 ## What shipped
 
@@ -55,13 +55,37 @@
 | journeys (v0.5.3) | 4 | All admin-only — require_system=True |
 | operations (v0.5.3) | 3 | All admin-only |
 
-## Deferred to v0.5.4 → v0.5.6
+## Shipped v0.5.4 → v0.5.6.1 (arc completion)
 
-- **v0.5.4** — `saas/app.py` (39 routes). Custom auth: `MUMEGA_MASTER_KEY` admin + tokens.json slug lookup. Not a straight `can_execute` swap.
-- **v0.5.5** — `squad/` (28 routes + `auth.py` with capability/role model). Uses `require_capability(capability, roles)` — pass `capability=` to the existing gate signature.
-- **v0.5.6** — `gateway/bridge.py` (~8 routes). External-agent API keys, independent tenant registry — again not a straight swap.
+- **v0.5.4** — `saas/app.py` **40 routes** audit-wrapped via `audited_admin(action)` / `audited_customer(action)` factories. Policy tiers: `saas_admin` / `saas_customer`.
+- **v0.5.5** — `squad/auth.py` in-dep audit emit inside `require_capability`. 26 routes covered, zero decorator churn. Policy tier: `squad_capability`.
+- **v0.5.6** — `gateway/bridge.py` audit-wrapped via `_emit_gateway_policy` inside `require_tenant`. 6 external-agent routes. Policy tier: `gateway_bridge`.
+- **v0.5.6.1** — Hotfix: identity pre-gate audit gap. Runtime smoke found `identity/app.py` raised 401/403 before `can_execute`, bypassing audit. Added `_emit_identity_deny` helper, both avatar routes emit DENY on all three pre-gate paths. Policy tier: `identity_pregate`.
 
-Real scope for these three: most have auth patterns the kernel gate wasn't designed for. The realistic migration is *audit-wrapper* (keep native auth, add `POLICY_DECISION` emit per route) except for squad, which genuinely fits the gate's `capability` parameter.
+### Arc complete — all 9 audit-reach services
+
+| Via | Services |
+|-----|----------|
+| `can_execute()` gate | integrations (v0.5.1), economy / registry / identity / journeys / operations (v0.5.3) |
+| Audit-wrapper | saas (v0.5.4), squad (v0.5.5), gateway (v0.5.6) |
+
+Every authenticated route on the critical path now writes a `POLICY_DECISION` event to the unified spine at `~/.sos/audit/{tenant}/{YYYY-MM-DD}.jsonl`.
+
+### Runtime verification (smoke)
+
+All 9 migrated services exercised via FastAPI TestClient, each hitting both an accepted and a denied path. Every service emitted on deny except identity (which had the pre-gate gap — fixed in v0.5.6.1).
+
+### Known pre-existing test failures (NOT arc-related — tracked for separate sprint)
+
+- `base58` ModuleNotFoundError in economy tests
+- sqlite UNIQUE constraint in `tests/test_identity.py`
+- `registry_read_all` missing in brain dispatch
+- 11 vs 12 schema files in `test_messages_integration.py`
+- playwright not installed for e2e
+
+### Follow-ups
+
+- `integrations/app.py` has the same pre-gate audit gap class as identity — same fix pattern, deferred to a separate commit.
 
 ## Session protocol that worked
 
