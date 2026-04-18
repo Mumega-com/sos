@@ -2,6 +2,76 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.4.5] - 2026-04-18 — P0 decoupling sweep
+
+Closes every P0 R1 violation tracked by `pyproject.toml` import-linter
+`ignore_imports`. Services no longer reach across the boundary into
+each other's internals; reads go through `sos.clients.*` (HTTP) and
+writes go through bus events. `lint-imports`: **4 kept, 0 broken.**
+
+### Waves
+
+- **Wave 1 — `squad → health+journeys`** (P0-04, P0-05)
+  squad now emits `task.completed`; `health.bus_consumer` +
+  `journeys.bus_consumer` subscribe with the 5-invariant pattern.
+- **Wave 2 — `content → engine`** (P0-03)
+  `SwarmCouncil` byte-moved to `sos/kernel/council.py`; content calls
+  engine through `AsyncEngineClient` (`ChatRequest`).
+- **Wave 3 — `analytics → integrations`** (P0-06)
+  New `sos/services/integrations/` FastAPI service on port 6066.
+  `sos/clients/integrations.py` — sync + async client with tenant-scoped
+  bearer auth. `analytics/ingest.py` converted to async.
+- **Wave 4 — `autonomy → identity`** (P0-07)
+  `UV16D` moved to `sos/contracts/identity.py`.
+  `sos/clients/identity.py` — `generate_avatar`, `on_alpha_drift`.
+  identity service gains `POST /avatar/generate` + social endpoints.
+- **Wave 5 — `brain → registry`** (P0-09)
+  New `sos/services/registry/` FastAPI service on port 6067.
+  `sos/clients/registry.py` returns `AgentIdentity` (reconstructed from
+  HTTP payloads). brain no longer imports the registry module.
+- **Wave 6 — `dashboard → economy + registry`** (P0-12)
+  `EconomyClient.list_usage` deserializes into typed `UsageEvent`.
+  dashboard `tenants.py` + `routes/sos_operator.py` routed through
+  `EconomyClient` / `RegistryClient`.
+- **Wave 7 — `engine → tools`** (P0-02)
+  Engine held a redundant in-proc `ToolsCore` alongside `ToolsClient`.
+  Removed; chat tool-exec loop routes through the HTTP client.
+- **Wave 8 — conductance → kernel** (P0-10, P0-11)
+  `conductance_*` helpers + `CONDUCTANCE_FILE/ALPHA/GAMMA` moved to
+  `sos/kernel/conductance.py`. `feedback.loop` + `journeys.tracker`
+  import from kernel; `health.calcifer` re-exports for BC.
+- **Wave 9 — `billing → saas`** (P0-01)
+  `sos/clients/saas.py` — sync + async `SaasClient` (admin-key
+  bearer). `billing.webhook` calls `create_tenant` /
+  `activate_tenant` / `cancel_tenant` over HTTP. `TenantCreate` /
+  `TenantUpdate` remain as the type contracts; `.model_dump()` at
+  the HTTP boundary.
+
+### Added
+
+- `sos/kernel/council.py` — `SwarmCouncil` shared between engine + content.
+- `sos/kernel/conductance.py` — conductance matrix, shared kernel primitive.
+- `sos/contracts/identity.py` — `UV16D` as a pure dataclass.
+- `sos/services/integrations/` — oauth-credentials HTTP service.
+- `sos/services/registry/` — agent-roster HTTP service.
+- `sos/clients/integrations.py`, `sos/clients/identity.py`,
+  `sos/clients/registry.py`, `sos/clients/saas.py` — new HTTP clients
+  using the same `BaseHTTPClient` / `AsyncBaseHTTPClient` pattern.
+- Bus consumers: `health.bus_consumer`, `journeys.bus_consumer` — five-
+  invariant Redis consumer pattern.
+
+### Removed
+
+- `sos/services/engine/council.py` — replaced by `kernel/council.py`.
+
+### Structural enforcement
+
+R1 ignore list shrunk from 15 entries (all P0 + P1-10) to just the
+P1-10 `bus.discovery` carve-outs pending kernel move. Every sprint
+from here is P1 cleanup or v0.5 kernel consolidation.
+
+Refs: `docs/plans/2026-04-17-sos-sprint-roadmap.md`
+
 ## [0.4.4] - 2026-04-17 — Structural foundation
 
 ### Added
