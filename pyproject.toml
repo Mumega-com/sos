@@ -165,8 +165,9 @@ ignore_imports = [
   # BaseHTTPClient. Ignore removed.
   # P1-01 MCP gateway — v0.4.7 closes each service namespace in a phase:
   #   Phase 1 (squad) closed — SquadClient + /auth/verify + /api-keys.
-  #   Phases 2-4 (saas, billing, integrations) still pending.
-  "sos.mcp.sos_mcp_sse -> sos.services.saas.**",
+  #   Phase 2 (saas) closed — SaasClient routes rate_limit, audit,
+  #     marketplace, and notification preferences over HTTP.
+  #   Phases 3-4 (billing, integrations) still pending.
   "sos.mcp.sos_mcp_sse -> sos.services.billing.**",
   "sos.mcp.sos_mcp_sse -> sos.services.integrations.**",
 ]

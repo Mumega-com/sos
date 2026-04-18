@@ -19,12 +19,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from sos.services.saas.audit import get_audit, log_admin
+from sos.services.saas.audit import get_audit, log_admin, log_tool_call as _audit_log_tool_call
 from sos.services.saas.billing import SaaSBilling
 from sos.services.saas.logging_config import setup_logging
 from sos.contracts.tenant import TenantCreate, TenantPlan, TenantStatus, TenantUpdate
+from sos.services.saas.marketplace import Marketplace
 from sos.services.saas.notifications import get_router as get_notification_router
 from sos.services.saas.pairing import router as pairing_router
+from sos.services.saas.rate_limiter import check_rate_limit as _check_rate_limit
 from sos.services.saas.registry import TenantRegistry
 from sos.kernel.health import health_response
 
@@ -315,6 +317,113 @@ def platform_revenue(period: Optional[str] = None, _: None = Depends(require_adm
 def get_audit_log(slug: str, event_type: Optional[str] = None, limit: int = 100, _: None = Depends(require_admin)):
     """Query audit log for a tenant."""
     return {"events": get_audit().query(tenant_slug=slug, event_type=event_type, limit=limit)}
+
+
+# ---------------------------------------------------------------------------
+# MCP gateway surface — rate-limit, audit, marketplace.
+# The MCP SSE server calls these over HTTP via SaasClient so it never
+# imports sos.services.saas directly (R2 contract).
+# ---------------------------------------------------------------------------
+
+
+class RateLimitCheckRequest(BaseModel):
+    tenant: str
+    plan: Optional[str] = None
+
+
+@app.post("/rate-limit/check")
+def rate_limit_check(req: RateLimitCheckRequest, _: None = Depends(require_admin)):
+    """Sliding-window rate-limit check for a tenant."""
+    allowed, remaining = _check_rate_limit(req.tenant, req.plan)
+    return {"allowed": allowed, "remaining": remaining}
+
+
+class AuditToolCallRequest(BaseModel):
+    tenant: str
+    tool: str
+    actor: str = ""
+    ip: str = ""
+    details: Optional[dict] = None
+
+
+@app.post("/audit/tool-call")
+def audit_tool_call(req: AuditToolCallRequest, _: None = Depends(require_admin)):
+    """Append a tool-call entry to the audit log."""
+    _audit_log_tool_call(
+        req.tenant, req.tool, actor=req.actor, ip=req.ip, details=req.details
+    )
+    return {"logged": True}
+
+
+_marketplace = Marketplace()
+
+
+@app.get("/marketplace/listings")
+def marketplace_browse(
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: int = 20,
+    _: None = Depends(require_admin),
+):
+    """Browse marketplace listings."""
+    return {"listings": _marketplace.browse(category=category, query=query, limit=limit)}
+
+
+class MarketplaceSubscribeRequest(BaseModel):
+    tenant: str
+    listing_id: str
+
+
+@app.post("/marketplace/subscriptions")
+def marketplace_subscribe(
+    req: MarketplaceSubscribeRequest, _: None = Depends(require_admin)
+):
+    """Subscribe a tenant to a listing."""
+    return _marketplace.subscribe(req.tenant, req.listing_id)
+
+
+@app.get("/marketplace/subscriptions")
+def marketplace_my_subscriptions(
+    tenant: str = Query(...), _: None = Depends(require_admin)
+):
+    """List active subscriptions for a tenant."""
+    return {"subscriptions": _marketplace.my_subscriptions(tenant)}
+
+
+class MarketplaceListingCreateRequest(BaseModel):
+    seller_tenant: str
+    title: str
+    description: str
+    category: str
+    listing_type: str = "squad"
+    price_cents: int
+    price_model: str = "monthly"
+    tags: list[str] = []
+
+
+@app.post("/marketplace/listings")
+def marketplace_create_listing(
+    req: MarketplaceListingCreateRequest, _: None = Depends(require_admin)
+):
+    """Create a new marketplace listing."""
+    return _marketplace.create_listing(
+        seller_tenant=req.seller_tenant,
+        title=req.title,
+        description=req.description,
+        category=req.category,
+        listing_type=req.listing_type,
+        price_cents=req.price_cents,
+        price_model=req.price_model,
+        tags=req.tags,
+    )
+
+
+@app.get("/marketplace/earnings")
+def marketplace_earnings(
+    tenant: str = Query(...), _: None = Depends(require_admin)
+):
+    """Seller earnings summary for a tenant."""
+    return _marketplace.my_earnings(tenant)
 
 
 # --- Notification preferences ---

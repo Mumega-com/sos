@@ -1,8 +1,12 @@
-"""HTTP client for the SaaS service — tenant CRUD + lifecycle.
+"""HTTP client for the SaaS service.
 
-Used by the billing service (Stripe webhook) to register, activate, and
-cancel tenants without importing sos.services.saas directly, preserving
-the R1 contract (services don't import other services).
+Used by:
+- billing service (Stripe webhook) — tenant CRUD / lifecycle.
+- mcp.sos_mcp_sse — rate-limit check, audit-log writes, marketplace
+  browse/subscribe/earnings, notification preferences.
+
+Keeping this client rich lets callers stay R1/R2-clean — they never
+import sos.services.saas directly.
 
 The SaaS admin API is admin-key-gated (SOS_SAAS_ADMIN_KEY /
 MUMEGA_MASTER_KEY). The client reads the same env vars the server does
@@ -11,7 +15,7 @@ and falls back to SOS_SYSTEM_TOKEN.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sos.clients.base import AsyncBaseHTTPClient, BaseHTTPClient
 
@@ -70,6 +74,110 @@ class SaasClient(BaseHTTPClient):
         """
         return self.update_tenant(slug, {"status": "cancelled"})
 
+    # --- MCP gateway surface ---------------------------------------------
+
+    def check_rate_limit(
+        self, tenant: str, plan: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """POST /rate-limit/check — returns {allowed, remaining}."""
+        resp = self._request(
+            "POST", "/rate-limit/check", json={"tenant": tenant, "plan": plan}
+        )
+        return resp.json()
+
+    def log_tool_call(
+        self,
+        tenant: str,
+        tool: str,
+        actor: str = "",
+        ip: str = "",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """POST /audit/tool-call — fire-and-forget from caller's POV."""
+        self._request(
+            "POST",
+            "/audit/tool-call",
+            json={
+                "tenant": tenant,
+                "tool": tool,
+                "actor": actor,
+                "ip": ip,
+                "details": details,
+            },
+        )
+
+    def browse_marketplace(
+        self,
+        category: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if category is not None:
+            params["category"] = category
+        if query is not None:
+            params["query"] = query
+        resp = self._request("GET", "/marketplace/listings", params=params)
+        return resp.json().get("listings", [])
+
+    def subscribe_marketplace(
+        self, tenant: str, listing_id: str
+    ) -> Dict[str, Any]:
+        resp = self._request(
+            "POST",
+            "/marketplace/subscriptions",
+            json={"tenant": tenant, "listing_id": listing_id},
+        )
+        return resp.json()
+
+    def my_subscriptions(self, tenant: str) -> List[Dict[str, Any]]:
+        resp = self._request(
+            "GET", "/marketplace/subscriptions", params={"tenant": tenant}
+        )
+        return resp.json().get("subscriptions", [])
+
+    def create_listing(
+        self,
+        seller_tenant: str,
+        title: str,
+        description: str,
+        category: str,
+        price_cents: int,
+        listing_type: str = "squad",
+        price_model: str = "monthly",
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        body = {
+            "seller_tenant": seller_tenant,
+            "title": title,
+            "description": description,
+            "category": category,
+            "listing_type": listing_type,
+            "price_cents": price_cents,
+            "price_model": price_model,
+            "tags": tags or [],
+        }
+        resp = self._request("POST", "/marketplace/listings", json=body)
+        return resp.json()
+
+    def my_earnings(self, tenant: str) -> Dict[str, Any]:
+        resp = self._request(
+            "GET", "/marketplace/earnings", params={"tenant": tenant}
+        )
+        return resp.json()
+
+    def get_notification_preferences(self, slug: str) -> Dict[str, Any]:
+        resp = self._request("GET", f"/tenants/{slug}/notifications")
+        return resp.json()
+
+    def set_notification_preferences(
+        self, slug: str, prefs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        resp = self._request(
+            "POST", f"/tenants/{slug}/notifications", json=prefs
+        )
+        return resp.json()
+
 
 class AsyncSaasClient(AsyncBaseHTTPClient):
     """Async variant — for callers already inside async request handlers."""
@@ -106,3 +214,110 @@ class AsyncSaasClient(AsyncBaseHTTPClient):
 
     async def cancel_tenant(self, slug: str) -> Dict[str, Any]:
         return await self.update_tenant(slug, {"status": "cancelled"})
+
+    # --- MCP gateway surface ---------------------------------------------
+
+    async def check_rate_limit(
+        self, tenant: str, plan: Optional[str] = None
+    ) -> Dict[str, Any]:
+        resp = await self._request(
+            "POST", "/rate-limit/check", json={"tenant": tenant, "plan": plan}
+        )
+        return resp.json()
+
+    async def log_tool_call(
+        self,
+        tenant: str,
+        tool: str,
+        actor: str = "",
+        ip: str = "",
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fire-and-forget audit entry. Callers typically wrap in
+        ``asyncio.create_task(...)`` so the request path never waits.
+        """
+        await self._request(
+            "POST",
+            "/audit/tool-call",
+            json={
+                "tenant": tenant,
+                "tool": tool,
+                "actor": actor,
+                "ip": ip,
+                "details": details,
+            },
+        )
+
+    async def browse_marketplace(
+        self,
+        category: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": limit}
+        if category is not None:
+            params["category"] = category
+        if query is not None:
+            params["query"] = query
+        resp = await self._request(
+            "GET", "/marketplace/listings", params=params
+        )
+        return resp.json().get("listings", [])
+
+    async def subscribe_marketplace(
+        self, tenant: str, listing_id: str
+    ) -> Dict[str, Any]:
+        resp = await self._request(
+            "POST",
+            "/marketplace/subscriptions",
+            json={"tenant": tenant, "listing_id": listing_id},
+        )
+        return resp.json()
+
+    async def my_subscriptions(self, tenant: str) -> List[Dict[str, Any]]:
+        resp = await self._request(
+            "GET", "/marketplace/subscriptions", params={"tenant": tenant}
+        )
+        return resp.json().get("subscriptions", [])
+
+    async def create_listing(
+        self,
+        seller_tenant: str,
+        title: str,
+        description: str,
+        category: str,
+        price_cents: int,
+        listing_type: str = "squad",
+        price_model: str = "monthly",
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        body = {
+            "seller_tenant": seller_tenant,
+            "title": title,
+            "description": description,
+            "category": category,
+            "listing_type": listing_type,
+            "price_cents": price_cents,
+            "price_model": price_model,
+            "tags": tags or [],
+        }
+        resp = await self._request("POST", "/marketplace/listings", json=body)
+        return resp.json()
+
+    async def my_earnings(self, tenant: str) -> Dict[str, Any]:
+        resp = await self._request(
+            "GET", "/marketplace/earnings", params={"tenant": tenant}
+        )
+        return resp.json()
+
+    async def get_notification_preferences(self, slug: str) -> Dict[str, Any]:
+        resp = await self._request("GET", f"/tenants/{slug}/notifications")
+        return resp.json()
+
+    async def set_notification_preferences(
+        self, slug: str, prefs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        resp = await self._request(
+            "POST", f"/tenants/{slug}/notifications", json=prefs
+        )
+        return resp.json()

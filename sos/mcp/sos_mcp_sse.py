@@ -34,6 +34,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+from sos.clients.saas import AsyncSaasClient, SaasClient
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
 from sos.mcp.customer_tools import (
@@ -44,10 +45,7 @@ from sos.mcp.customer_tools import (
     is_customer_tool,
     is_tool_allowed_for_role,
 )
-from sos.services.saas.rate_limiter import check_rate_limit
-from sos.services.saas.marketplace import Marketplace
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
-from sos.services.saas.audit import log_tool_call as _audit_tool_call
 
 # Squad system token now resolves from env — same pattern as agents/join
 # after v0.4.6 P1-05. Default mirrors sos.services.squad.auth.SYSTEM_TOKEN
@@ -56,8 +54,40 @@ SQUAD_SYSTEM_TOKEN = os.environ.get("SOS_SQUAD_SYSTEM_TOKEN") or os.environ.get(
     "SOS_SYSTEM_TOKEN", "sk-sos-system"
 )
 
-_marketplace = Marketplace()
 _squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
+_saas_client = SaasClient()
+_async_saas_client = AsyncSaasClient()
+
+
+def _audit_tool_call(
+    tenant: str,
+    tool: str,
+    actor: str = "",
+    ip: str = "",
+    details: dict | None = None,
+) -> None:
+    """Fire-and-forget audit write. Never blocks the request path.
+
+    Uses the async client from the running event loop when available;
+    falls back to the sync client if called outside an async context.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(
+            _async_saas_client.log_tool_call(
+                tenant, tool, actor=actor, ip=ip, details=details
+            )
+        )
+        return
+    try:
+        _saas_client.log_tool_call(
+            tenant, tool, actor=actor, ip=ip, details=details
+        )
+    except Exception as exc:
+        log.warning("audit log_tool_call failed: %s", exc)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1534,7 +1564,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- browse_marketplace ---
         elif name == "browse_marketplace":
-            results = _marketplace.browse(
+            results = await _async_saas_client.browse_marketplace(
                 category=args.get("category"),
                 query=args.get("query"),
             )
@@ -1553,13 +1583,17 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- subscribe ---
         elif name == "subscribe":
-            result = _marketplace.subscribe(project_scope or agent_scope, args["listing_id"])
+            result = await _async_saas_client.subscribe_marketplace(
+                project_scope or agent_scope, args["listing_id"]
+            )
             text = result.get("message") or result.get("error", "Unknown error")
             return _text(text)
 
         # --- my_subscriptions ---
         elif name == "my_subscriptions":
-            subs = _marketplace.my_subscriptions(project_scope or agent_scope)
+            subs = await _async_saas_client.my_subscriptions(
+                project_scope or agent_scope
+            )
             if not subs:
                 text = "No active subscriptions."
             else:
@@ -1573,7 +1607,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- create_listing ---
         elif name == "create_listing":
-            result = _marketplace.create_listing(
+            result = await _async_saas_client.create_listing(
                 seller_tenant=project_scope or agent_scope,
                 title=args["title"],
                 description=args["description"],
@@ -1591,7 +1625,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- my_earnings ---
         elif name == "my_earnings":
-            earnings = _marketplace.my_earnings(project_scope or agent_scope)
+            earnings = await _async_saas_client.my_earnings(
+                project_scope or agent_scope
+            )
             lines = [
                 f"Total MRR: ${earnings['total_mrr_cents'] / 100:.0f}",
                 f"Platform fee (5%): ${earnings['platform_fee_cents'] / 100:.0f}",
@@ -1607,29 +1643,18 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- notification_settings ---
         elif name == "notification_settings":
             tenant_slug = project_scope or agent_scope
-            email = args.get("email")
-            telegram = args.get("telegram")
-            webhook = args.get("webhook")
-            in_app = args.get("in_app")
+            prefs_updates: dict[str, Any] = {}
+            for key in ("email", "telegram", "webhook", "in_app"):
+                if args.get(key) is not None:
+                    prefs_updates[key] = args.get(key)
 
-            from sos.services.saas.notifications import get_router as get_notification_router
-
-            prefs = {}
-            if email is not None:
-                prefs["email"] = email
-            if telegram is not None:
-                prefs["telegram"] = telegram
-            if webhook is not None:
-                prefs["webhook"] = webhook
-            if in_app is not None:
-                prefs["in_app"] = in_app
-
-            # Merge with existing preferences
-            router = get_notification_router()
-            existing = router.get_preferences(tenant_slug)
-            existing.update(prefs)
-
-            router.set_preferences(tenant_slug, existing)
+            existing = await _async_saas_client.get_notification_preferences(
+                tenant_slug
+            )
+            existing.update(prefs_updates)
+            await _async_saas_client.set_notification_preferences(
+                tenant_slug, existing
+            )
             text = (
                 f"Notification settings updated for {tenant_slug}:\n"
                 f"- Email: {'enabled' if existing.get('email') else 'disabled'}\n"
@@ -2799,7 +2824,14 @@ async def _process_jsonrpc(
         # --- Rate limiting (customer tokens only) ---
         if auth.is_customer:
             rl_tenant = auth.project_scope or "system"
-            allowed, _remaining = check_rate_limit(rl_tenant, auth.plan)
+            try:
+                rl_result = await _async_saas_client.check_rate_limit(
+                    rl_tenant, auth.plan
+                )
+                allowed = bool(rl_result.get("allowed", True))
+            except Exception as exc:
+                log.warning("rate limit check failed (fail-open): %s", exc)
+                allowed = True
             if not allowed:
                 log.warning(
                     "rate limit exceeded for tenant %s (plan=%s)",
