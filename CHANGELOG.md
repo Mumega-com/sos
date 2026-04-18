@@ -2,6 +2,55 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.6.2] - 2026-04-18 — Squad Schema Coherency
+
+**Release theme: "One truth per column."**
+
+Drops six columns from the squad baseline migration and ORM that had
+no runtime readers or writers. They survived from pre-Alembic releases
+whose original migration code was removed; v0.6.1's baseline kept them
+for parity with a live DB that, on inspection, had never actually been
+stamped (0001 was added fresh in `edbee488`). Fixing the baseline
+in place is cleaner than a follow-up drop migration.
+
+### Removed
+
+- `squad_skills.framework` — framework wiring now lives in `sos/adapters/*`
+  (crewai, langgraph, torivers, discord) rather than on the skill row.
+- `squad_skills.agent` — skills are dispatched dynamically via
+  `squads.members_json` + `roles_json`, not pinned to a named agent.
+- `pipeline_specs.review_enabled` / `review_agent` / `review_cmd` — review
+  is now a first-class gate signal on `sos/kernel/policy/gate.py`
+  (`can_execute()` + arbitration from v0.5.2).
+- `pipeline_runs.reviewer_notes` — review verdicts are emitted as audit
+  events tagged with `trace_id` (see v0.5.6 audit stream).
+
+### Changed
+
+- `sos/services/squad/alembic/versions/0001_initial.py` — `create_table`
+  calls for `squad_skills`, `pipeline_specs`, and `pipeline_runs` no longer
+  include the six legacy columns. Module docstring updated to explain
+  the coherency-first decision.
+- `sos/services/squad/models.py::SquadSkill`, `PipelineSpec`, `PipelineRun`
+  — matching column definitions removed.
+
+### Test state
+
+Verified with a fresh SQLite roundtrip: `alembic upgrade head` applied
+cleanly and `PRAGMA table_info` on all three tables returns exactly the
+column set defined in the ORM. 432 contract tests still pass; 8 squad
+decoupling tests + 17 economy usage tests (v0.6.1 regression bar) green.
+
+### Deployment note
+
+Any existing squad SQLite that was manually created via prior code
+still carries the six columns. They're harmless (defaults make them
+invisible to ORM selects), but can be dropped manually with
+`ALTER TABLE … DROP COLUMN` on Postgres or a VACUUM INTO rebuild on
+SQLite when convenient.
+
+---
+
 ## [0.6.1] - 2026-04-18 — Test-Debt Cleanup (Fork A, milestone 1)
 
 **Release theme: "Honor what the token actually claims."**

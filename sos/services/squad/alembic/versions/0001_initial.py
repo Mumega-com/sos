@@ -9,11 +9,14 @@ schema produced today by:
 - ``SquadSkillService._ensure_schema`` (sos/services/squad/skills.py)
   — ALTER TABLE columns for schema/trust/loading/skill_dir.
 
-Columns ``framework`` and ``agent`` on ``squad_skills`` and
-``review_enabled`` / ``review_agent`` / ``review_cmd`` / ``reviewer_notes``
-on pipeline_* tables are kept for live-DB parity; they were added by
-prior releases whose migration code has since been removed. v0.6.1+
-can drop them in a follow-up revision.
+v0.6.2 note: the prior live-DB parity columns (``framework`` and
+``agent`` on ``squad_skills``; ``review_enabled`` / ``review_agent`` /
+``review_cmd`` / ``reviewer_notes`` on pipeline_* tables) were dropped
+in this revision. 0001 was never stamped on a running DB, so we fix
+the baseline in place rather than layering a follow-up drop migration.
+Their runtime roles are covered by ``sos/adapters/*`` (framework),
+dynamic squad dispatch (agent), and ``sos/kernel/policy/gate.py`` +
+audit stream (review_*).
 
 Revision ID: 0001
 Revises:
@@ -143,9 +146,6 @@ def upgrade() -> None:
             server_default=sa.text("'default'"),
             nullable=False,
         ),
-        # Parity columns (see module docstring).
-        sa.Column("framework", sa.Text(), server_default=sa.text("'any'")),
-        sa.Column("agent", sa.Text(), server_default=sa.text("''")),
     )
     op.execute(
         "CREATE INDEX idx_squad_skills_tenant ON squad_skills (tenant_id, name ASC)"
@@ -334,25 +334,6 @@ def upgrade() -> None:
             server_default=sa.text("'default'"),
             nullable=False,
         ),
-        # Parity columns (see module docstring).
-        sa.Column(
-            "review_enabled",
-            sa.Integer(),
-            server_default=sa.text("0"),
-            nullable=False,
-        ),
-        sa.Column(
-            "review_agent",
-            sa.Text(),
-            server_default=sa.text("'athena'"),
-            nullable=False,
-        ),
-        sa.Column(
-            "review_cmd",
-            sa.Text(),
-            server_default=sa.text("''"),
-            nullable=False,
-        ),
     )
     op.create_index(
         "idx_pipeline_specs_tenant", "pipeline_specs", ["tenant_id", "squad_id"]
@@ -376,13 +357,6 @@ def upgrade() -> None:
             "tenant_id",
             sa.Text(),
             server_default=sa.text("'default'"),
-            nullable=False,
-        ),
-        # Parity column (see module docstring).
-        sa.Column(
-            "reviewer_notes",
-            sa.Text(),
-            server_default=sa.text("''"),
             nullable=False,
         ),
     )

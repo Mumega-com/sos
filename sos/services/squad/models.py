@@ -108,10 +108,6 @@ class SquadSkill(Base):
     skill_dir = Column(Text, server_default=text("''"))
     deprecated_at = Column(Text)
     tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
-    # Live-DB columns from prior releases (kept for schema parity; no
-    # current code reads/writes these — v0.6.1 may drop them).
-    framework = Column(Text, server_default=text("'any'"))
-    agent = Column(Text, server_default=text("''"))
 
     __table_args__ = (
         Index("idx_squad_skills_tenant", "tenant_id", text("name ASC")),
@@ -238,10 +234,6 @@ class PipelineSpec(Base):
     rollback_cmd = Column(Text, nullable=False)
     enabled = Column(Integer, nullable=False)
     tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
-    # Live-DB columns from prior releases; kept for schema parity.
-    review_enabled = Column(Integer, nullable=False, server_default=text("0"))
-    review_agent = Column(Text, nullable=False, server_default=text("'athena'"))
-    review_cmd = Column(Text, nullable=False, server_default=text("''"))
 
     __table_args__ = (
         Index("idx_pipeline_specs_tenant", "tenant_id", "squad_id"),
@@ -263,8 +255,6 @@ class PipelineRun(Base):
     created_at = Column(Text, nullable=False)
     completed_at = Column(Text, nullable=False)
     tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
-    # Live-DB column from prior releases; kept for schema parity.
-    reviewer_notes = Column(Text, nullable=False, server_default=text("''"))
 
     __table_args__ = (
         Index("idx_pipeline_runs_squad", "squad_id", text("created_at DESC")),
