@@ -768,60 +768,18 @@ def check_openclaw_agent_responsiveness() -> dict:
 
 
 # ── Wire 6: Conductance Network (FRC 531) ─────────────────────────────────────
-# dG/dt = |F|^γ - αG
-# G_ij = conductance between agent i and skill j
-# F_ij = $MIND flow through that agent-skill pair
-# γ = reinforcement exponent, α = decay rate
-
-CONDUCTANCE_FILE = Path.home() / ".sos" / "state" / "conductance.json"
-CONDUCTANCE_GAMMA = 1.0   # Reinforcement exponent
-CONDUCTANCE_ALPHA = 0.01  # Decay rate per cycle
-
-
-def _load_conductance() -> dict[str, dict[str, float]]:
-    """Load the conductance matrix G[agent][skill] from disk."""
-    if CONDUCTANCE_FILE.exists():
-        try:
-            return json.loads(CONDUCTANCE_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
-
-
-def _save_conductance(G: dict[str, dict[str, float]]) -> None:
-    """Persist the conductance matrix to disk."""
-    CONDUCTANCE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CONDUCTANCE_FILE.write_text(json.dumps(G, indent=2))
-
-
-def conductance_update(agent_id: str, skill: str, reward: float) -> None:
-    """After bounty payout, reinforce the agent-skill conductance.
-
-    Called by Wire 4 (task completion) or externally after payout.
-    G[agent][skill] += |reward|^γ
-    """
-    G = _load_conductance()
-    if agent_id not in G:
-        G[agent_id] = {}
-    current = G[agent_id].get(skill, 0.0)
-    G[agent_id][skill] = current + abs(reward) ** CONDUCTANCE_GAMMA
-    _save_conductance(G)
-    logger.debug(f"Conductance: {agent_id}/{skill} = {G[agent_id][skill]:.2f} (+{reward:.0f})")
-
-
-def conductance_decay() -> None:
-    """Decay all conductance values. Called every flywheel cycle (weekly).
-
-    G[agent][skill] *= (1 - α)
-    """
-    G = _load_conductance()
-    if not G:
-        return
-    for agent_id in G:
-        for skill in G[agent_id]:
-            G[agent_id][skill] *= (1 - CONDUCTANCE_ALPHA)
-    _save_conductance(G)
-    logger.info(f"Conductance decay applied (α={CONDUCTANCE_ALPHA})")
+# Moved to sos.kernel.conductance in v0.4.5 Wave 8 — three services
+# (health/calcifer, feedback/loop, journeys/tracker) all read the same G
+# matrix, so it belongs in the kernel alongside bus/auth/health primitives.
+from sos.kernel.conductance import (
+    CONDUCTANCE_ALPHA,
+    CONDUCTANCE_FILE,
+    CONDUCTANCE_GAMMA,
+    _load_conductance,
+    _save_conductance,
+    conductance_decay,
+    conductance_update,
+)
 
 
 def _get_agent_task_score(agent_id: str, task: dict) -> float:

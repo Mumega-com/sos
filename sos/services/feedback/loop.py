@@ -401,7 +401,7 @@ class FeedbackLoop:
 
         # Wire 6: Decay conductance network (weekly cycle)
         try:
-            from sos.services.health.calcifer import conductance_decay
+            from sos.kernel.conductance import conductance_decay
             conductance_decay()
         except Exception as exc:
             logger.warning("Conductance decay failed (non-blocking): %s", exc)
