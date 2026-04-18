@@ -254,7 +254,7 @@ async def resolve_witness(request: WitnessCollapseRequest):
     return {"status": "collapsed", "agent_id": request.agent_id}
 
 # --- Swarm Council (Governance) ---
-from sos.services.engine.council import SwarmCouncil
+from sos.kernel.council import SwarmCouncil
 from sos.contracts.governance import VoteChoice
 
 council = SwarmCouncil(squad_id="core")

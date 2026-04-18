@@ -1,6 +1,6 @@
 
 import asyncio
-from sos.services.engine.council import create_council
+from sos.kernel.council import create_council
 from sos.services.execution.worker import get_worker
 from sos.kernel.bus import get_bus
 

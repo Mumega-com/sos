@@ -215,8 +215,6 @@ ignore_imports = [
   "sos.services.billing.** -> sos.services.economy.**",
   # P0-02 engine.core → tools.core (redundant in-proc import)
   "sos.services.engine.** -> sos.services.tools.**",
-  # P0-03 content.app → engine internals
-  "sos.services.content.** -> sos.services.engine.**",
   # P0-04, P0-05 closed in v0.4.5 wave 1 — squad emits task.completed;
   # health + journeys subscribe via their own bus consumers. Ignores removed.
   # P0-06 analytics.ingest → integrations.oauth
