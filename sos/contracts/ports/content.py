@@ -21,12 +21,12 @@ tightened both:
 Inkwell's listPages is NOT mirrored here — that pattern belongs on
 StoragePort. Content is path-addressed; callers know their routes.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 
@@ -47,9 +47,7 @@ class ContentGetResult(BaseModel):
     cached_at: Optional[str] = Field(
         default=None, description="ISO-8601 when the entry was written."
     )
-    expires_at: Optional[str] = Field(
-        default=None, description="ISO-8601 when the entry expires."
-    )
+    expires_at: Optional[str] = Field(default=None, description="ISO-8601 when the entry expires.")
 
 
 class ContentPutRequest(BaseModel):
@@ -58,9 +56,7 @@ class ContentPutRequest(BaseModel):
     tenant_id: str
     path: str = Field(min_length=1)
     html: str
-    ttl_seconds: Optional[int] = Field(
-        default=None, ge=1, description="None = cache indefinitely."
-    )
+    ttl_seconds: Optional[int] = Field(default=None, ge=1, description="None = cache indefinitely.")
 
 
 class ContentInvalidateRequest(BaseModel):

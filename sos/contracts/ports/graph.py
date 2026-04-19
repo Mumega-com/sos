@@ -18,12 +18,12 @@ resolve_cross_tenant_edges. We implement that exact set and OMIT ingest()
 and queryNetwork() — they can be added in a follow-up without breaking
 existing adapters. Mark this gap in the Phase 1 retrospective.
 """
+
 from __future__ import annotations
 
 from typing import Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 Visibility = Literal["public", "private"]
 EdgeType = Literal["wikilink", "tag", "series", "backlink", "cross-tenant"]
@@ -132,9 +132,7 @@ class ResolveCrossTenantRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: str = Field(description="Owning tenant of the source node.")
-    source_slug: str = Field(
-        description="Node whose wikilinks we're resolving."
-    )
+    source_slug: str = Field(description="Node whose wikilinks we're resolving.")
     wikilinks: list[str] = Field(
         description="Raw wikilink targets extracted from the source content."
     )
@@ -171,9 +169,7 @@ class GraphPort(Protocol):
         """Filtered node query."""
         ...
 
-    async def resolve_cross_tenant_edges(
-        self, req: ResolveCrossTenantRequest
-    ) -> list[GraphEdge]:
+    async def resolve_cross_tenant_edges(self, req: ResolveCrossTenantRequest) -> list[GraphEdge]:
         """Materialize cross-tenant edges from a newly ingested node's wikilinks."""
         ...
 

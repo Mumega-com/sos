@@ -10,12 +10,12 @@ fan out across many tenants instantiate one port per tenant.
 
 Introduced in Inkwell v7.1; kept in sync here.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 
@@ -25,9 +25,7 @@ class ContentSourceItem(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    slug: str = Field(
-        description="URL-safe identifier derived from the source."
-    )
+    slug: str = Field(description="URL-safe identifier derived from the source.")
     title: str
     content: str = Field(description="Raw markdown or MDX.")
     updated_at: str = Field(description="ISO-8601 last-modified in the source.")

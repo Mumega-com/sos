@@ -16,12 +16,12 @@ createOpportunity. The SOS spec for this task asks for a fuller surface
 messaging lands. We keep createContact/updateContact identical-shaped and
 add the three SOS-side methods. When Inkwell widens, we'll fold them in.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

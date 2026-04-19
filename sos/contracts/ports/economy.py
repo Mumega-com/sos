@@ -11,12 +11,12 @@ Amounts are integers. Callers pass the smallest unit of whatever currency
 the tenant uses (cents for USD ledgers, micros for metered model-call
 ledgers). Currency is reported back on responses so callers can verify.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 
@@ -27,12 +27,8 @@ class RecordUsageRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: str = Field(min_length=1)
-    type: str = Field(
-        description="Usage category: 'tokens', 'api_call', 'storage_gb_day', ..."
-    )
-    amount: int = Field(
-        description="Integer amount in the smallest unit for `type`."
-    )
+    type: str = Field(description="Usage category: 'tokens', 'api_call', 'storage_gb_day', ...")
+    amount: int = Field(description="Integer amount in the smallest unit for `type`.")
 
 
 class GetBalanceRequest(BaseModel):

@@ -7,12 +7,12 @@ Tenant binding: IMPLICIT. The underlying bucket / prefix is bound when the
 adapter is constructed per-tenant. Kernel-internal callers that need
 cross-tenant reach should use the richer sos.contracts.storage.ObjectStore.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol, Union, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

@@ -13,12 +13,12 @@ port handles the CONFIG / BUDGET layer only — think "agent as a managed
 product", not "agent as a being". For the broader view, join on
 (tenant_id, agent_id).
 """
+
 from __future__ import annotations
 
 from typing import Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 AgentModel = Literal["haiku", "sonnet", "opus"]
 AgentStatus = Literal["active", "paused", "provisioning", "error"]
@@ -41,19 +41,13 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: str
-    agent_id: str = Field(
-        description="Tenant-scoped agent identifier (slug)."
-    )
+    agent_id: str = Field(description="Tenant-scoped agent identifier (slug).")
     model: AgentModel
     system_prompt: str
     mcp_servers: list[McpServerRef] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
-    budget_per_day: int = Field(
-        ge=0, description="Max daily spend in cents."
-    )
-    budget_per_month: int = Field(
-        ge=0, description="Max monthly spend in cents."
-    )
+    budget_per_day: int = Field(ge=0, description="Max daily spend in cents.")
+    budget_per_month: int = Field(ge=0, description="Max monthly spend in cents.")
     status: AgentStatus = "provisioning"
     anthropic_agent_id: Optional[str] = Field(
         default=None, description="Provider-side id once provisioned."
@@ -146,9 +140,7 @@ class BudgetCheckRequest(BaseModel):
 
     tenant_id: str
     agent_id: str
-    cost: int = Field(
-        ge=0, description="Proposed cost in cents — will it fit the budget?"
-    )
+    cost: int = Field(ge=0, description="Proposed cost in cents — will it fit the budget?")
 
 
 class BudgetCheckResult(BaseModel):

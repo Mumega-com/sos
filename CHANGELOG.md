@@ -2,6 +2,37 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [Unreleased]
+
+### Added — Phase 1.5 (stability interstitial)
+- `.pre-commit-config.yaml` — fast stage (ruff, black, import-linter,
+  port schema drift) on every commit; thorough stage (`pytest
+  tests/contracts/`) on every push. Ruff and black run on CHANGED files
+  only, so pre-existing drift is grandfathered — new commits must pass
+  on their own changes. `import-linter` and `contracts-check` run
+  repo-wide because they already pass on the current tree.
+- `scripts/install-hooks.sh` — one-command bootstrap for pre-commit +
+  pre-push hooks. Prefers `.venv/bin/pre-commit`; falls back with a
+  clear error if no venv exists.
+- Reformatted the 15 port modules under `sos/contracts/ports/` so the
+  v0.9.0 artifact is black-clean on Py3.10+.
+- `.github/workflows/ci-deploy.yml` — CI now runs the same hook scripts
+  via `pre-commit run` instead of bespoke lint+test steps. Structural
+  checks (import-linter + port schemas + contract tests) run
+  repo-wide; format checks are trusted to the local hook on touched
+  files (matches the grandfathering policy).
+
+### Removed
+- `.github/workflows/ci.yml` — never-committed duplicate of
+  `ci-deploy.yml` with broken lint gates. Merged into `ci-deploy.yml`.
+
+### Intent
+Every commit — Codex, Kasra, Claude, manual, any future agent — passes
+the same invariants before it can land. New drift blocked; existing
+drift addressed as files are touched.
+
+---
+
 ## [0.9.0] — 2026-04-19 — Shared port registry + microkernel hardening
 
 ### Thesis

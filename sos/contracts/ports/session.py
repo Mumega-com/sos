@@ -10,12 +10,12 @@ sos.contracts.storage.KVStore is available for kernel-internal use.
 Values are strings — match Inkwell's SessionPort exactly. If you need to
 store structured data, JSON-encode at the call site.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

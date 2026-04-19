@@ -1,15 +1,69 @@
+# Phase 1.5 — every commit and every push passes the same invariants.
+# Fast stage (commit) targets seconds. Thorough stage (push) runs the
+# contract test suite. CI mirrors both via `pre-commit run --all-files`.
+#
+# Ruff and black run on CHANGED FILES ONLY — the repo has pre-existing
+# drift that a separate format pass will address. This hook gates
+# *new* drift: once a file is touched, it must pass. Existing drift is
+# grandfathered until the file is next edited.
+#
+# import-linter and contracts-check run repo-wide because they already
+# pass on the current tree.
+#
+# All hooks are `language: system`: the tool the hook runs is the tool
+# CI runs is the tool the dev's shell runs. Zero version drift.
+#
+# Each entry is wrapped in bash -c '…' that prepends $PWD/.venv/bin
+# to PATH so the hooks pick up repo-local dev tools. CI that runs
+# `pip install -e ".[dev]"` against system python already has the tools
+# on PATH, so the .venv/bin prefix is a no-op there — one config,
+# both environments.
+#
+# Bootstrap: `bash scripts/install-hooks.sh`
+# Manual skip (document why in the commit message): `git commit --no-verify`
+
+default_stages: [pre-commit]
+
 repos:
   - repo: local
     hooks:
+      # ── fast stage (every commit) ───────────────────────────────────
+
+      # Per-file: only lint what was actually touched in this commit.
+      - id: ruff-check
+        name: ruff (lint — changed files only)
+        entry: bash -c 'PATH="$PWD/.venv/bin:$PATH" exec ruff check --select E,F,W --ignore E501 "$@"' --
+        language: system
+        types: [python]
+        files: ^sos/
+
+      - id: black-check
+        name: black (format check — changed files only)
+        entry: bash -c 'PATH="$PWD/.venv/bin:$PATH" exec black --check --line-length 100 --target-version py310 "$@"' --
+        language: system
+        types: [python]
+        files: ^sos/
+
+      # Repo-wide: structural contracts must hold globally.
       - id: lint-imports
-        name: lint-imports (structural boundaries)
-        entry: lint-imports
+        name: import-linter (R1–R7 structural boundaries)
+        entry: bash -c 'PATH="$PWD/.venv/bin:$PATH" exec lint-imports'
         language: system
         pass_filenames: false
         types: [python]
-      - id: pytest-contracts
-        name: pytest tests/contracts/
-        entry: pytest tests/contracts/ -q
+
+      - id: contracts-check
+        name: port schema drift (scripts/export_port_schemas.py --check)
+        entry: bash -c 'PATH="$PWD/.venv/bin:$PATH" exec python scripts/export_port_schemas.py --check'
         language: system
         pass_filenames: false
+        files: ^sos/contracts/ports/.*\.py$
+
+      # ── thorough stage (every push) ─────────────────────────────────
+      - id: pytest-contracts
+        name: pytest tests/contracts/ -q
+        entry: bash -c 'PATH="$PWD/.venv/bin:$PATH" exec pytest tests/contracts/ -q'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
         types: [python]

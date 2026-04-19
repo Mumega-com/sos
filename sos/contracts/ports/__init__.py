@@ -57,6 +57,7 @@ Re-exports below are the public API. Importers should say:
 
     from sos.contracts.ports import BusPort, ChargeRequest
 """
+
 from __future__ import annotations
 
 from sos.contracts.ports.agent import (
@@ -197,7 +198,6 @@ from sos.contracts.ports.storage import (
     StoragePort,
     StoragePutRequest,
 )
-
 
 # The 14 ports — the canonical list Phase 1 exports.
 ALL_PORTS: tuple[type, ...] = (

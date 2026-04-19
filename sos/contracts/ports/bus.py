@@ -7,12 +7,12 @@ Tenant binding: the bus resolves tenant from the caller's bus-token / agent
 identity context. Methods here do NOT take explicit tenant_id — that matches
 Inkwell's BusPort signature.
 """
+
 from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

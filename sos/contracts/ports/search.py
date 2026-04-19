@@ -14,12 +14,12 @@ bound per tenant. We tightened this to match the SOS Mothership pattern
 where one platform-level SearchPort instance may fan out across many
 tenants. The extra parameter is cheap; the safety is not.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

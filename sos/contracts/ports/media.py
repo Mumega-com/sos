@@ -8,12 +8,12 @@ Tenant binding: EXPLICIT via optional `tenant` field — an asset can be
 tenant-scoped or cross-tenant (shared library). Adapters enforce access
 checks at call time.
 """
+
 from __future__ import annotations
 
 from typing import Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Data models -----------------------------------------------------------
 

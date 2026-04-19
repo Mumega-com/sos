@@ -15,12 +15,12 @@ equivalent, so we pass an opaque `request_token` string (typically the raw
 accept richer request objects via subclasses — the contract only requires
 a string is enough.
 """
+
 from __future__ import annotations
 
 from typing import Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 Role = Literal["owner", "admin", "manager", "member", "viewer"]
 

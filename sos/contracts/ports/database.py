@@ -11,12 +11,12 @@ lives on the richer sos.contracts.storage.SQLStore.
 Parameters: positional list of primitives, matching D1's `?`/`$1` style.
 Named-param SQL is an adapter-specific extension and not part of this port.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 

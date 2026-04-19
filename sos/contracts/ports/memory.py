@@ -8,12 +8,12 @@ writes. Inkwell's MemoryPort follows the same convention — signatures don't
 carry tenantId. A deeper, tenant-aware memory API lives in sos.contracts.memory
 (MemoryContract.store(..., capability=...)) for kernel-internal use.
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # --- Request / response models ---------------------------------------------
 
