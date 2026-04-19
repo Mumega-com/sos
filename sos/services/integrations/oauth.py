@@ -10,6 +10,29 @@ Each tenant connects their own:
 
 OAuth tokens stored per-tenant at ~/.sos/integrations/{tenant}/{provider}.json
 Encrypted at rest (future). Refreshed automatically.
+
+=============================================================================
+HTTP-BOUNDARY FOLLOW-UP — NOT PRODUCTION-READY — task #222 (flagged v0.9.2.2)
+=============================================================================
+Three methods on :class:`TenantIntegrations` are **stubs** that fabricate
+tokens instead of calling the real OAuth2 token endpoints:
+
+    - handle_ghl_callback        → MUST POST https://services.leadconnectorhq.com/oauth/token
+    - handle_google_callback     → MUST POST https://oauth2.googleapis.com/token
+    - refresh_token              → MUST POST the matching refresh_token grant
+
+The current stubs let the connect-flow UI round-trip during development and
+demos, but any downstream caller that actually tries to use the stored
+access_token against a live provider will get 401/403. Do not deploy this
+module in a customer-facing tenant without first replacing the three stubs
+with real :mod:`httpx` calls (see the TODO block inside each method for the
+exact endpoint + request body). Live integration testing requires provisioned
+client_id/client_secret per provider — that credential provisioning is the
+blocker, not the code.
+
+Tracked by task #222 — to be picked up after v0.9.2.1 before the first real
+TROP tenant connects GHL or Google in production.
+=============================================================================
 """
 
 from __future__ import annotations
@@ -76,12 +99,12 @@ class TenantIntegrations:
     async def handle_ghl_callback(self, code: str) -> dict[str, str]:
         """Exchange authorization code for GHL tokens and store them.
 
-        TODO: Implement real token exchange when GHL client credentials are configured.
+        TODO(#222): Implement real token exchange when GHL client credentials are configured.
         POST https://services.leadconnectorhq.com/oauth/token
         Body: client_id, client_secret, grant_type=authorization_code, code, redirect_uri
         Response: access_token, refresh_token, expires_in, locationId, scope
         """
-        # --- STUB: store placeholder until real exchange is implemented ---
+        # --- STUB-NOT-PRODUCTION (task #222) — fabricated tokens, not real ---
         now = datetime.now(timezone.utc)
         credentials = {
             "provider": "ghl",
@@ -93,7 +116,10 @@ class TenantIntegrations:
             "connected_at": now.isoformat(),
         }
         self._store_credentials("ghl", credentials)
-        logger.info("GHL credentials stored for tenant %s (stub)", self.tenant)
+        logger.warning(
+            "GHL OAuth callback returning STUB tokens for tenant %s — task #222",
+            self.tenant,
+        )
         return credentials
 
     # ------------------------------------------------------------------
@@ -131,12 +157,12 @@ class TenantIntegrations:
     async def handle_google_callback(self, code: str, service: GoogleService) -> dict[str, str]:
         """Exchange authorization code for Google tokens and store them.
 
-        TODO: Implement real token exchange when Google client credentials are configured.
+        TODO(#222): Implement real token exchange when Google client credentials are configured.
         POST https://oauth2.googleapis.com/token
         Body: code, client_id, client_secret, redirect_uri, grant_type=authorization_code
         Response: access_token, refresh_token, expires_in, scope, token_type
         """
-        # --- STUB: store placeholder until real exchange is implemented ---
+        # --- STUB-NOT-PRODUCTION (task #222) — fabricated tokens, not real ---
         now = datetime.now(timezone.utc)
         credentials = {
             "provider": f"google_{service}",
@@ -147,7 +173,11 @@ class TenantIntegrations:
             "connected_at": now.isoformat(),
         }
         self._store_credentials(f"google_{service}", credentials)
-        logger.info("Google %s credentials stored for tenant %s (stub)", service, self.tenant)
+        logger.warning(
+            "Google %s OAuth callback returning STUB tokens for tenant %s — task #222",
+            service,
+            self.tenant,
+        )
         return credentials
 
     # ------------------------------------------------------------------
@@ -234,7 +264,7 @@ class TenantIntegrations:
     async def refresh_token(self, provider: str) -> bool:
         """Refresh an expired OAuth token using the stored refresh_token.
 
-        TODO: Implement real token refresh for each provider.
+        TODO(#222): Implement real token refresh for each provider.
         - GHL: POST https://services.leadconnectorhq.com/oauth/token
                Body: client_id, client_secret, grant_type=refresh_token, refresh_token
         - Google: POST https://oauth2.googleapis.com/token
@@ -250,10 +280,14 @@ class TenantIntegrations:
             logger.warning("No refresh_token for %s/%s", self.tenant, provider)
             return False
 
-        # --- STUB: mark as refreshed with current timestamp ---
+        # --- STUB-NOT-PRODUCTION (task #222) — bumps timestamp, no real refresh ---
         credentials["expires_at"] = datetime.now(timezone.utc).isoformat()
         self._store_credentials(provider, credentials)
-        logger.info("Token refresh stubbed for %s/%s", self.tenant, provider)
+        logger.warning(
+            "Token refresh STUBBED for %s/%s — task #222 (no real HTTP call)",
+            self.tenant,
+            provider,
+        )
         return True
 
     # ------------------------------------------------------------------
