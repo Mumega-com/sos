@@ -9,10 +9,11 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Callable, Any, Optional
+from typing import Callable, Any, Mapping, Optional
 from ...contracts.bus import BusContract
 from ...contracts.ports.bus import AckStatus, BusAck
 from ...kernel.schema import Message
+from .retry import RetryWorker
 
 # Try to import redis, handle if missing
 try:
@@ -32,6 +33,11 @@ class RedisBusService(BusContract):
         self.client: Optional[redis.Redis] = None
         self.pubsub = None
         self.is_connected = False
+        # Retry worker is lazily constructed on first consumer-group
+        # registration so services that never call register_consumer_group
+        # (pure publishers, tests) don't pay for a background task they
+        # don't need.
+        self._retry_worker: Optional[RetryWorker] = None
 
     async def connect(self) -> bool:
         try:
@@ -45,6 +51,10 @@ class RedisBusService(BusContract):
             return False
 
     async def disconnect(self):
+        # Stop the retry worker FIRST — it holds references to self.client
+        # and mid-scan XACK/XADD calls after close() would raise.
+        if self._retry_worker is not None:
+            await self._retry_worker.stop()
         if self.client:
             await self.client.close()
             self.is_connected = False
@@ -134,6 +144,38 @@ class RedisBusService(BusContract):
         except Exception as exc:  # redis.exceptions.ResponseError when BUSYGROUP
             if "BUSYGROUP" not in str(exc):
                 raise
+
+    async def register_consumer_group(
+        self,
+        stream: str,
+        group: str,
+        *,
+        retry_scan_interval: Optional[int] = None,
+        retry_backoffs: Optional[Mapping[int, int]] = None,
+    ) -> None:
+        """Announce a consumer group to the retry worker.
+
+        Calls :meth:`ensure_group` so the group exists before any
+        XREADGROUP reaches Redis, then registers the ``(stream, group)``
+        pair with the retry worker (constructing and starting it on the
+        first call). Safe to call many times for the same pair — both
+        group creation and registration are idempotent.
+
+        ``retry_scan_interval`` / ``retry_backoffs`` are only honored on
+        the *first* call (worker construction); subsequent calls use the
+        already-constructed worker. Tests that want a sub-second cadence
+        should call this once at setup time.
+        """
+        await self.ensure_group(stream, group)
+        if self._retry_worker is None:
+            kwargs: dict[str, Any] = {}
+            if retry_scan_interval is not None:
+                kwargs["scan_interval"] = retry_scan_interval
+            if retry_backoffs is not None:
+                kwargs["backoffs"] = retry_backoffs
+            self._retry_worker = RetryWorker(self, **kwargs)
+            await self._retry_worker.start()
+        self._retry_worker.register(stream, group)
 
     async def ack(
         self,
