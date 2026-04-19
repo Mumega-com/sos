@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Resolved tile data returned by GET /glass/payload/{tenant}/{tile_id}.",
+  "properties": {
+    "cache_ttl_s": {
+      "title": "Cache Ttl S",
+      "type": "integer"
+    },
+    "data": {
+      "additionalProperties": true,
+      "title": "Data",
+      "type": "object"
+    },
+    "rendered_at": {
+      "description": "UTC timestamp of resolution.",
+      "format": "date-time",
+      "title": "Rendered At",
+      "type": "string"
+    },
+    "tile_id": {
+      "title": "Tile Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tile_id",
+    "rendered_at",
+    "data",
+    "cache_ttl_s"
+  ],
+  "title": "TilePayload",
+  "type": "object"
+}

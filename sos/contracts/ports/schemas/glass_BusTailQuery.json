@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "Read the most recent N entries from a Redis stream.",
+  "properties": {
+    "kind": {
+      "const": "bus_tail",
+      "title": "Kind",
+      "type": "string"
+    },
+    "limit": {
+      "default": 20,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "stream": {
+      "description": "Redis stream name, e.g. 'audit:decisions:acme'.",
+      "title": "Stream",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "stream"
+  ],
+  "title": "BusTailQuery",
+  "type": "object"
+}

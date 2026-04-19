@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Proxy a GET request to another SOS service.",
+  "properties": {
+    "kind": {
+      "const": "http",
+      "title": "Kind",
+      "type": "string"
+    },
+    "method": {
+      "const": "GET",
+      "default": "GET",
+      "title": "Method",
+      "type": "string"
+    },
+    "path": {
+      "description": "Path starting with '/', e.g. '/squad/acme/status'.",
+      "title": "Path",
+      "type": "string"
+    },
+    "service": {
+      "description": "Target service name, e.g. 'registry'.",
+      "title": "Service",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "service",
+    "path"
+  ],
+  "title": "HttpQuery",
+  "type": "object"
+}
