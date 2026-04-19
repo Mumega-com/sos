@@ -13,6 +13,7 @@ See sos/contracts/schemas/agent_card_v1.json for the canonical schema.
 Pydantic model here is the Python binding; the JSON Schema is the cross-language
 source of truth that a future Rust port will implement against.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,18 +32,37 @@ SCHEMA_PATH = Path(__file__).parent / "schemas" / "agent_card_v1.json"
 
 
 ToolName = Literal[
-    "claude-code", "codex", "gemini-cli", "openclaw",
-    "hermes", "custom-http", "sdk", "cron", "service",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "openclaw",
+    "hermes",
+    "custom-http",
+    "sdk",
+    "cron",
+    "service",
 ]
 # Expanded to cover multi-vendor substrates + human squad members
 # per the 2026-04-18 coherence plan.
 AgentType = Literal[
-    "tmux", "openclaw", "remote", "webhook", "service",
-    "hermes", "codex", "cma", "human",
+    "tmux",
+    "openclaw",
+    "remote",
+    "webhook",
+    "service",
+    "hermes",
+    "codex",
+    "cma",
+    "human",
 ]
 AgentRole = Literal[
-    "coordinator", "executor", "specialist",
-    "oracle", "medic", "service", "human",
+    "coordinator",
+    "executor",
+    "specialist",
+    "oracle",
+    "medic",
+    "service",
+    "human",
 ]
 WarmPolicy = Literal["warm", "cold"]
 PlanTier = Optional[Literal["starter", "growth", "scale", "enterprise"]]
@@ -77,6 +97,7 @@ class AgentCard(BaseModel):
     pid: Optional[int] = None
     host: Optional[str] = None
     cwd: Optional[str] = None
+    heartbeat_url: Optional[str] = None
     registered_at: str
     last_seen: str
     summary: Optional[str] = Field(default=None, max_length=280)
@@ -125,6 +146,8 @@ class AgentCard(BaseModel):
         list_fields = {"skills", "squads"}
         int_fields = {"cache_ttl_s", "pid"}
         float_fields = {"last_cache_hit_rate"}
+        # Empty string in Redis hash means None for optional string fields.
+        nullable_str_fields = {"heartbeat_url"}
         for key, val in h.items():
             if key in list_fields:
                 parsed[key] = [s for s in val.split(",") if s]
@@ -132,6 +155,8 @@ class AgentCard(BaseModel):
                 parsed[key] = int(val)
             elif key in float_fields and val != "":
                 parsed[key] = float(val)
+            elif key in nullable_str_fields:
+                parsed[key] = None if val == "" else val
             else:
                 parsed[key] = val
         return cls(**parsed)
