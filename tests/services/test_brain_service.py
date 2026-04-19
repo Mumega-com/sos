@@ -2,51 +2,50 @@
 
 Uses fakeredis for hermetic testing. All tests skip if fakeredis is not installed.
 
-Sprint 1 invariants:
-  1. Idempotency on message_id
-  2. Checkpoint per stream
-  3. Fail-open on handler exceptions
+Sprint 1 invariants (restated for XREADGROUP + XACK):
+  1. Idempotency on message_id (duplicate → XACK + skip, not double-processed)
+  2. At-least-once: entry is XACK'd only after handler succeeds
+  3. Fail-safe on handler exception: entry stays in PEL (NOT XACK'd)
   4. SCAN-based stream discovery
   5. State counters updated correctly
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
 try:
     import fakeredis.aioredis as fake_aioredis  # type: ignore[import-untyped]
+
     HAS_FAKEREDIS = True
 except ImportError:
     HAS_FAKEREDIS = False
 
-from sos.services.brain.service import BrainService, _CHECKPOINT_KEY_PREFIX
+from sos.services.brain.service import BrainService
 from sos.services.brain.state import BrainState, RoutingDecision
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-skipif_no_fakeredis = pytest.mark.skipif(
-    not HAS_FAKEREDIS, reason="fakeredis not installed"
-)
+skipif_no_fakeredis = pytest.mark.skipif(not HAS_FAKEREDIS, reason="fakeredis not installed")
 
 
 def _fake_redis() -> "fake_aioredis.FakeRedis":
     return fake_aioredis.FakeRedis(decode_responses=True)
 
 
-def _make_service(redis_client=None, patterns=None) -> BrainService:
+def _make_service(redis_client=None, patterns=None, group_name="brain") -> BrainService:
     svc = BrainService(
         redis_url="redis://localhost:6379",
         stream_patterns=patterns or ["sos:stream:global:squad:*"],
         redis_client=redis_client,
+        group_name=group_name,
     )
     return svc
 
@@ -68,6 +67,15 @@ async def _push_to_stream(r, stream: str, fields: dict) -> str:
     return entry_id
 
 
+async def _ensure_group(r, stream: str, group: str) -> None:
+    """Create consumer group on stream, swallowing BUSYGROUP."""
+    try:
+        await r.xgroup_create(name=stream, groupname=group, id="0", mkstream=True)
+    except Exception as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+
 async def _run_one_tick(svc: BrainService) -> None:
     """Run exactly one loop tick (ignores stop event)."""
     await svc._tick()
@@ -76,6 +84,7 @@ async def _run_one_tick(svc: BrainService) -> None:
 # ---------------------------------------------------------------------------
 # 1. Lifecycle
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_fakeredis
 def test_service_starts_and_stops_cleanly() -> None:
@@ -96,6 +105,7 @@ def test_service_starts_and_stops_cleanly() -> None:
 # ---------------------------------------------------------------------------
 # 2. Stream discovery
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_fakeredis
 def test_subscribes_to_streams_matching_patterns() -> None:
@@ -122,81 +132,52 @@ def test_subscribes_to_streams_matching_patterns() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Checkpoint persistence
+# 3. At-least-once: XACK only on success
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
-def test_loads_and_persists_checkpoints() -> None:
-    """Service loads initial checkpoint and persists after processing."""
+def test_entry_acked_after_successful_handler() -> None:
+    """Entry is XACK'd (removed from PEL) when handler succeeds."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:test"
-    ckpt_key = f"{_CHECKPOINT_KEY_PREFIX}:{stream}"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "t1"}))
-        await r.xadd(stream, _v1_fields("task.created", {"task_id": "t2"}))
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
-        checkpoint = await r.get(ckpt_key)
-        return checkpoint
+        # After success, PEL should be empty
+        pending = await r.xpending_range(stream, group, min="-", max="+", count=10)
+        return pending
 
-    ckpt = asyncio.run(_go())
-    assert ckpt is not None, "Checkpoint should be written after processing"
-
-
-@skipif_no_fakeredis
-def test_resumes_from_checkpoint_on_restart() -> None:
-    """On restart, service reads from checkpoint, skips already-seen entries."""
-    r = _fake_redis()
-    stream = "sos:stream:global:squad:resume-test"
-
-    async def _go():
-        # First run: push 2 messages, process them
-        svc1 = _make_service(redis_client=r, patterns=[stream])
-        mid1 = str(uuid.uuid4())
-        mid2 = str(uuid.uuid4())
-        await r.xadd(stream, _v1_fields("task.created", {"task_id": "t1"}, mid1))
-        await r.xadd(stream, _v1_fields("task.created", {"task_id": "t2"}, mid2))
-        await svc1._load_checkpoints()
-        await _run_one_tick(svc1)
-        ckpt_after_run1 = svc1._checkpoints.get(stream)
-
-        # Second run: new service, same redis, should resume from checkpoint
-        svc2 = _make_service(redis_client=r, patterns=[stream])
-        await svc2._load_checkpoints()
-        assert svc2._checkpoints.get(stream) == ckpt_after_run1, (
-            "Second service should resume from checkpoint written by first"
-        )
-        # Push one more message after checkpoint
-        mid3 = str(uuid.uuid4())
-        await r.xadd(stream, _v1_fields("task.created", {"task_id": "t3"}, mid3))
-        await _run_one_tick(svc2)
-        # Only t3 should be in flight from svc2's perspective
-        return svc2.state.tasks_in_flight
-
-    in_flight = asyncio.run(_go())
-    assert "t3" in in_flight
+    pending = asyncio.run(_go())
+    assert pending == [], f"PEL should be empty after ACK, got {pending}"
 
 
 # ---------------------------------------------------------------------------
 # 4. Idempotency
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
 def test_idempotent_on_message_id() -> None:
     """Same message_id delivered twice: handler called once, task appears once."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:idempotent"
+    group = "brain"
     mid = str(uuid.uuid4())
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         fields = _v1_fields("task.created", {"task_id": "tid-dupe"}, mid)
         # Add same message_id twice (different entry_id)
         await r.xadd(stream, fields)
         await r.xadd(stream, fields)
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state.events_seen, len(svc.state.tasks_in_flight)
 
@@ -210,16 +191,19 @@ def test_idempotent_on_message_id() -> None:
 # 5. Dispatch
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
 def test_dispatches_task_created_to_handler() -> None:
     """task.created on bus → _on_task_created fires, task tracked in state."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:dispatch-test"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "dispatch-t1"}))
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state
 
@@ -229,17 +213,47 @@ def test_dispatches_task_created_to_handler() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Fail-open
+# 6. Fail-safe: handler exception → entry stays unacked
 # ---------------------------------------------------------------------------
+
+
+@skipif_no_fakeredis
+def test_handler_exception_leaves_entry_unacked() -> None:
+    """Critical invariant: handler exception → entry stays in PEL (not XACK'd)."""
+    r = _fake_redis()
+    stream = "sos:stream:global:squad:fail-safe"
+    group = "brain"
+
+    async def _go():
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
+
+        async def _always_raise(msg):
+            raise RuntimeError("always fails")
+
+        svc._on_task_created = _always_raise
+
+        await r.xadd(stream, _v1_fields("task.created", {"task_id": "fail-always"}))
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
+        await _run_one_tick(svc)
+
+        # Entry must still be in PEL (unacked)
+        pending = await r.xpending_range(stream, group, min="-", max="+", count=10)
+        return pending
+
+    pending = asyncio.run(_go())
+    assert len(pending) == 1, "Entry must stay in PEL when handler fails (no silent drop)"
+
 
 @skipif_no_fakeredis
 def test_handler_exception_does_not_crash_service() -> None:
     """If a handler raises, the service keeps running and processes next message."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:fail-open"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
 
         # Monkeypatch _on_task_created to raise once
         call_count = {"n": 0}
@@ -257,14 +271,14 @@ def test_handler_exception_does_not_crash_service() -> None:
         mid2 = str(uuid.uuid4())
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "fail-t1"}, mid1))
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "success-t2"}, mid2))
-        await svc._load_checkpoints()
-        # Two ticks: first message fails (no checkpoint advance), second succeeds
-        await _run_one_tick(svc)
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
+        # First tick: first message fails (stays unacked), second succeeds
         await _run_one_tick(svc)
         return svc.state, call_count["n"]
 
     state, call_count = asyncio.run(_go())
-    # Handler was called at least twice (retry on first + success on second)
+    # Handler was called at least twice (both messages in same tick)
     assert call_count >= 2
     # Second task (success) should be tracked
     assert "success-t2" in state.tasks_in_flight
@@ -274,16 +288,19 @@ def test_handler_exception_does_not_crash_service() -> None:
 # 7. Unknown type
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
 def test_unknown_message_type_logged_and_skipped() -> None:
     """Unhandled message type is counted under its type key but not dispatched."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:unknown-type"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         await r.xadd(stream, _v1_fields("some.unknown.type", {}))
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state
 
@@ -296,17 +313,23 @@ def test_unknown_message_type_logged_and_skipped() -> None:
 # 8. Malformed message
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
 def test_malformed_message_does_not_crash() -> None:
     """Bad JSON payload is logged and skipped; service keeps running."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:malformed"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         # Bad JSON in payload
-        await r.xadd(stream, {"type": "task.created", "payload": "{NOT JSON!!!", "message_id": str(uuid.uuid4())})
-        await svc._load_checkpoints()
+        await r.xadd(
+            stream,
+            {"type": "task.created", "payload": "{NOT JSON!!!", "message_id": str(uuid.uuid4())},
+        )
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state
 
@@ -319,17 +342,20 @@ def test_malformed_message_does_not_crash() -> None:
 # 9. State counters
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
 def test_state_events_seen_increments() -> None:
     """events_seen counter grows with each processed event."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:counter"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         for i in range(5):
             await r.xadd(stream, _v1_fields("task.created", {"task_id": f"t{i}"}))
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state.events_seen
 
@@ -342,13 +368,15 @@ def test_state_events_by_type_groups() -> None:
     """Per-type counters correctly group different event types."""
     r = _fake_redis()
     stream = "sos:stream:global:squad:grouping"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "a"}))
         await r.xadd(stream, _v1_fields("task.created", {"task_id": "b"}))
         await r.xadd(stream, _v1_fields("task.completed", {"task_id": "a"}))
-        await svc._load_checkpoints()
+        await _ensure_group(r, stream, group)
+        svc._groups_registered.add(stream)
         await _run_one_tick(svc)
         return svc.state.events_by_type
 
@@ -360,6 +388,7 @@ def test_state_events_by_type_groups() -> None:
 # ---------------------------------------------------------------------------
 # 10. Dynamic stream discovery
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_fakeredis
 def test_stream_discovery_picks_up_new_streams() -> None:
@@ -384,47 +413,30 @@ def test_stream_discovery_picks_up_new_streams() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 11. Checkpoint does not advance past failed handler
+# 11. _ensure_group: BUSYGROUP swallowed, idempotent
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_fakeredis
-def test_checkpoint_does_not_advance_past_failed_handler() -> None:
-    """Critical invariant: checkpoint stays at pre-failure position on error."""
+def test_ensure_group_is_idempotent() -> None:
+    """_ensure_group called twice on the same stream does not raise."""
     r = _fake_redis()
-    stream = "sos:stream:global:squad:ckpt-fail"
-    ckpt_key = f"{_CHECKPOINT_KEY_PREFIX}:{stream}"
+    stream = "sos:stream:global:squad:ensure-grp"
+    group = "brain"
 
     async def _go():
-        svc = _make_service(redis_client=r, patterns=[stream])
+        svc = _make_service(redis_client=r, patterns=[stream], group_name=group)
+        await _ensure_group(r, stream, group)
+        # Second call should swallow BUSYGROUP
+        await svc._ensure_group(stream)
 
-        # Make handler always raise
-        async def _always_raise(msg):
-            raise RuntimeError("always fails")
-
-        svc._on_task_created = _always_raise
-
-        await r.xadd(stream, _v1_fields("task.created", {"task_id": "fail-always"}))
-        await svc._load_checkpoints()
-
-        # Before tick: no checkpoint
-        before = await r.get(ckpt_key)
-
-        await _run_one_tick(svc)
-
-        # After tick: checkpoint should still be absent (not advanced)
-        after = await r.get(ckpt_key)
-        return before, after
-
-    before, after = asyncio.run(_go())
-    assert before is None
-    assert after is None, (
-        "Checkpoint must NOT advance when handler fails"
-    )
+    asyncio.run(_go())
 
 
 # ---------------------------------------------------------------------------
 # 12. LRU cap for routing decisions
 # ---------------------------------------------------------------------------
+
 
 def test_lru_recent_routing_decisions_capped_at_50() -> None:
     """BrainState.recent_routing_decisions never exceeds 50 entries."""
@@ -444,9 +456,11 @@ def test_lru_recent_routing_decisions_capped_at_50() -> None:
 # 13. Public __init__ exports
 # ---------------------------------------------------------------------------
 
+
 def test_public_api_exports() -> None:
     """sos.services.brain exposes BrainService, BrainState, score_task, URGENCY_WEIGHTS."""
     from sos.services.brain import BrainService, BrainState, score_task, URGENCY_WEIGHTS
+
     assert callable(score_task)
     assert isinstance(URGENCY_WEIGHTS, dict)
     assert BrainService is not None
@@ -457,9 +471,11 @@ def test_public_api_exports() -> None:
 # 14. score_task formula (scoring.py sanity)
 # ---------------------------------------------------------------------------
 
+
 def test_score_task_basic_formula() -> None:
     """score_task returns (impact * urgency * unblock) / cost."""
     from sos.services.brain.scoring import score_task, URGENCY_WEIGHTS
+
     score = score_task(impact=5.0, urgency="high", unblock_count=2, cost=2.0)
     expected = (5.0 * URGENCY_WEIGHTS["high"] * 2.0) / 2.0
     assert abs(score - expected) < 1e-9
@@ -468,6 +484,7 @@ def test_score_task_basic_formula() -> None:
 # ---------------------------------------------------------------------------
 # 15. Integration smoke — skip if real redis not reachable
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(True, reason="Integration test — run manually against live redis")
 def test_integration_real_redis() -> None:  # pragma: no cover

@@ -1,22 +1,32 @@
 """BrainService — async bus consumer for scoring and dispatch.
 
-Sprint 1 of Stage 2 (coherence plan). This module wires the event loop and
-checkpoint machinery. Handlers are stubs that log + count only; real dispatch
-and scoring land in Sprint 3.
+v0.9.1 W6 — migrates from XREAD + Redis checkpoint to XREADGROUP + XACK
+at-least-once. Semantics:
 
-Follows the canonical bus consumer pattern in
-docs/architecture/MIRROR_BUS_CONSUMER_PATTERN.md (5 invariants).
+* Success (handler returns normally, including graceful ``_malformed`` /
+  ``_unknown`` paths inside ``_handle_event``) → ``XACK``.
+* Exception inside ``_handle_event`` → leave unacked. The bus retry
+  worker (:class:`sos.services.bus.retry.RetryWorker`) reclaims the
+  entry after backoff; terminal failures go to DLQ after
+  ``max_retry`` tries. No silent drops.
+* Duplicate envelope ``message_id`` (retry re-XADDs produce a new
+  stream entry with the same logical id) → XACK + skip. The
+  ``_LRUSet`` absorbs that envelope-level dedup so handlers fire
+  exactly once per logical event.
+
+BrainState, snapshot, OTEL trace_id, and task.scored / task.routed
+emission are unchanged — only the consumption path changed.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import redis.asyncio as aioredis
 
@@ -36,6 +46,9 @@ from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
 from sos.services.brain.scoring import score_task
 from sos.services.brain.state import BrainState, RoutingDecision
 
+if TYPE_CHECKING:
+    from sos.services.bus.redis_bus import RedisBusService
+
 logger = logging.getLogger("sos.brain")
 
 # ---------------------------------------------------------------------------
@@ -43,7 +56,8 @@ logger = logging.getLogger("sos.brain")
 # ---------------------------------------------------------------------------
 # The Brain no longer imports the registry service module directly. It reaches
 # the canonical agent registry over HTTP via the Registry service (port 6067).
-from sos.kernel.settings import get_settings as _get_settings
+from sos.kernel.settings import get_settings as _get_settings  # noqa: E402
+
 _brain_settings = _get_settings()
 _registry_client = AsyncRegistryClient(
     base_url=_brain_settings.services.registry,
@@ -58,9 +72,6 @@ _registry_client = AsyncRegistryClient(
 # Constants
 # ---------------------------------------------------------------------------
 
-# Key pattern: sos:consumer:brain:checkpoint:<stream_name>
-_CHECKPOINT_KEY_PREFIX = "sos:consumer:brain:checkpoint"
-
 # Redis key where the latest BrainSnapshot JSON is persisted (TTL 30s).
 # Dashboard reads this on GET /sos/brain.
 _BRAIN_SNAPSHOT_KEY = "sos:state:brain:snapshot"
@@ -69,7 +80,7 @@ _BRAIN_SNAPSHOT_TTL_SEC = 30
 # Stream the Brain emits task.scored events on
 _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
 
-# XREAD blocking timeout in milliseconds
+# XREADGROUP blocking timeout in milliseconds
 _BLOCK_MS = 1000
 
 # How many seen message_ids to keep for idempotency (LRU cap)
@@ -125,6 +136,7 @@ class _LRUSet:
 
 def _build_redis_url() -> str:
     from sos.kernel.settings import get_settings as _get_settings
+
     return _get_settings().redis.build_url()
 
 
@@ -137,8 +149,11 @@ class BrainService:
     """Event-driven scoring and dispatch for SOS work queue.
 
     Subscribes to sos:stream:global:squad:*, sos:stream:global:registry,
-    and sos:stream:global:agent:* via Redis XREAD. Checkpoints per stream.
-    Idempotent on message_id. Fail-open on handler exceptions.
+    and sos:stream:global:agent:* via Redis XREADGROUP. Uses at-least-once
+    delivery: entries are XACK'd only after a successful handler call.
+    Handler exceptions leave entries unacked for the retry worker to reclaim.
+    Envelope-level dedup via _LRUSet (retry re-XADDs produce new stream
+    entries sharing the same envelope message_id).
     """
 
     def __init__(
@@ -146,17 +161,22 @@ class BrainService:
         redis_url: str | None = None,
         stream_patterns: list[str] | None = None,
         consumer_name: str = "brain",
+        group_name: str = "brain",
         redis_client: Optional[aioredis.Redis] = None,  # injectable for tests
+        bus_service: Optional["RedisBusService"] = None,
     ) -> None:
         self._redis_url = redis_url or _build_redis_url()
         self._stream_patterns = stream_patterns or DEFAULT_STREAM_PATTERNS
         self._consumer_name = consumer_name
+        self._group_name = group_name
 
         # Injected redis client takes precedence (used in tests via fakeredis)
         self._redis: Optional[aioredis.Redis] = redis_client
+        self._bus_service = bus_service
 
-        self._checkpoints: dict[str, str] = {}
         self._seen_ids: _LRUSet = _LRUSet(_LRU_CAPACITY)
+        # Streams we've already ensured a consumer group on.
+        self._groups_registered: set[str] = set()
         self._running = False
         self._stop_event: asyncio.Event = asyncio.Event()
 
@@ -175,8 +195,9 @@ class BrainService:
         self._running = True
         self._stop_event.clear()
         logger.info(
-            "BrainService starting (consumer=%s, patterns=%s)",
+            "BrainService starting (consumer=%s, group=%s, patterns=%s)",
             self._consumer_name,
+            self._group_name,
             self._stream_patterns,
         )
 
@@ -185,8 +206,6 @@ class BrainService:
 
         if self._redis is None:
             self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
-
-        await self._load_checkpoints()
 
         while not self._stop_event.is_set():
             try:
@@ -216,15 +235,24 @@ class BrainService:
             await asyncio.sleep(1.0)
             return
 
-        read_spec: dict[str, str] = {
-            s: self._checkpoints.get(s, "0-0") for s in streams
-        }
+        for stream in streams:
+            if stream not in self._groups_registered:
+                await self._ensure_group(stream)
+                self._groups_registered.add(stream)
+
+        read_spec: dict[str, str] = {s: ">" for s in streams}
 
         try:
             assert self._redis is not None
-            results = await self._redis.xread(read_spec, count=50, block=_BLOCK_MS)
+            results = await self._redis.xreadgroup(
+                groupname=self._group_name,
+                consumername=self._consumer_name,
+                streams=read_spec,
+                count=50,
+                block=_BLOCK_MS,
+            )
         except Exception:
-            logger.exception("XREAD error; sleeping 5s")
+            logger.exception("XREADGROUP error; sleeping 5s")
             await asyncio.sleep(5)
             return
 
@@ -236,60 +264,54 @@ class BrainService:
             # Redis may return bytes or str depending on decode_responses
             stream = stream_raw if isinstance(stream_raw, str) else stream_raw.decode()
             for entry_id_raw, fields_raw in entries:
-                entry_id = (
-                    entry_id_raw
-                    if isinstance(entry_id_raw, str)
-                    else entry_id_raw.decode()
-                )
+                entry_id = entry_id_raw if isinstance(entry_id_raw, str) else entry_id_raw.decode()
                 # Normalise field keys/values
                 fields: dict[str, str] = {
                     (k if isinstance(k, str) else k.decode()): (
                         v if isinstance(v, str) else v.decode()
                     )
-                    for k, v in (
-                        fields_raw.items()
-                        if hasattr(fields_raw, "items")
-                        else fields_raw
-                    )
+                    for k, v in (fields_raw.items() if hasattr(fields_raw, "items") else fields_raw)
                 }
 
                 # Idempotency — check message_id in the envelope
                 msg_id = fields.get("message_id", "") or entry_id
                 if msg_id in self._seen_ids:
-                    logger.debug("Duplicate message_id=%s, skipping", msg_id)
-                    # Still advance checkpoint so we don't re-read indefinitely
-                    self._checkpoints[stream] = entry_id
-                    await self._persist_checkpoint(stream, entry_id)
+                    logger.debug("Duplicate message_id=%s, ack+skip", msg_id)
+                    assert self._redis is not None
+                    await self._redis.xack(stream, self._group_name, entry_id)
                     continue
 
-                handler_raised = False
                 # Extract inbound trace_id (or mint one) and make it the active
                 # context for the handler — downstream audits and emits pick
                 # it up without needing it threaded through every signature.
                 trace_id = fields.get("trace_id") or BusMessage.new_trace_id()
                 try:
-                    with use_trace_id(trace_id), span_under_current_trace(
-                        f"bus.handle.{stream}",
-                        tracer_name="sos.brain",
-                        attributes={
-                            "sos.stream": stream,
-                            "sos.entry_id": entry_id,
-                        },
+                    with (
+                        use_trace_id(trace_id),
+                        span_under_current_trace(
+                            f"bus.handle.{stream}",
+                            tracer_name="sos.brain",
+                            attributes={
+                                "sos.stream": stream,
+                                "sos.entry_id": entry_id,
+                            },
+                        ),
                     ):
                         await self._handle_event(stream, entry_id, fields)
                 except Exception:
+                    # Leave unacked — retry worker reclaims after backoff.
+                    # Do NOT XACK, do NOT mark seen.
                     logger.exception(
-                        "Handler failed on stream=%s entry=%s; skipping (fail-open)",
+                        "Handler failed on stream=%s entry=%s; leaving unacked for retry",
                         stream,
                         entry_id,
                     )
-                    handler_raised = True
+                    continue
 
-                # Only advance checkpoint if handler succeeded
-                if not handler_raised:
-                    self._seen_ids.add(msg_id)
-                    self._checkpoints[stream] = entry_id
-                    await self._persist_checkpoint(stream, entry_id)
+                # Handler returned normally (including graceful skip paths).
+                self._seen_ids.add(msg_id)
+                assert self._redis is not None
+                await self._redis.xack(stream, self._group_name, entry_id)
 
         # Publish the latest observable snapshot so the dashboard can read it.
         await self._persist_snapshot()
@@ -305,9 +327,7 @@ class BrainService:
         for pattern in self._stream_patterns:
             cursor: int = 0
             while True:
-                cursor, keys = await self._redis.scan(
-                    cursor, match=pattern, count=100
-                )
+                cursor, keys = await self._redis.scan(cursor, match=pattern, count=100)
                 for k in keys:
                     key = k if isinstance(k, str) else k.decode()
                     if key not in found:
@@ -317,37 +337,28 @@ class BrainService:
         return found
 
     # ------------------------------------------------------------------
-    # Checkpoint persistence
+    # Consumer group registration
     # ------------------------------------------------------------------
 
-    async def _load_checkpoints(self) -> None:
-        """Load all known checkpoints from redis."""
-        assert self._redis is not None
-        # SCAN for checkpoint keys belonging to this consumer
-        cursor: int = 0
-        prefix = f"{_CHECKPOINT_KEY_PREFIX}:*"
-        while True:
-            cursor, keys = await self._redis.scan(cursor, match=prefix, count=100)
-            for k in keys:
-                key = k if isinstance(k, str) else k.decode()
-                val = await self._redis.get(key)
-                if val:
-                    # key format: sos:consumer:brain:checkpoint:<stream>
-                    # stream name starts after the fixed prefix + ":"
-                    stream_name = key[len(_CHECKPOINT_KEY_PREFIX) + 1:]
-                    self._checkpoints[stream_name] = (
-                        val if isinstance(val, str) else val.decode()
-                    )
-                    logger.debug("Loaded checkpoint %s → %s", stream_name, val)
-            if cursor == 0:
-                break
-        logger.info("Loaded %d stream checkpoint(s)", len(self._checkpoints))
+    async def _ensure_group(self, stream: str) -> None:
+        """Idempotently create/register the consumer group on ``stream``.
 
-    async def _persist_checkpoint(self, stream: str, entry_id: str) -> None:
-        """Write checkpoint for one stream to redis."""
-        key = f"{_CHECKPOINT_KEY_PREFIX}:{stream}"
+        Uses ``bus_service.register_consumer_group`` when available so
+        the retry worker picks up unacked entries; falls back to a raw
+        ``XGROUP CREATE`` with ``MKSTREAM`` (swallowing BUSYGROUP) so
+        unit tests with just a fake redis still get XREADGROUP semantics.
+        """
+        if self._bus_service is not None:
+            await self._bus_service.register_consumer_group(stream, self._group_name)
+            return
         assert self._redis is not None
-        await self._redis.set(key, entry_id)
+        try:
+            await self._redis.xgroup_create(
+                name=stream, groupname=self._group_name, id="0", mkstream=True
+            )
+        except Exception as exc:  # redis.exceptions.ResponseError when BUSYGROUP
+            if "BUSYGROUP" not in str(exc):
+                raise
 
     # ------------------------------------------------------------------
     # Snapshot (dashboard hand-off)
@@ -391,9 +402,7 @@ class BrainService:
             return
         try:
             payload = self.snapshot().model_dump_json()
-            await self._redis.set(
-                _BRAIN_SNAPSHOT_KEY, payload, ex=_BRAIN_SNAPSHOT_TTL_SEC
-            )
+            await self._redis.set(_BRAIN_SNAPSHOT_KEY, payload, ex=_BRAIN_SNAPSHOT_TTL_SEC)
         except Exception:
             logger.exception("Failed to persist brain snapshot to redis")
 
@@ -401,9 +410,7 @@ class BrainService:
     # Event dispatch
     # ------------------------------------------------------------------
 
-    async def _handle_event(
-        self, stream: str, entry_id: str, fields: dict[str, str]
-    ) -> None:
+    async def _handle_event(self, stream: str, entry_id: str, fields: dict[str, str]) -> None:
         """Parse v1 envelope and dispatch to the appropriate handler stub."""
         msg_type = fields.get("type", "")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -413,9 +420,7 @@ class BrainService:
         try:
             payload: dict = json.loads(raw_payload) if raw_payload else {}
         except (json.JSONDecodeError, TypeError):
-            logger.warning(
-                "Malformed payload on stream=%s entry=%s; skipping", stream, entry_id
-            )
+            logger.warning("Malformed payload on stream=%s entry=%s; skipping", stream, entry_id)
             # Update state counters even for malformed messages
             self.state.record_event("_malformed", now_iso)
             return
@@ -423,9 +428,7 @@ class BrainService:
         msg: dict = {"type": msg_type, "stream": stream, "entry_id": entry_id, **payload}
 
         if msg_type not in _BRAIN_HANDLED_TYPES:
-            logger.debug(
-                "Unhandled type=%r on stream=%s; skipping gracefully", msg_type, stream
-            )
+            logger.debug("Unhandled type=%r on stream=%s; skipping gracefully", msg_type, stream)
             self.state.record_event(msg_type or "_unknown", now_iso)
             return
 
@@ -515,9 +518,7 @@ class BrainService:
                 ),
             )
         except Exception:
-            logger.exception(
-                "[brain] task.scored envelope construction failed task_id=%s", task_id
-            )
+            logger.exception("[brain] task.scored envelope construction failed task_id=%s", task_id)
             return
 
         assert self._redis is not None
@@ -581,9 +582,7 @@ class BrainService:
         try:
             candidates = await _registry_client.list_agents()
         except Exception:
-            logger.exception(
-                "[brain] registry list_agents failed; re-queueing task_id=%s", task_id
-            )
+            logger.exception("[brain] registry list_agents failed; re-queueing task_id=%s", task_id)
             self.state.enqueue(task_id, score)
             return
 
