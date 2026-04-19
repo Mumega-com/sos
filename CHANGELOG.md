@@ -2,6 +2,45 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.8.2] — 2026-04-19 — Extract TROP from SOS
+
+### Thesis
+v0.8.1 leaked tenant-specific code into the platform. This release moves
+TROP's seeds + standing workflows out of SOS into the TROP product repo
+(`therealmofpatterns/sos-seed/`), and makes the pulse tenant-agnostic.
+
+### Removed
+- `sos/agents/trop/` — moved to `therealmofpatterns/sos-seed/trop/`. The
+  TROP product repo now owns its AgentCard seeds and workflow catalog.
+
+### Changed
+- `sos/services/operations/pulse.py::load_standing_workflows` no longer
+  branches on `project == "trop"`. It reads a JSON array from a file path
+  resolved via (in order):
+  1. explicit `workflows_file=` argument,
+  2. `SOS_PULSE_WORKFLOWS_FILE_<PROJECT>` env var,
+  3. `SOS_PULSE_WORKFLOWS_FILE` env var.
+  Missing / unreadable file → returns `[]` (fail-soft). SOS has zero
+  knowledge of tenant-specific workflow lists.
+- `pulse.post_daily_rhythm` / `post_noon_pulse` / `post_evening_pulse`
+  gained `workflows=` and `workflows_file=` kwargs. Tests pass workflows
+  via kwarg; the CLI passes `--workflows-file PATH`.
+- `sos/services/operations/pulse.py` CLI: new `--workflows-file` flag.
+
+### Handoff — TROP product repo (`therealmofpatterns/sos-seed/`)
+- `trop/seeds.py` — `python -m trop.seeds` registers the 4 standing cards
+  against the SOS registry service.
+- `trop/workflows.py` — in-memory catalog + `write_json()` helper to
+  regenerate the canonical JSON file.
+- `standing_workflows.json` — the file SOS's pulse reads.
+- Operators point the organism at this file via
+  `SOS_PULSE_WORKFLOWS_FILE_TROP=/home/mumega/therealmofpatterns/sos-seed/standing_workflows.json`.
+
+### Tests
+- `tests/services/test_pulse.py` — 5 new tests for the file-based loader
+  (empty default, explicit path, per-project env, missing file, bad JSON
+  shape). Existing tests pass workflows via `workflows=` kwarg.
+
 ## [0.8.1] — 2026-04-19 — TROP-ready
 
 ### Thesis
