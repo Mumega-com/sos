@@ -170,7 +170,8 @@ def test_system_token_valid_body_returns_200(
     data = resp.json()
     assert data["enrolled"] is True
     assert data["name"] == "test-agent"
-    assert data["expires_in"] == 300
+    assert data["stale_after"] == 300
+    assert data["expires_in"] == 900
 
     card = stored["card"]
     assert card.heartbeat_url == "https://example.com/hb"

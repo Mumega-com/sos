@@ -21,6 +21,7 @@ Auth scope:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from datetime import datetime, timezone
@@ -68,13 +69,34 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup() -> None:
-    """Announce presence to the SOS service registry."""
+    """Announce presence to the SOS service registry and start the pruner."""
     try:
         from sos.services.bus.discovery import register_service
 
         await register_service(SERVICE_NAME, DEFAULT_PORT)
     except Exception as exc:  # pragma: no cover — discovery is best-effort
         log.warning("registry discovery registration failed", error=str(exc))
+
+    from sos.services.registry.pruner import HeartbeatPruner
+
+    pruner = HeartbeatPruner()
+    task = asyncio.create_task(pruner.run())
+    app.state.pruner = pruner
+    app.state.pruner_task = task
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    """Stop the heartbeat pruner gracefully."""
+    pruner = getattr(app.state, "pruner", None)
+    task = getattr(app.state, "pruner_task", None)
+    if pruner is not None:
+        pruner.stop()
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -387,12 +409,13 @@ async def mesh_enroll(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"invalid enroll payload: {exc}")
 
-    write_card(card, project=effective_project, ttl_seconds=300)
+    write_card(card, project=effective_project, ttl_seconds=900)
     return {
         "enrolled": True,
         "name": card.name,
         "project": effective_project,
-        "expires_in": 300,
+        "stale_after": 300,
+        "expires_in": 900,
     }
 
 

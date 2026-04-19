@@ -98,6 +98,7 @@ class AgentCard(BaseModel):
     host: Optional[str] = None
     cwd: Optional[str] = None
     heartbeat_url: Optional[str] = None
+    stale: bool = False
     registered_at: str
     last_seen: str
     summary: Optional[str] = Field(default=None, max_length=280)
@@ -126,12 +127,16 @@ class AgentCard(BaseModel):
 
         Arrays are joined with ',' because Redis hash fields are strings.
         Null optional fields are omitted (Redis has no null; absence == null).
+        The ``stale`` bool is serialized as "true"/"false" (lowercase) so the
+        dashboard can read it without decoding the legacy "1"/"0" convention.
         """
         out: dict[str, str] = {}
         for key, val in self.model_dump().items():
             if val is None:
                 continue
-            if isinstance(val, list):
+            if key == "stale":
+                out[key] = "true" if val else "false"
+            elif isinstance(val, list):
                 out[key] = ",".join(val)
             elif isinstance(val, bool):
                 out[key] = "1" if val else "0"
@@ -148,6 +153,7 @@ class AgentCard(BaseModel):
         float_fields = {"last_cache_hit_rate"}
         # Empty string in Redis hash means None for optional string fields.
         nullable_str_fields = {"heartbeat_url"}
+        bool_fields = {"stale"}
         for key, val in h.items():
             if key in list_fields:
                 parsed[key] = [s for s in val.split(",") if s]
@@ -157,6 +163,8 @@ class AgentCard(BaseModel):
                 parsed[key] = float(val)
             elif key in nullable_str_fields:
                 parsed[key] = None if val == "" else val
+            elif key in bool_fields:
+                parsed[key] = val.lower() == "true"
             else:
                 parsed[key] = val
         return cls(**parsed)

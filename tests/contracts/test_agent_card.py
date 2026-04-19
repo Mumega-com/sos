@@ -245,3 +245,39 @@ def test_existing_fields_intact_when_heartbeat_url_set():
     assert restored.tool == card.tool
     assert restored.agent_card_version == AGENT_CARD_VERSION
     assert restored.heartbeat_url == url
+
+
+# ---- Phase 3 / W3: stale field --------------------------------------------
+
+
+def test_stale_defaults_to_false():
+    """AgentCard.stale defaults to False and omits 'stale=false' is still round-trippable."""
+    card = AgentCard(**_valid_card_kwargs())
+    assert card.stale is False
+    h = card.to_redis_hash()
+    # stale=False is still written as "false" (always present so pruner can read it)
+    assert h["stale"] == "false"
+    restored = AgentCard.from_redis_hash(h)
+    assert restored.stale is False
+
+
+def test_stale_true_roundtrips():
+    """AgentCard with stale=True round-trips through Redis as 'true'."""
+    card = AgentCard(**{**_valid_card_kwargs(), "stale": True})
+    assert card.stale is True
+    h = card.to_redis_hash()
+    assert h["stale"] == "true"
+    restored = AgentCard.from_redis_hash(h)
+    assert restored.stale is True
+
+
+def test_stale_field_does_not_disturb_other_fields():
+    """Setting stale=True does not change any other AgentCard field."""
+    card = AgentCard(**{**_valid_card_kwargs(), "stale": True})
+    h = card.to_redis_hash()
+    restored = AgentCard.from_redis_hash(h)
+    assert restored.name == card.name
+    assert restored.skills == card.skills
+    assert restored.squads == card.squads
+    assert restored.role == card.role
+    assert restored.stale is True
