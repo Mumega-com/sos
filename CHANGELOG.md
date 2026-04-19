@@ -26,14 +26,14 @@ registry compromise can no longer publish on the bus.
   signatures are URL-safe base64 without padding. Covered by
   `sos/tests/test_crypto.py` — 8 cases.
 - **S2** — `sos/services/registry/nonce_store.py`: `issue(agent_id)`
-  creates a 120s-TTL nonce at `sos:mesh:nonce:{agent_id}:{nonce}`;
+  creates a 60s-TTL nonce at `sos:mesh:nonce:{agent_id}:{nonce}`;
   `consume(agent_id, nonce)` is an atomic Redis `GETDEL` so replay is
   impossible. Unknown / already-consumed nonce → False (endpoint maps
   to 403).
 
 ### Added — Signed /mesh/enroll + TOFU
 - **S3** — `POST /mesh/challenge` returns
-  `{nonce, expires_in: 120}` (no bearer required — the signature +
+  `{nonce, expires_at, ttl_seconds: 60}` (no bearer required — the signature +
   identity pin are what bind the enrollment). `POST /mesh/enroll` now
   requires `public_key`, `nonce`, `signature` alongside the existing
   fields. Server flow: consume nonce → verify signature → look up
@@ -43,7 +43,7 @@ registry compromise can no longer publish on the bus.
 - **S3** — `sos/contracts/agent_card.py` — `AgentIdentity` soul-layer
   model (`agent_id`, `public_key`, `verification_status`,
   `first_enrolled_at`, `last_rotated_at`). Persisted at
-  `sos:identity:{agent_id}` on Redis and read/written via
+  `sos:registry:{agent_id}` on Redis and read/written via
   `read_one()` / `write()` helpers in `sos.services.registry`.
 - **S3** — `AsyncRegistryClient.enroll_mesh(...)` now accepts and
   forwards the signed envelope; `AsyncRegistryClient.challenge(...)`
