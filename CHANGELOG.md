@@ -6,6 +6,47 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ---
 
+## [0.10.1] — 2026-04-19 — Phase 7 Growth Intelligence squad + Shelf commerce
+
+Closes the Phase 7 mothership gate (task #212): a new tenant gets a
+brand-vector dossier + wallet + one course/book for sale, all within
+10 minutes of `sos init`. Two capabilities ship together because they
+share the same growth flywheel — the Growth Intelligence squad builds
+the dossier that Inkwell renders as the "Brand Vector" Glass tile, and
+the Shelf routes turn a tenant's Inkwell page into a Stripe-backed
+storefront whose captures feed the `$MIND` wallet.
+
+### Growth Intelligence
+- **7.1** GA/GSC/Ads OAuth providers in `sos/services/integrations/oauth.py`.
+- **7.2** BrightData + Apify connector adapters.
+- **7.3** `sos.agents.growth_intel` standing squad (trend-finder,
+  narrative-synth, dossier-writer).
+- **7.4** `growth-intel` daily-rhythm workflow wired to the pulse.
+- **7.5** `GET /integrations/dossier/{tenant}/latest` + "Brand Vector"
+  Glass tile seeded by default (now 6 tiles).
+
+### Shelf commerce
+- **7.6** `/economy/shelf/*` routes (list, add, checkout, Stripe webhook
+  capture) + migration `0003_shelf.sql`. Webhook is idempotent via
+  `UNIQUE(stripe_session_id)`; successful captures credit
+  `amount_cents/100 × product.mind_multiplier` into the tenant's
+  $MIND wallet.
+- **7.7** `step_g_seed_shelf` in `sos init` seeds the "Mumega Playbook"
+  product for `mumega-internal` — dogfood out of the gate.
+- **7.8** E2E `tests/e2e/test_growth_shelf_round_trip.py` exercises
+  the full Phase 7 gate in-process.
+- **7.9** `lint-imports` R2 clean — `sos.services.economy.shelf` and
+  the new intelligence adapters import contracts + kernel only.
+
+### Contracts
+- `sos/contracts/shelf.py` — `ShelfProduct`, `ShelfCapture`,
+  `CheckoutSession`, `ShelfProductList`, `ShelfCaptureResult`.
+
+### Client
+- `EconomyClient.add_shelf_product()` and `EconomyClient.list_shelf()`.
+
+---
+
 ## [0.10.0] — 2026-04-19 — Phase 6 Glass layer (self-writing dashboards)
 
 Closes the Phase 6 mothership gate (task #211): every tenant's
