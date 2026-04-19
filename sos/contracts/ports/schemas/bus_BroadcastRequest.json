@@ -2,17 +2,9 @@
   "additionalProperties": false,
   "properties": {
     "project": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "Project scope \u2014 required in v0.9.1.",
-      "title": "Project"
+      "description": "Soft grouping inside a tenant. Required.",
+      "title": "Project",
+      "type": "string"
     },
     "text": {
       "title": "Text",
@@ -20,7 +12,8 @@
     }
   },
   "required": [
-    "text"
+    "text",
+    "project"
   ],
   "title": "BroadcastRequest",
   "type": "object"

@@ -3,9 +3,23 @@
 Canonical contract shared between SOS (Python) and Inkwell (TypeScript).
 Source of truth for the bus surface plugins and agents talk through.
 
-Tenant binding: the bus resolves tenant from the caller's bus-token / agent
-identity context. Methods here do NOT take explicit tenant_id — that matches
-Inkwell's BusPort signature.
+Scope model (v0.9.1):
+
+* ``tenant_id`` is the **hard** customer boundary. Two tenants never see
+  each other's messages — enforcement lives at the delivery layer and
+  this field is the anchor. Resolved from the caller's bus-token /
+  agent identity context at publish time; wire shape carries it so
+  every message can be audited independently of the session that
+  produced it.
+* ``project`` is a **soft** grouping inside a tenant: free-form string,
+  used to fan routing (``journeys``, ``saas``, ``mothership``...). No
+  implicit default — callers must name the project the message belongs
+  to, so scope leaks show up as contract errors instead of silent
+  cross-project reads.
+
+Methods on :class:`BusPort` still don't take explicit ``tenant_id``
+(matches Inkwell's signature) — the port resolves it from caller
+context and stamps it on every outgoing envelope.
 """
 
 from __future__ import annotations
@@ -23,6 +37,9 @@ class BusMessage(BaseModel):
     Mirrors Inkwell's BusMessage. The richer typed SOS bus envelopes live in
     sos.contracts.messages (AnnounceMessage, SendMessage, TaskCreatedMessage,
     ...). This is the port-level shape plugins and external agents see.
+
+    Both ``tenant_id`` and ``project`` are required in v0.9.1. See module
+    docstring for the hard-vs-soft distinction.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -32,12 +49,11 @@ class BusMessage(BaseModel):
     text: str
     ts: str = Field(description="ISO-8601 timestamp")
     kind: Optional[str] = Field(default=None, description="Optional message-type hint")
-    # `project` is optional in v0.9.0 and becomes required in v0.9.1 when
-    # Phase 2 lands project-scope routing. Landing it here keeps the
-    # generated TS schema stable across the bump.
-    project: Optional[str] = Field(
-        default=None,
-        description="Project scope — required in v0.9.1 once bus scoping ships.",
+    tenant_id: str = Field(
+        description="Hard customer boundary. Stamped by the port from caller context."
+    )
+    project: str = Field(
+        description="Soft grouping inside a tenant. Required — no implicit default."
     )
 
 
@@ -46,20 +62,14 @@ class SendRequest(BaseModel):
 
     to: str = Field(description="Target agent slug or channel")
     text: str
-    project: Optional[str] = Field(
-        default=None,
-        description="Project scope — required in v0.9.1.",
-    )
+    project: str = Field(description="Soft grouping inside a tenant. Required.")
 
 
 class BroadcastRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str
-    project: Optional[str] = Field(
-        default=None,
-        description="Project scope — required in v0.9.1.",
-    )
+    project: str = Field(description="Soft grouping inside a tenant. Required.")
 
 
 class InboxRequest(BaseModel):
