@@ -15,6 +15,7 @@ from sos.observability.logging import get_logger
 from sos.services.economy.wallet import SovereignWallet, InsufficientFundsError
 from sos.services.economy.usage_log import UsageEvent, UsageLog
 from sos.services.economy.settlement import settle_usage_event, SettlementResult
+from sos.services.economy.shelf import router as shelf_router
 from sos.kernel.health import health_response
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
@@ -30,6 +31,7 @@ init_tracing("economy")
 
 app = FastAPI(title="SOS Economy Service", version=__version__)
 instrument_fastapi(app)
+app.include_router(shelf_router)
 
 # CORS for desktop/mobile apps
 app.add_middleware(
