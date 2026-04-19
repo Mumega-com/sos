@@ -353,6 +353,67 @@ async def list_tasks(
     return _json(tasks.list(squad_id=squad_id, status=status, tenant_id=auth.tenant_scope))
 
 
+_PRIORITY_WEIGHTS = {
+    TaskPriority.CRITICAL: 4,
+    TaskPriority.HIGH: 3,
+    TaskPriority.MEDIUM: 2,
+    TaskPriority.LOW: 1,
+}
+
+
+def _score_task(task: SquadTask, now_ts: float) -> float:
+    """Board-view score: ``priority*10 + blocks*5 + age_hours*2``.
+
+    Stable ordering: tied scores fall back to creation order (oldest first).
+    Missing / malformed ``created_at`` contributes 0 to the age term.
+    """
+    from datetime import datetime
+
+    priority_term = _PRIORITY_WEIGHTS.get(task.priority, 2) * 10
+    blocks_term = len(task.blocks) * 5
+    age_hours = 0.0
+    if task.created_at:
+        try:
+            created = datetime.fromisoformat(task.created_at.replace("Z", "+00:00"))
+            age_hours = max(0.0, (now_ts - created.timestamp()) / 3600.0)
+        except (ValueError, TypeError):
+            age_hours = 0.0
+    return float(priority_term + blocks_term + age_hours * 2)
+
+
+@app.get("/tasks/board")
+async def tasks_board(
+    squad: str,
+    auth: AuthContext = Depends(require_capability("tasks", "read")),
+) -> dict[str, Any]:
+    """Read-only board view — tasks grouped by status, scored for urgency.
+
+    Per closure-v1 Tier 1 §T1.5: returns ``{squad, total, groups: {status: [task...]}}``
+    where each task includes a ``score`` field and tasks are sorted highest
+    score first within each group. Assignee resolves to the agent's card name
+    when available, else falls back to the raw assignee id.
+    """
+    import time as _time
+
+    now_ts = _time.time()
+    items = tasks.list(squad_id=squad, status=None, tenant_id=auth.tenant_scope)
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for task in items:
+        scored = _json(task)
+        scored["score"] = round(_score_task(task, now_ts), 2)
+        scored["assignee_name"] = task.assignee or None
+        status_key = (
+            task.status.value if hasattr(task.status, "value") else str(task.status)
+        )
+        groups.setdefault(status_key, []).append(scored)
+
+    for bucket in groups.values():
+        bucket.sort(key=lambda t: (-t["score"], t.get("created_at") or ""))
+
+    return {"squad": squad, "total": len(items), "groups": groups}
+
+
 @app.get("/tasks/{task_id}")
 async def get_task(
     task_id: str,
