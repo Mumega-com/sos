@@ -45,6 +45,7 @@ _EXPECTED_PROPERTIES = {
     "completion_artifact_url",
     "completion_notes",
     "acks",
+    "done_when",
     "created_by",
     "created_at",
     "updated_at",
@@ -84,13 +85,13 @@ def test_schema_snapshot_matches_model() -> None:
     )
 
 
-def test_schema_contains_all_20_fields() -> None:
-    """The committed snapshot must expose all 20 Objective fields."""
+def test_schema_contains_all_21_fields() -> None:
+    """The committed snapshot must expose all 21 Objective fields."""
     schema = json.loads(_SCHEMA_PATH.read_text())
     actual = set(schema["properties"].keys())
     missing = _EXPECTED_PROPERTIES - actual
     assert not missing, f"Schema is missing fields: {missing}"
-    assert len(actual) == 20, f"Expected 20 properties, got {len(actual)}: {actual}"
+    assert len(actual) == 21, f"Expected 21 properties, got {len(actual)}: {actual}"
 
 
 def test_required_fields_present() -> None:

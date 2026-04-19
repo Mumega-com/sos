@@ -1,4 +1,59 @@
 {
+  "$defs": {
+    "DoneCheck": {
+      "additionalProperties": false,
+      "description": "One acceptance criterion on an Objective or SquadTask.",
+      "properties": {
+        "acked_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acked At"
+        },
+        "acked_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acked By"
+        },
+        "done": {
+          "default": false,
+          "title": "Done",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Short stable identifier within the parent item",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "text": {
+          "description": "Human-readable criterion",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "title": "DoneCheck",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "A single node in the living objective tree.",
   "properties": {
@@ -51,6 +106,13 @@
       "default": "",
       "title": "Description",
       "type": "string"
+    },
+    "done_when": {
+      "items": {
+        "$ref": "#/$defs/DoneCheck"
+      },
+      "title": "Done When",
+      "type": "array"
     },
     "holder_agent": {
       "anyOf": [

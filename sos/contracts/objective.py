@@ -19,6 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from sos.contracts.done_check import DoneCheck
+
 
 class Objective(BaseModel):
     """A single node in the living objective tree."""
@@ -56,6 +58,7 @@ class Objective(BaseModel):
     completion_artifact_url: str | None = None
     completion_notes: str = ""
     acks: list[str] = Field(default_factory=list)  # agent IDs that acked
+    done_when: list[DoneCheck] = Field(default_factory=list)
 
     # ---- provenance -------------------------------------------------------
     created_by: str
@@ -115,7 +118,7 @@ class Objective(BaseModel):
     @classmethod
     def from_redis_hash(cls, data: dict[str, str]) -> "Objective":
         """Parse a flat Redis hash (all string values) back into a typed Objective."""
-        list_fields = {"subscribers", "tags", "capabilities_required", "acks"}
+        list_fields = {"subscribers", "tags", "capabilities_required", "acks", "done_when"}
         parsed: dict = {}
         for key, val in data.items():
             if key == "outcome_score":

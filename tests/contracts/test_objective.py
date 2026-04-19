@@ -240,6 +240,7 @@ def test_all_18_fields_present():
         "state", "holder_agent", "holder_heartbeat_at",
         "subscribers", "tags", "capabilities_required",
         "completion_artifact_url", "completion_notes", "acks",
+        "done_when",
         "created_by", "created_at", "updated_at",
         "tenant_id", "project",
         "outcome_score",
@@ -279,3 +280,55 @@ def test_outcome_score_rejects_out_of_range():
 
     with pytest.raises(ValueError):
         Objective(**{**_min_kwargs(), "outcome_score": -0.1})
+
+
+# ---------------------------------------------------------------------------
+# 12. done_when (closure-v1 T1.3) — structured completion gate on Objective
+# ---------------------------------------------------------------------------
+
+
+def test_done_when_defaults_to_empty_list():
+    obj = Objective(**_min_kwargs())
+    assert obj.done_when == []
+
+
+def test_done_when_round_trips_via_redis_hash():
+    from sos.contracts.done_check import DoneCheck
+
+    checks = [
+        DoneCheck(id="c1", text="tests pass"),
+        DoneCheck(id="c2", text="docs updated", done=True,
+                  acked_by="agent:kasra", acked_at=Objective.now_iso()),
+    ]
+    obj = Objective(**{**_min_kwargs(), "done_when": checks})
+    h = obj.to_redis_hash()
+
+    import json
+    parsed = json.loads(h["done_when"])
+    assert len(parsed) == 2
+    assert parsed[0]["id"] == "c1" and parsed[0]["done"] is False
+    assert parsed[1]["id"] == "c2" and parsed[1]["done"] is True
+
+    restored = Objective.from_redis_hash(h)
+    assert len(restored.done_when) == 2
+    assert all(isinstance(c, DoneCheck) for c in restored.done_when)
+    assert restored.done_when[0].text == "tests pass"
+    assert restored.done_when[1].acked_by == "agent:kasra"
+    assert restored == obj
+
+
+def test_done_when_accepts_dict_input_for_pydantic_coercion():
+    obj = Objective(**{
+        **_min_kwargs(),
+        "done_when": [{"id": "x", "text": "ship it"}],
+    })
+    assert len(obj.done_when) == 1
+    assert obj.done_when[0].id == "x"
+    assert obj.done_when[0].done is False
+
+
+def test_done_when_rejects_empty_id():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Objective(**{**_min_kwargs(),
+                     "done_when": [{"id": "", "text": "nope"}]})
