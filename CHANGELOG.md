@@ -6,6 +6,114 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ---
 
+## [0.9.2] — 2026-04-19 — Mesh enrollment + squad addressability
+
+### Thesis
+Phase 3 of the Mumega Mothership plan. The registry grows a mesh-enrollment
+overlay on top of the existing AgentCard runtime store so every live agent is
+(a) addressable by squad subject and (b) automatically aged out when it
+stops heartbeating. Seven waves, seven revertable commits — chose Option B
+from the plan (extend `/agents/cards` rather than add a third keyspace) on
+durability, trust, security, intelligence: AgentCard stays the single source
+of truth and the hardened bearer + project-scope path is reused.
+
+### Added — Registry endpoints
+- **W1** — `POST /mesh/enroll` on `sos/services/registry/app.py`. Lighter
+  payload than `POST /agents/cards` — accepts `{agent_id, name, role,
+  skills[], squads[]?, heartbeat_url?, project?}` and fills AgentCard's
+  required fields server-side (`tool`/`type` = `"service"`,
+  `registered_at`/`last_seen` = utcnow). Writes with `ttl_seconds=900` so
+  there's a 5m-stale → 15m-remove grace window. Reuses `_verify_bearer` +
+  `_resolve_project_scope`. Response: `{enrolled, name, project,
+  stale_after, expires_in}`.
+- **W2** — `GET /mesh/squad/{slug}`. Scans cards in the caller's project
+  scope and returns the subset whose `squads[]` contains the slug. Makes
+  subjects like `squad:growth-intel.{project}` resolvable at delivery
+  time. Path param validated against `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` so
+  slashes and traversal shorthands cannot sneak through.
+
+### Added — Contract fields
+- **W0** — `AgentCard.heartbeat_url: Optional[str]` (optional URL the mesh
+  can ping to confirm an agent is live; accepted by `/mesh/enroll`,
+  surfaced in the mesh dashboard). Empty string ↔ None via
+  `to_redis_hash` / `from_redis_hash`.
+- **W3** — `AgentCard.stale: bool = False`. Flipped to `True` by the
+  pruner after 5m of silence; the 15m removal deletes the card outright.
+  Round-trips through the Redis hash as `"true"`/`"false"`.
+
+### Added — Pruner
+- **W3** — `sos/services/registry/pruner.py`: `HeartbeatPruner` runs every
+  60s (configurable), scans `sos:cards:*`, and enforces the 5m-stale /
+  15m-remove lifecycle. Stale writes reduce TTL to the remaining removal
+  window; removals call `redis.delete()` even though Redis TTL would also
+  expire them — belt-and-suspenders so operator actions that bump TTL
+  can't accidentally extend a dead agent's lifetime. Wired into the
+  registry FastAPI startup/shutdown so it boots and exits with the
+  service. Exposes `staled_count` / `removed_count` for observability.
+
+### Added — Client + bootloader
+- **W4** — `AsyncRegistryClient.enroll_mesh(...)` in `sos/clients/registry.py`
+  — the async-side helper every agent uses. `AgentJoinService.join()`
+  gained Step 8.5: after the bus announce, it calls `enroll_mesh` with
+  the agent's slug, role, and skills. Failure is non-blocking (appended
+  to the shared `errors` list, same as every other onboarding step).
+
+### Added — Dashboard
+- **W5** — `GET /sos/mesh` (HTML, admin-gated) + `GET /sos/mesh/api`
+  (JSON, any-bearer). Both group enrolled cards by squad (`squads` key ↔
+  lists of cards), an `unsquadded` bucket for agents with no squads yet,
+  and computed `age_label` + `stale` for each entry. The HTML page
+  auto-refreshes every 30s so an agent going quiet fades in without a
+  manual reload. Uses the existing dashboard→registry whitelist in
+  `pyproject.toml` (same pattern as `operator_api`); no new import-linter
+  flare.
+
+### Tests
+- **W0** — extended `tests/contracts/test_agent_card.py` with
+  `heartbeat_url` + `stale` round-trip cases; 20 → 42 cases total.
+- **W1** — new `tests/services/registry/test_mesh_enroll.py`: 7 cases
+  (missing bearer, system token happy path, scoped token enrolls into
+  own project, foreign-project 403, invalid `name`, invalid `role`,
+  skills/squads round-trip).
+- **W2** — extended the same file with 6 squad-resolver cases: no
+  bearer, empty mesh, seeded cards filter by slug, scoped token sees
+  only own project, empty match, invalid slug format.
+- **W3** — new `tests/services/registry/test_pruner.py`: 6 cases with a
+  frozen clock (fresh ignored, 301s stales, already-stale no-op, 901s
+  deletes, malformed `last_seen` skipped, empty keyspace clean).
+- **W4** — new `tests/clients/test_registry_client.py` cases for
+  `enroll_mesh` (body shape, optional fields, non-2xx raises).
+- **W5** — new `tests/services/dashboard/test_mesh_route.py`: 5 cases
+  (bearer required, 0 cards, 3-card grouping, cookie redirect for HTML,
+  admin cookie happy path).
+- **W6** — new `tests/contracts/test_mesh_enroll_in_bootloader.py`: AST
+  scan of `sos/agents/join.py::AgentJoinService.join` asserts the method
+  body references `enroll_mesh` or the `/mesh/enroll` path string, so a
+  future refactor can't silently remove the invariant.
+- Gate at release: 505 tests pass across contracts + registry +
+  dashboard + registry client.
+
+### Rollback posture
+Each wave is independently revertable. W3 is the only wave that makes a
+backwards-incompatible change to existing behavior (TTL 300s → 900s on
+`/mesh/enroll`; pre-W3 callers that hardcoded `expires_in: 300` must
+read the response key). W0 + W3 together add two optional AgentCard
+fields; dropping them is a schema-only reversion.
+
+### Non-goals for v0.9.2
+- No heartbeat URL pinging. The field is stored on the card but not
+  actively polled — polling lives in Phase 4 alongside Mumega-edge.
+- No scan-based squad index. Squad resolution is a scan over scoped
+  cards; revisit in Phase 4+ if scan latency matters at scale.
+- No changes to Squad Service `/agents/register`. That path stays;
+  `/mesh/enroll` is the registry-side overlay.
+
+### Closes
+- Task #33 — Mesh enrollment (Hadi action).
+- Task #208 — Phase 3 Mesh enrollment (v0.9.2).
+
+---
+
 ## [0.9.1] — 2026-04-19 — Bus stability: project-scope + ack-or-retry
 
 ### Thesis
