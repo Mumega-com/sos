@@ -25,12 +25,22 @@ Use ``--dry-run`` to print the payload without hitting the saas service.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from sos.clients.operations import OperationsClient
 from sos.clients.saas import SaasClient
 from sos.contracts.tenant import TenantCreate, TenantPlan
+
+_TEXT_SUFFIXES = {
+    ".ts", ".tsx", ".astro", ".md", ".json", ".toml", ".html", ".css",
+}
+_PLACEHOLDERS = ("{{SLUG}}", "{{LABEL}}", "{{DOMAIN}}", "{{EMAIL}}", "{{INDUSTRY}}", "{{TAGLINE}}")
 
 
 def green(text: str) -> str:
@@ -102,20 +112,82 @@ def step_a_provision_tenant(
     return client.create_tenant(payload)
 
 
-def step_b_deploy_inkwell(cfg: InitConfig, tenant: dict[str, Any]) -> None:
-    """Step B — copy ``inkwell/instances/_template/`` and ``wrangler deploy``.
+def step_b_deploy_inkwell(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    *,
+    _subprocess_run: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Step B — copy ``inkwell/instances/_template/`` and ``wrangler pages deploy``.
 
-    Blocked: the ``_template/`` directory does not exist in the Inkwell
-    repo yet. Follow-up is tracked in the Phase 5 plan §5.3 — the
-    template must export ``inkwell.config.ts`` with ``{{SLUG}}`` /
-    ``{{LABEL}}`` / ``{{DOMAIN}}`` placeholders and a stub
-    ``standing_workflows.json``.
+    Precondition: ``wrangler`` must be on PATH (npx wrangler 4.x works too).
+    CLOUDFLARE_API_TOKEN must be set in the environment.
     """
-    raise NotImplementedError(
-        "Step B blocked on inkwell/instances/_template/ scaffold + "
-        "Cloudflare Pages credentials wired into CI. "
-        "See docs/plans/2026-04-19-mumega-mothership.md §5.3."
+    inkwell_root = Path(os.environ.get("INKWELL_ROOT", "/home/mumega/inkwell"))
+    source = inkwell_root / "instances" / "_template"
+    dest = inkwell_root / "instances" / cfg.slug
+
+    if not source.exists():
+        raise FileNotFoundError(
+            f"Inkwell template not found: {source}. "
+            "Ensure inkwell/instances/_template/ exists before running sos init."
+        )
+    if dest.exists():
+        raise FileExistsError(
+            f"Instance directory already exists: {dest}. "
+            f"Remove it manually if you want to re-initialise slug '{cfg.slug}'."
+        )
+
+    shutil.copytree(source, dest)
+
+    # Interpolate the six placeholders in every text file under dest.
+    replacements = {
+        "{{SLUG}}": cfg.slug,
+        "{{LABEL}}": cfg.label,
+        "{{DOMAIN}}": cfg.domain or "",
+        "{{EMAIL}}": cfg.email,
+        "{{INDUSTRY}}": cfg.industry or "",
+        "{{TAGLINE}}": cfg.tagline or "",
+    }
+    for path in dest.rglob("*"):
+        if path.is_file() and path.suffix in _TEXT_SUFFIXES:
+            text = path.read_text(encoding="utf-8")
+            for token, value in replacements.items():
+                text = text.replace(token, value)
+            path.write_text(text, encoding="utf-8")
+
+    token = os.environ.get("CLOUDFLARE_API_TOKEN")
+    if not token:
+        raise EnvironmentError(
+            "CLOUDFLARE_API_TOKEN is not set. "
+            "Export it before running sos init Step B."
+        )
+
+    # Build at inkwell root (Astro SSG writes to dist/).
+    # Assumption: node_modules already installed in inkwell_root.
+    _subprocess_run(
+        ["npm", "run", "build"],
+        env={**os.environ, "CLOUDFLARE_API_TOKEN": token},
+        cwd=inkwell_root,
+        check=True,
+        capture_output=True,
+        text=True,
     )
+
+    result = _subprocess_run(
+        ["wrangler", "pages", "deploy", "dist", "--project-name", cfg.slug],
+        env={**os.environ, "CLOUDFLARE_API_TOKEN": token},
+        cwd=inkwell_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    return {
+        "slug": cfg.slug,
+        "deploy_path": str(dest),
+        "wrangler_stdout": result.stdout[-500:],
+    }
 
 
 def step_c_seed_squads(cfg: InitConfig, tenant: dict[str, Any]) -> None:
@@ -147,18 +219,23 @@ def step_d_write_workflows(cfg: InitConfig, tenant: dict[str, Any]) -> None:
     )
 
 
-def step_e_trigger_pulse(cfg: InitConfig, tenant: dict[str, Any]) -> None:
-    """Step E — kick the first pulse run for this tenant/project.
-
-    Blocked: ``sos.services.operations.pulse`` exposes the runner but
-    not a "start for tenant" entry point reachable via the saas client.
-    The operations client needs a ``trigger_pulse(tenant)`` method that
-    maps to the right HTTP surface.
-    """
-    raise NotImplementedError(
-        "Step E blocked on operations HTTP client helper. "
-        "See docs/plans/2026-04-19-mumega-mothership.md §5.6."
+def step_e_trigger_pulse(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    *,
+    client_factory: Any = OperationsClient,
+) -> dict[str, Any]:
+    """Step E — kick the first pulse run for this tenant/project."""
+    kwargs: dict[str, Any] = {}
+    if cfg.saas_token:
+        kwargs["token"] = cfg.saas_token
+    client = client_factory(**kwargs)
+    result = client.trigger_pulse(tenant["slug"], tenant["slug"])
+    print(
+        f"  {green('ok')} — pulse triggered"
+        f" (tenant={result.get('tenant')}, started_at={result.get('started_at')})"
     )
+    return result
 
 
 def parse_args(argv: list[str] | None = None) -> InitConfig:
@@ -223,22 +300,35 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"  {green('ok')} — tenant row created (status=provisioning)")
 
-    # Steps B–E — stubs with remediation pointers.
-    pending: list[tuple[str, Any]] = [
-        ("Step B", step_b_deploy_inkwell),
+    # Step B — real (inkwell template copy + wrangler pages deploy).
+    print(f"\n{bold('Step B')} — copy inkwell template + deploy to Cloudflare Pages")
+    try:
+        b_result = step_b_deploy_inkwell(cfg, tenant)
+        print(f"  {green('ok')} — deployed (path={b_result['deploy_path']})")
+    except Exception as exc:
+        print(f"  {warn('skipped')}: {exc}")
+
+    # Steps C–D — stubs with remediation pointers.
+    stubs: list[tuple[str, Any]] = [
         ("Step C", step_c_seed_squads),
         ("Step D", step_d_write_workflows),
-        ("Step E", step_e_trigger_pulse),
     ]
-    for name, fn in pending:
+    for name, fn in stubs:
         print(f"\n{bold(name)} — running…")
         try:
             fn(cfg, tenant)
         except NotImplementedError as exc:
             print(f"  {warn('skipped')}: {exc}")
 
+    # Step E — real (operations service must be reachable).
+    print(f"\n{bold('Step E')} — trigger first pulse run")
+    try:
+        step_e_trigger_pulse(cfg, tenant)
+    except Exception as exc:
+        print(f"  {warn('skipped')}: {exc}")
+
     print("\n" + "=" * 48)
-    print(f"{green('Phase 5 Step A shipped.')} B–E blocked (see above).")
+    print(f"{green('Phase 5 Step A + E shipped.')} B–D blocked (see above).")
     print(f"  slug:   {cfg.slug}")
     print(f"  label:  {cfg.label}")
     print(f"  plan:   {cfg.plan.value}")

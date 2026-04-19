@@ -87,6 +87,15 @@ class OperationsClient(BaseHTTPClient):
         body = resp.json()
         return body if isinstance(body, dict) else None
 
+    def trigger_pulse(self, tenant: str, project: str) -> Dict[str, Any]:
+        resp = self._request(
+            "POST",
+            "/pulse/trigger",
+            json={"tenant": tenant, "project": project},
+            headers=_auth_headers(self._token),
+        )
+        return resp.json()
+
 
 class AsyncOperationsClient(AsyncBaseHTTPClient):
     """Async HTTP client for the Operations service."""
@@ -141,6 +150,15 @@ class AsyncOperationsClient(AsyncBaseHTTPClient):
             raise
         body = resp.json()
         return body if isinstance(body, dict) else None
+
+    async def trigger_pulse(self, tenant: str, project: str) -> Dict[str, Any]:
+        resp = await self._request(
+            "POST",
+            "/pulse/trigger",
+            json={"tenant": tenant, "project": project},
+            headers=_auth_headers(self._token),
+        )
+        return resp.json()
 
 
 __all__ = ["OperationsClient", "AsyncOperationsClient"]

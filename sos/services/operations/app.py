@@ -18,8 +18,10 @@ trigger runs.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +35,7 @@ from sos.kernel.health import health_response
 from sos.kernel.policy.gate import can_execute
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
+from sos.services.operations.pulse import post_morning_pulse
 from sos.services.operations.runner import load_template, run_operation
 
 SERVICE_NAME = "operations"
@@ -95,6 +98,11 @@ class RunRequest(BaseModel):
     dry_run: bool = False
 
 
+class PulseTriggerRequest(BaseModel):
+    tenant: str
+    project: str
+
+
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return health_response(SERVICE_NAME, _START_TIME)
@@ -152,3 +160,28 @@ async def get_template(
         return load_template(product)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"template '{product}' not found")
+
+
+@app.post("/pulse/trigger")
+async def trigger_pulse(
+    req: PulseTriggerRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    decision = await can_execute(
+        action="operations:pulse_trigger",
+        resource=req.project,
+        tenant=req.tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
+    started_at = datetime.now(timezone.utc).isoformat()
+    # post_morning_pulse is fail-soft — it logs and returns "" on objectives
+    # service failure. We fire-and-forget in a task so the HTTP response is
+    # immediate; the pulse tree creation is async and best-effort.
+    asyncio.create_task(post_morning_pulse(req.project))
+    return {
+        "ok": True,
+        "tenant": req.tenant,
+        "project": req.project,
+        "started_at": started_at,
+    }

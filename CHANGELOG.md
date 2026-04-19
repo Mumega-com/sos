@@ -4,41 +4,54 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
+### v0.9.4-alpha.2 — Phase 5 `sos init` Steps A + B + E (2026-04-19)
+
+Adds the Inkwell template copy + wrangler deploy (Step B) and the
+operations pulse trigger (Step E) on top of alpha.1. Steps C and D
+remain stubbed. Plan reference: `docs/plans/2026-04-19-mumega-mothership.md` §5.
+
+#### Added (alpha.2)
+- `sos/cli/init.py::step_b_deploy_inkwell` — real implementation. Reads
+  `INKWELL_ROOT` (default `/home/mumega/inkwell`), copies
+  `instances/_template/` → `instances/<slug>/`, interpolates six
+  placeholders (`{{SLUG}}`, `{{LABEL}}`, `{{DOMAIN}}`, `{{EMAIL}}`,
+  `{{INDUSTRY}}`, `{{TAGLINE}}`) across text files, runs `npm run build`
+  at the Inkwell root, then `wrangler pages deploy dist --project-name <slug>`.
+  Requires `CLOUDFLARE_API_TOKEN` in env. Fails fast if the template
+  is missing or the destination already exists. Companion scaffold
+  `instances/_template/` lives in the Inkwell repo.
+- `sos/cli/init.py::step_e_trigger_pulse` — real implementation. Calls
+  the new `OperationsClient.trigger_pulse(tenant, project)`; returns
+  the server's `{ok, started_at}` payload.
+- `sos/clients/operations.py` — new `trigger_pulse(tenant, project)` on
+  both sync `OperationsClient` and `AsyncOperationsClient`.
+- `sos/services/operations/app.py` — new `POST /pulse/trigger` route
+  (system-scoped via `can_execute(action="operations:pulse_trigger",
+  require_system=True)`). Invokes the pulse runner in
+  `asyncio.create_task` (fire-and-forget) and responds immediately.
+- `tests/cli/test_init.py` — 6 new tests (B + E happy-path, B collision,
+  E token/client wiring). Stub parametrize list trimmed to C + D.
+
 ### v0.9.4-alpha.1 — Phase 5 `sos init` Step A (2026-04-19)
 
-First slice of the Phase 5 first-boot flow from the mothership plan
-(`docs/plans/2026-04-19-mumega-mothership.md` §5). Ships tenant
-provisioning via the SaaS service; downstream steps (Inkwell template
-copy + wrangler deploy, squad seeding + qNFT mint, standing workflows,
-first pulse run) are documented stubs that raise `NotImplementedError`
-with pointers to the blocker.
+First slice of the Phase 5 first-boot flow from the mothership plan.
+Ships tenant provisioning via the SaaS service.
 
-#### Added
+#### Added (alpha.1)
 - `sos/cli/init.py` — new Phase 5 tenant-provisioning CLI. Flags:
   `--slug --label --email --plan --domain --industry --tagline`, plus
-  `--saas-base-url`, `--saas-token`, `--dry-run`. Validates the payload
-  through `sos.contracts.tenant.TenantCreate` and POSTs to
-  `/tenants` via `sos.clients.saas.SaasClient`. Steps B–E run
-  sequentially and report each block reason so the operator sees the
-  full punch list on one run.
+  `--saas-base-url`, `--saas-token`, `--dry-run`. Validates through
+  `sos.contracts.tenant.TenantCreate` and POSTs to `/tenants` via
+  `sos.clients.saas.SaasClient`.
 - `sos/cli/setup.py` — relocated the pre-v0.9.4 dev-machine setup
-  wizard (LLM provider / API key / bus tokens / Redis) so
-  `python -m sos.cli.setup` keeps working. Previously lived at
-  `sos.cli.init`.
-- `tests/cli/test_init.py` — 11 unit tests covering payload
-  construction, Step A client wiring (base URL + token overrides,
-  dry-run path), `argparse` defaults, and the B–E stub contract
-  (every stub raises `NotImplementedError` pointing at the plan doc).
+  wizard so `python -m sos.cli.setup` keeps working.
+- `tests/cli/test_init.py` — unit tests for payload construction,
+  Step A client wiring, `argparse` defaults, and the stub contract.
 
-#### Known blockers (B–E, tracked in plan §5.3–5.6)
-- B (Inkwell deploy): `inkwell/instances/_template/` does not exist;
-  Cloudflare Pages credentials not wired into CI.
-- C (squad seed + qNFT): economy service has no qNFT mint endpoint.
-- D (standing workflows): depends on B (directory must exist).
-- E (pulse trigger): operations client missing a per-tenant
-  `trigger_pulse()` helper.
-
-Each step's docstring names the exact blocker and plan section.
+#### Remaining blockers (C + D, tracked in plan §5.4–5.5)
+- C (squad seed + qNFT): economy service has no qNFT mint endpoint;
+  $MIND-per-seat economics still open (see plan "What Hadi does" §3).
+- D (standing workflows): depends on Step B having run first.
 
 ---
 
