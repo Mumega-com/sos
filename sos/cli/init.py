@@ -5,15 +5,15 @@ Onboards a new Mumega tenant end-to-end. Old dev-wizard lives at
 ``docs/plans/2026-04-19-mumega-mothership.md`` §5.
 
 Five steps, sequenced:
-    A. POST /tenants on the SaaS service                (unblocked, shipped)
-    B. Copy inkwell/instances/_template → <slug>/, wrangler deploy   (blocked)
-    C. Create default squads + mint qNFTs in the economy             (blocked)
-    D. Write standing_workflows.json from template                   (blocked)
-    E. Trigger first pulse run in the operations service             (blocked)
+    A. POST /tenants on the SaaS service                             (shipped)
+    B. Copy inkwell/instances/_template → <slug>/, wrangler deploy   (shipped)
+    C. Create default squads + mint qNFTs in the economy             (shipped)
+    D. Write standing_workflows.json from template                   (shipped)
+    E. Trigger first pulse run in the operations service             (shipped)
 
-v0.9.4-alpha.1 ships Step A only. B–E raise ``NotImplementedError`` with a
-pointer to the infrastructure piece that's missing. Each stub lists the
-exact prerequisite so follow-up tasks are unambiguous.
+All five steps ship in v0.9.4. Step D enriches the template copy placed by
+Step B with the squad IDs minted in Step C, so running steps out of order
+will raise ``FileNotFoundError`` from Step D.
 
 Run::
 
@@ -25,6 +25,7 @@ Use ``--dry-run`` to print the payload without hitting the saas service.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -249,18 +250,53 @@ def step_c_seed_squads(
     return minted
 
 
-def step_d_write_workflows(cfg: InitConfig, tenant: dict[str, Any]) -> None:
-    """Step D — write ``inkwell/instances/<slug>/standing_workflows.json``.
+def step_d_write_workflows(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    seats: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Step D — enrich the template's ``standing_workflows.json`` with squad IDs.
 
-    Blocked on Step B (the instance directory doesn't exist until the
-    Inkwell template is copied). A real Step D is a file write; it's
-    only stubbed here because running it in isolation would leave an
-    orphan file outside any instance.
+    Step B already copied the template to
+    ``<INKWELL_ROOT>/instances/<slug>/standing_workflows.json`` and
+    interpolated ``{{SLUG}}`` / ``{{LABEL}}``. Step D's job is to inject
+    the real squad IDs minted in Step C so the workflow runner can map
+    each workflow step to a concrete squad.
+
+    Adds a top-level ``squads`` array and ``assigned_squads`` to each
+    workflow (defaults to all minted squads — downstream runners pick
+    the right one by role). Writes the file back in place.
     """
-    raise NotImplementedError(
-        "Step D blocked on Step B (instance directory must exist first). "
-        "See docs/plans/2026-04-19-mumega-mothership.md §5.5."
+    inkwell_root = Path(os.environ.get("INKWELL_ROOT", "/home/mumega/inkwell"))
+    workflow_path = inkwell_root / "instances" / cfg.slug / "standing_workflows.json"
+
+    if not workflow_path.exists():
+        raise FileNotFoundError(
+            f"standing_workflows.json not found at {workflow_path}. "
+            "Step D requires Step B to have run first."
+        )
+
+    data = json.loads(workflow_path.read_text(encoding="utf-8"))
+
+    squads = [
+        {
+            "squad_id": seat["squad_id"],
+            "role": seat["role"],
+            "seat_id": seat["seat_id"],
+            "token_id": seat.get("token_id"),
+        }
+        for seat in seats
+    ]
+    data["squads"] = squads
+
+    squad_ids = [s["squad_id"] for s in squads]
+    for workflow in data.get("workflows", []):
+        workflow["assigned_squads"] = squad_ids
+
+    workflow_path.write_text(
+        json.dumps(data, indent=2) + "\n", encoding="utf-8"
     )
+    return data
 
 
 def step_e_trigger_pulse(
@@ -353,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {warn('skipped')}: {exc}")
 
     # Step C — real (qNFT seat minting).
+    seats: list[dict[str, Any]] = []
     print(f"\n{bold('Step C')} — mint qNFT seats for default squads")
     try:
         seats = step_c_seed_squads(cfg, tenant)
@@ -360,16 +397,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"  {warn('skipped')}: {exc}")
 
-    # Step D — stub (blocked on Step B instance directory).
-    stubs: list[tuple[str, Any]] = [
-        ("Step D", step_d_write_workflows),
-    ]
-    for name, fn in stubs:
-        print(f"\n{bold(name)} — running…")
-        try:
-            fn(cfg, tenant)
-        except NotImplementedError as exc:
-            print(f"  {warn('skipped')}: {exc}")
+    # Step D — real (enrich standing_workflows.json with squad IDs).
+    print(f"\n{bold('Step D')} — write standing_workflows.json with squad IDs")
+    try:
+        step_d_write_workflows(cfg, tenant, seats)
+        print(f"  {green('ok')} — workflows enriched with {len(seats)} squad(s)")
+    except Exception as exc:
+        print(f"  {warn('skipped')}: {exc}")
 
     # Step E — real (operations service must be reachable).
     print(f"\n{bold('Step E')} — trigger first pulse run")
@@ -379,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {warn('skipped')}: {exc}")
 
     print("\n" + "=" * 48)
-    print(f"{green('Phase 5 Steps A + C + E shipped.')} B, D blocked (see above).")
+    print(f"{green('Phase 5 shipped — Steps A + B + C + D + E all green.')}")
     print(f"  slug:   {cfg.slug}")
     print(f"  label:  {cfg.label}")
     print(f"  plan:   {cfg.plan.value}")

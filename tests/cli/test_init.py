@@ -1,11 +1,15 @@
 """Unit tests for ``sos init`` (Phase 5 — v0.9.4 tenant provisioning).
 
-Covers Step A (SaaS ``/tenants`` POST), Step B (inkwell template copy + wrangler
-deploy), and verifies C–D raise ``NotImplementedError`` with pointers to the
-Phase 5 plan. Step A, B, and E are exercised without network access.
+Covers all five steps without network access:
+- A: SaaS ``/tenants`` POST
+- B: inkwell template copy + wrangler deploy (subprocess faked)
+- C: qNFT seat minting (EconomyClient faked)
+- D: standing_workflows.json enrichment with squad IDs
+- E: operations pulse trigger (OperationsClient faked)
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -99,18 +103,115 @@ def test_step_a_dry_run_does_not_hit_client(cfg: cli_init.InitConfig) -> None:
     assert _FakeSaasClient.last_instance is None
 
 
-@pytest.mark.parametrize(
-    "fn",
-    [
-        cli_init.step_d_write_workflows,
-    ],
-)
-def test_step_d_is_documented_stub(
-    fn: Any, cfg: cli_init.InitConfig
+# ---------------------------------------------------------------------------
+# Step D — standing_workflows.json enrichment
+# ---------------------------------------------------------------------------
+
+
+def _write_template_workflow(tmp_path: Path, slug: str) -> Path:
+    """Place the file Step B would leave for Step D to enrich."""
+    instance_dir = tmp_path / "instances" / slug
+    instance_dir.mkdir(parents=True)
+    workflow_path = instance_dir / "standing_workflows.json"
+    workflow_path.write_text(
+        json.dumps(
+            {
+                "version": "1",
+                "tenant": slug,
+                "workflows": [
+                    {
+                        "name": f"{slug}-daily",
+                        "schedule": "0 9 * * *",
+                        "description": "Daily ops pulse",
+                        "steps": ["pulse", "journal", "report"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return workflow_path
+
+
+def test_step_d_injects_squads_and_assigned_squads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: cli_init.InitConfig
 ) -> None:
-    with pytest.raises(NotImplementedError) as exc_info:
-        fn(cfg, {"slug": "acme", "status": "provisioning"})
-    assert "docs/plans/2026-04-19-mumega-mothership.md" in str(exc_info.value)
+    monkeypatch.setenv("INKWELL_ROOT", str(tmp_path))
+    workflow_path = _write_template_workflow(tmp_path, "acme")
+
+    seats = [
+        {
+            "squad_id": "acme-squad-social",
+            "role": "social",
+            "seat_id": "acme:seat:social",
+            "token_id": "tok-1",
+        },
+        {
+            "squad_id": "acme-squad-content",
+            "role": "content",
+            "seat_id": "acme:seat:content",
+            "token_id": "tok-2",
+        },
+    ]
+
+    result = cli_init.step_d_write_workflows(
+        cfg, {"slug": "acme", "status": "provisioning"}, seats
+    )
+
+    # Return value reflects what got written.
+    assert len(result["squads"]) == 2
+    assert {s["role"] for s in result["squads"]} == {"social", "content"}
+
+    # On disk matches.
+    on_disk = json.loads(workflow_path.read_text(encoding="utf-8"))
+    assert on_disk["squads"] == [
+        {
+            "squad_id": "acme-squad-social",
+            "role": "social",
+            "seat_id": "acme:seat:social",
+            "token_id": "tok-1",
+        },
+        {
+            "squad_id": "acme-squad-content",
+            "role": "content",
+            "seat_id": "acme:seat:content",
+            "token_id": "tok-2",
+        },
+    ]
+
+    assert on_disk["workflows"][0]["assigned_squads"] == [
+        "acme-squad-social",
+        "acme-squad-content",
+    ]
+    # Existing fields must be preserved.
+    assert on_disk["workflows"][0]["name"] == "acme-daily"
+    assert on_disk["workflows"][0]["steps"] == ["pulse", "journal", "report"]
+
+
+def test_step_d_raises_if_step_b_has_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: cli_init.InitConfig
+) -> None:
+    monkeypatch.setenv("INKWELL_ROOT", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError, match="standing_workflows.json"):
+        cli_init.step_d_write_workflows(
+            cfg, {"slug": "acme", "status": "provisioning"}, []
+        )
+
+
+def test_step_d_handles_empty_seats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: cli_init.InitConfig
+) -> None:
+    monkeypatch.setenv("INKWELL_ROOT", str(tmp_path))
+    workflow_path = _write_template_workflow(tmp_path, "acme")
+
+    cli_init.step_d_write_workflows(
+        cfg, {"slug": "acme", "status": "provisioning"}, []
+    )
+
+    on_disk = json.loads(workflow_path.read_text(encoding="utf-8"))
+    assert on_disk["squads"] == []
+    assert on_disk["workflows"][0]["assigned_squads"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -358,4 +459,4 @@ def test_main_dry_run_prints_and_returns_zero(
     assert "sos init — acme" in out
     assert "Step A" in out
     assert "Step B" in out and "skipped" in out
-    assert "Phase 5 Steps A + C + E shipped." in out
+    assert "Phase 5 shipped" in out

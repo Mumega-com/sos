@@ -4,6 +4,86 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
+---
+
+## [0.9.4] — 2026-04-19 — Phase 5 `sos init` first-boot flow complete
+
+Closes the Phase 5 mothership gate (task #210): `sos init <tenant>`
+provisions a new Mumega tenant end-to-end in one shot. Five steps run
+in sequence — tenant row creation (Step A) → Inkwell template copy +
+Cloudflare Pages deploy (Step B) → $MIND-debited qNFT seat minting for
+default squads (Step C) → `standing_workflows.json` enrichment with
+real squad IDs (Step D) → first operations pulse trigger (Step E). An
+end-to-end test in `tests/e2e/test_sos_init_end_to_end.py` drives all
+five with faked clients and filesystem so regressions are caught before
+touching live infra.
+
+### Added in 0.9.4
+
+Step A (`sos/cli/init.py::step_a_provision_tenant`): validates the CLI
+payload through `sos.contracts.tenant.TenantCreate` and POSTs to
+`/tenants` via `sos.clients.saas.SaasClient`. `--dry-run` short-circuits
+the POST. The pre-Phase-5 dev wizard relocated to `sos.cli.setup` so
+`python -m sos.cli.setup` keeps working.
+
+Step B (`step_b_deploy_inkwell`): reads `INKWELL_ROOT` (default
+`/home/mumega/inkwell`), copies `instances/_template/` →
+`instances/<slug>/`, interpolates six placeholders (`{{SLUG}}`,
+`{{LABEL}}`, `{{DOMAIN}}`, `{{EMAIL}}`, `{{INDUSTRY}}`, `{{TAGLINE}}`)
+across text files, runs `npm run build` at the Inkwell root, then
+`wrangler pages deploy dist --project-name <slug>`. Requires
+`CLOUDFLARE_API_TOKEN`. Template scaffold lives in the Inkwell repo
+(`instances/_template/`, task #245).
+
+Step C (`step_c_seed_squads`): reads `MUMEGA_DEFAULT_SQUADS` (default
+`social,content,outreach,analytics`) and `MUMEGA_QNFT_SEAT_COST_MIND`
+(default `100`), mints one seat qNFT per role at
+`squad_id=<slug>-squad-<role>` / `seat_id=<slug>:seat:<role>`. Design
+call: seat tokens, not AgentCards — real AgentCards need agent
+keypairs that don't exist at tenant-creation time, so seats stay
+claimable by mesh-enrolling agents later. Raises with remediation on
+402 Insufficient $MIND.
+
+Step D (`step_d_write_workflows`): reads the template's
+`standing_workflows.json` at `<INKWELL_ROOT>/instances/<slug>/`
+(already placed by Step B), injects a top-level `squads` array from
+Step C's seats + `assigned_squads: [squad_id, ...]` on each workflow,
+writes the JSON back in place.
+
+Step E (`step_e_trigger_pulse`): calls
+`OperationsClient.trigger_pulse(tenant, project)` which hits the new
+`POST /pulse/trigger` system-scoped route on the operations service.
+The route fires a fire-and-forget `asyncio.create_task` around the
+pulse runner and returns `{ok, tenant, project, started_at}`.
+
+New contracts + service routes:
+- `sos/contracts/qnft.py` — pydantic v2 `QNFT` + `QNFTMintRequest`
+- `sos/services/economy/app.py` — `POST /qnft/mint`
+  (`Idempotency-Key` header, `require_system=True`, 402 on insufficient
+  funds via `wallet.debit`) and `GET /qnft/{tenant}`
+- `sos/services/economy/_qnft_store.py` — Redis list at
+  `sos:qnft:{tenant}`, 1y TTL
+- `sos/services/operations/app.py` — `POST /pulse/trigger`
+- `sos/clients/economy.py` — `mint_qnft` + `list_qnfts` (sync + async)
+- `sos/clients/operations.py` — `trigger_pulse` (sync + async)
+
+Test footprint: 31 tests across `tests/cli/test_init.py` (16),
+`tests/contracts/test_qnft.py` (4), `tests/services/economy/test_qnft_app.py`
+(7), `tests/e2e/test_sos_init_end_to_end.py` (1 end-to-end), plus the
+pre-existing operations suite.
+
+Plan reference: `docs/plans/2026-04-19-mumega-mothership.md` §5.
+Sub-tasks closed: #245, #246, #247, #248.
+
+### Unshipped work (not in 0.9.4, tracked separately)
+
+- Phase 4 (#209): Mumega-edge as canonical API (v0.9.3)
+- Phase 6 (#211): Glass layer (v0.10.0)
+- Phase 7 (#212): Growth Intelligence squad + Shelf (v0.10.1)
+- Phase 8 (#213): Onboard the 8 projects (v1.0.0)
+
+---
+
 ### v0.9.4-alpha.3 — Phase 5 `sos init` Step C (qNFT squad seed) (2026-04-19)
 
 Closes blocker C from alpha.2. Seeds each tenant with a set of seat
