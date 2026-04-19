@@ -37,6 +37,7 @@ from sse_starlette.sse import EventSourceResponse
 from sos.clients.billing import AsyncBillingClient
 from sos.clients.integrations import AsyncIntegrationsClient
 from sos.clients.saas import AsyncSaasClient, SaasClient
+from sos.bus import envelope as bus_envelope
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
 from sos.kernel.bus import enforce_scope
@@ -236,18 +237,13 @@ def now_iso() -> str:
 
 
 def sos_msg(msg_type: str, source: str, target: str, content: str) -> dict[str, Any]:
-    msg: dict[str, Any] = {
-        "id": str(uuid4()),
-        "type": msg_type,
-        "source": source,
-        "target": target,
-        "payload": json.dumps({"text": content}),
-        "timestamp": now_iso(),
-        "version": "1.0",
-    }
-    if PROJECT:
-        msg["project"] = PROJECT
-    return msg
+    return bus_envelope.build(
+        msg_type=msg_type,
+        source=source,
+        target=target,
+        text=content,
+        project=PROJECT or None,
+    )
 
 
 def scoped_sos_msg(
@@ -1150,9 +1146,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 return _text(f"No messages for {agent}.")
             lines = []
             for mid, data in entries:
-                payload = json.loads(data.get("payload", "{}"))
+                parsed = bus_envelope.parse(data)
                 lines.append(
-                    f"[{data.get('timestamp', '?')}] {data.get('source', '?')}: {payload.get('text', '')}"
+                    f"[{data.get('timestamp', '?')}] {parsed['source'] or '?'}: {parsed['text']}"
                 )
             return _text("\n".join(lines))
 
