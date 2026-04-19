@@ -209,7 +209,7 @@ def test_sos_init_end_to_end_round_trip(
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Phase 6 shipped" in out
+    assert "Phase 7 shipped" in out
 
     # --- Step A ---
     assert len(_RecordingSaas.instances) == 1
@@ -248,7 +248,7 @@ def test_sos_init_end_to_end_round_trip(
     assert len(_RecordingGlass.instances) == 1
     glass_calls = _RecordingGlass.instances[0].calls
     assert {c["tile_id"] for c in glass_calls} == {
-        "health", "metabolism", "objectives", "decisions", "metrics"
+        "health", "metabolism", "objectives", "decisions", "metrics", "brand-vector"
     }
     assert all(c["tenant"] == "acme" for c in glass_calls)
     # Idempotency keys deterministic on (slug, tile_id).
@@ -260,7 +260,7 @@ def test_sos_init_end_to_end_round_trip(
     )
     assert glass_json["tenant"] == "acme"
     assert set(glass_json["tile_ids"]) == {
-        "health", "metabolism", "objectives", "decisions", "metrics"
+        "health", "metabolism", "objectives", "decisions", "metrics", "brand-vector"
     }
 
     # --- Step E ---
