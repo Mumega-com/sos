@@ -1,4 +1,5 @@
 """SOS /sos/overview page helpers — base CSS and nav generator."""
+
 from __future__ import annotations
 
 _SOS_BASE_CSS = """
@@ -35,6 +36,7 @@ def _sos_nav(active: str) -> str:
         ("/sos", "Flow Map"),
         ("/sos/overview", "Overview"),
         ("/sos/agents", "Agents"),
+        ("/sos/mesh", "Mesh"),
         ("/sos/bus", "Bus"),
         ("/sos/money", "Money"),
         ("/sos/skills", "Skills"),
