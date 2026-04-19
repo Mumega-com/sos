@@ -4,7 +4,81 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
-### Added — Phase 1.5 (stability interstitial)
+---
+
+## [0.9.1] — 2026-04-19 — Bus stability: project-scope + ack-or-retry
+
+### Thesis
+Phase 2 of the Mumega Mothership plan. Two silent-failure modes on the bus
+closed: scope leaks (messages without `tenant_id`/`project` could cross
+tenants) and silent drops (fire-and-forget publish had no retry / DLQ on
+the consume side). Each wave shipped as one revertable commit; consumers
+migrated incrementally without breaking the backwards-compat global stream.
+
+### Added — Contract + delivery primitives
+- **W0** — `BusMessage.tenant_id` + `BusMessage.project` are now required.
+  JSON schema regenerated; `tests/contracts/test_bus_port.py` locks it
+  with a snapshot test. `sos/contracts/ports/bus.py`.
+- **W1** — `kernel.bus.send()` requires `tenant_id` + `project` arguments
+  and raises on missing scope; `sos/services/bus/enforcement.py` validates
+  the scope at publish. `sos_mcp_sse.py` threads scope from the caller's
+  bearer-token context. No message leaves publish without a scope.
+- **W2** — `BusPort.ack(message_id, status)` primitive with `BusAck` model
+  (`{message_id, acked_at, status: Literal["ok","nack","dlq"]}`).
+  `sos/services/bus/redis_bus.py` implements it against Redis Streams XACK.
+  Integration tests in `tests/integration/test_bus_ack.py`.
+- **W3** — `sos/services/bus/retry.py` — background retry worker scans
+  `XPENDING` every 30s; exponential backoff 30s → 2m → 10m → DLQ.
+  `register_consumer_group` lazily boots the worker per service.
+- **W4** — `sos/services/bus/dlq.py` — shared DLQ schema + read helpers
+  (`DLQEntry`, `dlq_stream_for`, `read_dlq`, `list_dlq_streams`) so writer
+  (retry worker) and readers (dashboard) can't drift on field names.
+  Dashboard route `GET /sos/bus/dlq?stream=` surfaces recent DLQ entries.
+
+### Changed — Consumers migrated to at-least-once
+- **W5** — `sos/services/journeys/bus_consumer.py` pilot migration from
+  XREAD + Redis checkpoints + in-memory LRU to XREADGROUP + XACK consumer
+  group. Handler exceptions now leave entries unacked so the W3 retry
+  worker can reclaim them; no more silent drops. Envelope-level `_LRUSet`
+  retained because retry re-XADDs produce new stream entries with the
+  same `message_id`.
+- **W6** — `sos/services/brain/service.py` and
+  `sos/services/health/bus_consumer.py` migrated to the same XREADGROUP +
+  XACK pattern. Brain preserves its `BrainState`, snapshot persistence,
+  OTEL trace_id context, and task.scored / task.routed emission.
+  (Scope shrank from the plan's original 4 consumers: recon confirmed
+  `feedback/`, `operations/`, and `saas/` do not run bus consumers;
+  `execution/worker.py` uses a task-queue pattern that doesn't belong to
+  this migration.)
+
+### Tests
+- `tests/contracts/test_bus_port.py` — scope-required contract + schema snapshot.
+- `tests/integration/test_bus_ack.py` — ack primitive (process → ack;
+  no-ack leaves XPENDING; nack routes to retry).
+- `tests/integration/test_bus_retry.py` — unacked re-delivered after
+  backoff; 3 retries then DLQ.
+- `tests/integration/test_bus_dlq.py` — retry writer produces
+  parseable `DLQEntry`; `list_dlq_streams` surfaces originals.
+- `tests/integration/test_journeys_consumer.py`,
+  `tests/integration/test_health_consumer.py`,
+  `tests/integration/test_brain_consumer.py` — crashed-mid-handler →
+  unacked → retry redelivers → restarted consumer processes. Covers the
+  exact regression the migration protects against.
+- 13 bus integration tests pass against real Redis; per-service unit
+  suites green.
+
+### Rollback posture
+Each wave is independently revertable. W5/W6 consume the W2 primitive, not
+W3 directly — reverting W3 makes retry disappear but doesn't break the
+consumers. W0 is the hard one (contract break); rolling it back would
+require v0.9.1.1 making `project` optional again.
+
+### Non-goals for v0.9.1
+- Not moving off Redis (CF Queues = v0.9.3+ with Mumega-edge).
+- Not fan-out / partitioning.
+- Not changing outbound publish to sync; ack is consume-side only.
+
+### Also in v0.9.1 — Phase 1.5 (stability interstitial, landed before Phase 2)
 - `.pre-commit-config.yaml` — fast stage (ruff, black, import-linter,
   port schema drift) on every commit; thorough stage (`pytest
   tests/contracts/`) on every push. Ruff and black run on CHANGED files

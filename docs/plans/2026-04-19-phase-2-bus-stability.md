@@ -140,13 +140,17 @@ Each wave exit gate: `pre-commit run --hook-stage commit` green + the new tests 
 
 ### W6 — remaining consumers migrate (Sonnet subagent task)
 
-**Consumers to migrate:** health, feedback, operations, saas — each has a small bus consumer today.
+**Consumers to migrate:** `brain` + `health`.
 
-**Approach:** dispatch a Sonnet subagent per consumer with the journeys migration as the reference implementation. Each subagent writes one commit. All 4 subagents run in parallel since the consumers are independent.
+**Why the scope shrank from the original plan (health, feedback, operations, saas):** recon during W5 confirmed that `feedback/`, `operations/`, and `saas/` do **not** run bus consumers — they're HTTP services. The only services with the XREAD + checkpoint + `_LRUSet` pattern (the pre-W5 journeys shape) are `sos/services/brain/service.py` and `sos/services/health/bus_consumer.py`. Out of scope: `sos/services/execution/worker.py` uses XREAD but as a task-queue worker with no consumer group / no checkpoints / no LRU — a different pattern that doesn't belong to this migration. The plan's original consumer list was predictive; after the structural audit, actual targets are brain + health.
 
-**Exit gate for each:** same hooks + the service's own integration test still passes.
+**Approach:** dispatch a Sonnet subagent per consumer with the journeys migration (commit `2c0032b8`) as the reference implementation. Each subagent writes one commit. Both subagents run in parallel since the consumers are independent.
 
-**Commits:** `feat(health): migrate bus consumer to XACK` × 4 (one per consumer).
+**Exit gate for each:** same hooks + the service's own existing tests still pass, and a new integration test analogous to `tests/integration/test_journeys_consumer.py` proves the "crashed → retry → restart processes" path.
+
+**Commits:**
+- `feat(brain): migrate bus consumer to XACK-based at-least-once`
+- `feat(health): migrate bus consumer to XACK-based at-least-once`
 
 ### W7 — CHANGELOG + version bump + tag v0.9.1
 
