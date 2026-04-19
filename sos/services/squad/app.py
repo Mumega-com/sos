@@ -381,6 +381,58 @@ def _score_task(task: SquadTask, now_ts: float) -> float:
     return float(priority_term + blocks_term + age_hours * 2)
 
 
+# Closure-v1 Tier 1 §T1.4 — skill-based task routing
+# Caller supplies no assignee → we pick the squad member whose role skills
+# best cover the task's labels, ranked by squad conductance for those skills.
+_DEFAULT_CONDUCTANCE = 0.5
+
+
+def _auto_pick_assignee(
+    squad: Squad | None, task: SquadTask
+) -> tuple[Optional[str], Optional[str], float, list[str]]:
+    """Return ``(assignee_id, skill_id, total_conductance, matched_skills)``.
+
+    ``assignee_id`` is ``None`` when no member has any role-skill that
+    matches a task label. ``skill_id`` names the single highest-conductance
+    matching skill — callers store it on the task for downstream dispatch.
+    Conductance defaults to ``_DEFAULT_CONDUCTANCE`` for skills missing
+    from ``squad.conductance``.
+    """
+    if squad is None or not squad.members or not task.labels:
+        return None, None, 0.0, []
+
+    wanted = {lbl.lower() for lbl in task.labels}
+    role_by_name = {role.name: role for role in squad.roles}
+
+    best_member: Optional[str] = None
+    best_total = -1.0
+    best_matched: list[str] = []
+    best_skill: Optional[str] = None
+    for member in squad.members:
+        role = role_by_name.get(member.role)
+        if role is None:
+            continue
+        matched = [s for s in role.skills if s.lower() in wanted]
+        if not matched:
+            continue
+        total = sum(
+            squad.conductance.get(s, _DEFAULT_CONDUCTANCE) for s in matched
+        )
+        if total > best_total:
+            best_total = total
+            best_member = member.agent_id
+            best_matched = matched
+            # Top skill = highest-conductance matched skill (stable by
+            # declaration order on tie).
+            best_skill = max(
+                matched,
+                key=lambda s: squad.conductance.get(s, _DEFAULT_CONDUCTANCE),
+            )
+    if best_member is None:
+        return None, None, 0.0, []
+    return best_member, best_skill, best_total, best_matched
+
+
 @app.get("/tasks/board")
 async def tasks_board(
     squad: str,
@@ -446,8 +498,28 @@ async def route_task(
     payload: RouteIn,
     auth: AuthContext = Depends(require_capability("tasks", "write")),
 ) -> dict[str, Any]:
+    """Route a task. When ``payload.assignee`` is omitted, the server picks
+    the squad member whose role skills best cover the task's labels —
+    ranked by ``squad.conductance`` for those skills (closure-v1 §T1.4).
+    """
+    assignee = payload.assignee
+    skill_id = payload.skill_id
+    reason = payload.reason
+    if assignee is None:
+        task_obj = tasks.get(task_id, tenant_id=auth.tenant_scope)
+        if task_obj is None:
+            raise HTTPException(status_code=404, detail="task_not_found")
+        squad_obj = squads.get(task_obj.squad_id, tenant_id=auth.tenant_scope)
+        picked, picked_skill, total, matched = _auto_pick_assignee(squad_obj, task_obj)
+        if picked is not None:
+            assignee = picked
+            skill_id = skill_id or picked_skill
+            auto_reason = f"auto:skills={','.join(matched)};conductance={total:.2f}"
+            reason = f"{reason}; {auto_reason}" if reason else auto_reason
+        else:
+            reason = reason or "auto:no_skill_match"
     try:
-        decision = tasks.route(task_id, payload.assignee, payload.skill_id, payload.reason, tenant_id=auth.tenant_scope)
+        decision = tasks.route(task_id, assignee, skill_id, reason, tenant_id=auth.tenant_scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="task_not_found")
     return _json(decision)
