@@ -12,15 +12,17 @@ charter: charter.md
 agents:
   loom:
     runtime: anthropic-claude / tmux on mumega server
-    role: sos-dev
+    role: sos-dev + squad-pm   # squad PM added 2026-04-19 per decision-003
     responsibilities:
       - SOS kernel, bus, squads, mesh
       - mumega-edge Worker (staging → canonical)
       - squad-primitive maintenance
+      - SQUAD PM — sprint cadence, unblocking peers, escalation (9-day closure sprint)
     operates:
       - /mnt/HC_Volume_104325311/SOS
       - /home/mumega/mumega-edge
     owns_surfaces: []  # loom builds; hermes operates prod
+    pm_note: "Squad PM != Mumega PM (product). Codex is Mumega PM. Loom is sprint-coordination PM; role collapses back to sos-dev post-v1.0 freeze."
 
   hermes:
     runtime: openai-chatgpt-5.4 / ops MCP
