@@ -134,6 +134,17 @@ async def _emit_integrations_deny(
         pass
 
 
+def _dossier_redis_client():  # pragma: no cover — monkeypatched in tests
+    """Return a redis.asyncio client using the canonical SOS env vars."""
+    import redis.asyncio as aioredis
+
+    redis_url = os.environ.get("SOS_REDIS_URL") or os.environ.get("REDIS_URL", "redis://localhost:6379")
+    password = os.environ.get("REDIS_PASSWORD")
+    if password:
+        return aioredis.from_url(redis_url, password=password, decode_responses=True)
+    return aioredis.from_url(redis_url, decode_responses=True)
+
+
 class GhlCallbackRequest(BaseModel):
     code: str
 
@@ -151,6 +162,69 @@ class GoogleCallbackRequest(BaseModel):
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return health_response(SERVICE_NAME, _START_TIME)
+
+
+@app.get("/integrations/dossier/{tenant}/latest")
+async def get_latest_dossier(
+    tenant: str,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Return the most recently rendered Dossier for ``tenant``.
+
+    Read-through to Redis key ``sos:memory:{tenant}:dossier:latest``, which is
+    written by the dossier-writer agent (Phase 7 Step 7.3). Returns an empty
+    scaffold on cache miss so the Glass tile can render before the first pull
+    completes (no 404 gymnastics in the dashboard).
+    """
+    if not authorization:
+        await _emit_integrations_deny(
+            action="dossier_read",
+            target=tenant,
+            reason="missing bearer token",
+            tenant=tenant,
+        )
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="dossier_read",
+        resource=tenant,
+        tenant=tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    import json as _json
+
+    client = _dossier_redis_client()
+    try:
+        raw = await client.get(f"sos:memory:{tenant}:dossier:latest")
+    finally:
+        close = getattr(client, "aclose", None) or getattr(client, "close", None)
+        if close:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+    if not raw:
+        return {
+            "tenant": tenant,
+            "date": None,
+            "summary": (
+                f"No dossier yet for {tenant}. Connect GA, GSC, BrightData, "
+                f"or Apify to start generating a brand vector."
+            ),
+            "opportunities": [],
+            "threats": [],
+        }
+
+    data = _json.loads(raw)
+    return {
+        "tenant": data.get("tenant", tenant),
+        "date": data.get("rendered_at") or data.get("date"),
+        "summary": data.get("summary", ""),
+        "opportunities": data.get("opportunities", []),
+        "threats": data.get("threats", []),
+    }
 
 
 @app.get("/oauth/credentials/{tenant}/{provider}")

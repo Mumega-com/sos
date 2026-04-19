@@ -97,6 +97,17 @@ def _mock_httpx_response(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"roots": [{"id": "obj-1", "progress": 0.42}]})
     if "/integrations/ga4/" in url:
         return httpx.Response(200, json={"sessions": [1, 2, 3]})
+    if "/integrations/dossier/" in url:
+        return httpx.Response(
+            200,
+            json={
+                "tenant": "acme",
+                "date": "2026-04-19T10:00:00Z",
+                "summary": "Acme — futurist tone. Top opportunities: ai automation.",
+                "opportunities": ["ai automation", "brand vector"],
+                "threats": ["acme.ai"],
+            },
+        )
     return httpx.Response(404, json={"detail": "unexpected URL in mock"})
 
 
@@ -123,10 +134,10 @@ def test_glass_dashboard_round_trip(client: TestClient, monkeypatch) -> None:
         )
         assert resp.status_code == 200, resp.text
 
-    # Confirm the tile registry reports all 5.
+    # Confirm the tile registry reports all 6.
     list_resp = client.get(f"/glass/tiles/{tenant}", headers={"Authorization": "Bearer tk_system"})
     assert list_resp.status_code == 200
-    assert list_resp.json()["count"] == 5
+    assert list_resp.json()["count"] == 6
 
     # --- Mock downstream HTTP calls for the 3 http-query tiles ---
     mock_transport = httpx.MockTransport(_mock_httpx_response)
@@ -157,6 +168,7 @@ def test_glass_dashboard_round_trip(client: TestClient, monkeypatch) -> None:
         "objectives": {"template": TileTemplate.PROGRESS_BAR, "ttl": 120, "kind": "http"},
         "decisions": {"template": TileTemplate.EVENT_LOG, "ttl": 30, "kind": "bus_tail"},
         "metrics": {"template": TileTemplate.CHART, "ttl": 300, "kind": "http"},
+        "brand-vector": {"template": TileTemplate.EVENT_LOG, "ttl": 3600, "kind": "http"},
     }
 
     for tile_id, spec in expected.items():

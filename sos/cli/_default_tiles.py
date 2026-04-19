@@ -1,13 +1,13 @@
 """Default tile set seeded by ``sos init`` Step F.
 
-Five tiles — the Phase 6 "Health, Metabolism, Objectives, Decisions, Metrics"
-from ``docs/plans/2026-04-19-mumega-mothership.md``:
+Six tiles — the Phase 6 baseline plus the Phase 7 Brand Vector tile:
 
-1. Health       — status_light, http → /registry/squad/<tenant>/status
-2. Metabolism   — sparkline,    sql  → wallet_ledger (501 fallback until Phase 7)
-3. Objectives   — progress_bar, http → /objectives/roots/<tenant>
-4. Decisions    — event_log,    bus_tail → audit:decisions:<tenant>
-5. Metrics      — chart,        http → /integrations/ga4/<tenant>
+1. Health        — status_light, http → /registry/squad/<tenant>/status
+2. Metabolism    — sparkline,    sql  → wallet_ledger (501 fallback until Phase 7)
+3. Objectives    — progress_bar, http → /objectives/roots/<tenant>
+4. Decisions     — event_log,    bus_tail → audit:decisions:<tenant>
+5. Metrics       — chart,        http → /integrations/ga4/<tenant>
+6. Brand Vector  — event_log,    http → /integrations/dossier/<tenant>/latest
 
 Tile ids are slug-safe (``^[a-z0-9-]+$``) so they round-trip through the
 URL path in ``GET /glass/payload/<tenant>/<tile_id>``.
@@ -88,6 +88,18 @@ def default_tiles(tenant: str) -> list[Tile]:
             ),
             template=TileTemplate.CHART,
             refresh_interval_s=300,
+            tenant=tenant,
+        ),
+        Tile(
+            id="brand-vector",
+            title="Brand Vector",
+            query=HttpQuery(
+                kind="http",
+                service="integrations",
+                path=f"/integrations/dossier/{tenant}/latest",
+            ),
+            template=TileTemplate.EVENT_LOG,
+            refresh_interval_s=3600,
             tenant=tenant,
         ),
     ]

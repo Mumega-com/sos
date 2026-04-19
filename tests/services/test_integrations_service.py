@@ -149,3 +149,86 @@ def test_patched_get_credentials_is_honoured(
         )
     assert resp.status_code == 200
     assert resp.json()["access_token"] == "patched"
+
+
+# ---------------------------------------------------------------------------
+# /integrations/dossier/{tenant}/latest — Phase 7 Step 7.5
+# ---------------------------------------------------------------------------
+
+
+class _FakeDossierRedis:
+    """Async-shaped stand-in for redis.asyncio.Redis with just `.get` + `.aclose`."""
+
+    def __init__(self, value: str | None) -> None:
+        self._value = value
+
+    async def get(self, key: str) -> str | None:
+        return self._value
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_dossier_missing_bearer_is_401(client: TestClient) -> None:
+    resp = client.get("/integrations/dossier/acme/latest")
+    assert resp.status_code == 401
+
+
+def test_dossier_cache_miss_returns_empty_scaffold(
+    client: TestClient,
+    system_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no Redis entry, the route returns an empty scaffold (not 404) so
+    the Glass tile can render a helpful 'no dossier yet' message."""
+    monkeypatch.setattr(
+        integrations_app_module,
+        "_dossier_redis_client",
+        lambda: _FakeDossierRedis(None),
+    )
+    resp = client.get(
+        "/integrations/dossier/acme/latest",
+        headers={"Authorization": f"Bearer {system_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tenant"] == "acme"
+    assert body["date"] is None
+    assert body["opportunities"] == []
+    assert body["threats"] == []
+    assert "No dossier yet" in body["summary"]
+
+
+def test_dossier_hit_returns_mapped_fields(
+    client: TestClient,
+    system_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored = json.dumps(
+        {
+            "tenant": "acme",
+            "rendered_at": "2026-04-19T10:00:00+00:00",
+            "summary": "Acme — futurist tone. Top opportunities: ai automation.",
+            "opportunities": ["ai automation", "brand vector"],
+            "threats": ["acme.ai"],
+            "markdown": "# Brand Vector — acme\n...",
+        }
+    )
+    monkeypatch.setattr(
+        integrations_app_module,
+        "_dossier_redis_client",
+        lambda: _FakeDossierRedis(stored),
+    )
+    resp = client.get(
+        "/integrations/dossier/acme/latest",
+        headers={"Authorization": f"Bearer {system_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["tenant"] == "acme"
+    assert body["date"] == "2026-04-19T10:00:00+00:00"
+    assert body["opportunities"] == ["ai automation", "brand vector"]
+    assert body["threats"] == ["acme.ai"]
+    assert "ai automation" in body["summary"]
+    # Markdown is NOT returned — Glass tile only renders the summary list.
+    assert "markdown" not in body
