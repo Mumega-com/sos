@@ -284,6 +284,9 @@ def step_d_write_workflows(
 
     data = json.loads(workflow_path.read_text(encoding="utf-8"))
 
+    from sos.cli._default_standing_workflows import ensure_workflows_present
+    ensure_workflows_present(data, cfg.slug)
+
     squads = [
         {
             "squad_id": seat["squad_id"],
