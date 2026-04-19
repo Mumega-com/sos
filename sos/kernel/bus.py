@@ -1,4 +1,3 @@
-
 """
 SOS Message Bus Service - The Nervous System.
 
@@ -9,14 +8,41 @@ Implements:
 """
 
 import json
-import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, List, AsyncIterator
+from typing import Dict, Any, Optional, List, AsyncIterator
 from datetime import datetime
-import os
 
-from sos.kernel import Config, Message, MessageType
+from sos.contracts.errors import MessageValidationError
+from sos.kernel import Config, Message
 from sos.observability.logging import get_logger
+
+
+def enforce_scope(msg_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Raise if a Redis-field bus envelope is missing tenant_id/project.
+
+    Phase 2 / W1. Kernel-level so both the MCP gateway and the service
+    layer can reach it without crossing R2 (MCP must not import from
+    sos.services.*). Pure dict inspection — no Redis contact, no
+    Pydantic parse, no logging.
+
+    Raises:
+        MessageValidationError(SOS-4005) — tenant_id missing/empty.
+        MessageValidationError(SOS-4006) — project missing/empty.
+    """
+    if not msg_dict.get("tenant_id"):
+        raise MessageValidationError(
+            "SOS-4005",
+            "bus message missing required 'tenant_id' scope field",
+            original_type=msg_dict.get("type"),
+        )
+    if not msg_dict.get("project"):
+        raise MessageValidationError(
+            "SOS-4006",
+            "bus message missing required 'project' scope field",
+            original_type=msg_dict.get("type"),
+        )
+    return msg_dict
+
 
 # Lazy load redis to adhere to microkernel architecture
 try:
@@ -34,26 +60,28 @@ except ImportError:
 if load_dotenv:
     load_dotenv(str(Path.home() / ".env.secrets"))
 
+
 class MessageBus:
     """
     Central nervous system for Agent-to-Agent communication.
     """
-    
+
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
         from sos.kernel.settings import get_settings as _get_settings
+
         _s = _get_settings()
         # SOS_REDIS_URL takes precedence here to preserve legacy behaviour.
         self.redis_url = _s.redis.legacy_sos_url or "redis://localhost:6379/0"
         self.redis_password = _s.redis.password_str
         self._redis: Optional[redis.Redis] = None
         self._pubsub = None
-        
+
         # Channel Patterns
         self.CHAN_PRIVATE = "sos:channel:private"
         self.CHAN_SQUAD = "sos:channel:squad"
         self.CHAN_GLOBAL = "sos:channel:global"
-        
+
         # Memory Patterns
         self.MEM_PREFIX = "sos:memory:short"
 
@@ -84,29 +112,51 @@ class MessageBus:
 
     # --- TELEPATHY (Communication) ---
 
-    async def send(self, message: Message, target_squad: Optional[str] = None):
+    async def send(
+        self,
+        message: Message,
+        *,
+        tenant_id: str,
+        project: str,
+        target_squad: Optional[str] = None,
+    ):
+        """Send a telepathic signal (Message).
+
+        Scope is required (v0.9.1, Phase 2 W1). ``tenant_id`` is the hard
+        customer boundary; ``project`` is the soft grouping inside a
+        tenant. Both are stamped onto the published payload so every
+        downstream stream entry carries its origin — no silent scope
+        leaks.
+
+        Routing (unchanged):
+          - target_squad set → multicast to squad channel
+          - message.target a specific agent → unicast to private inbox
+          - otherwise → global broadcast
         """
-        Send a telepathic signal (Message).
-        
-        - If target_squad is set: Multicast to Squad.
-        - If target is specific agent: Unicast to Private Channel.
-        - Otherwise: Broadcast to Global.
-        """
-        if not self._redis: return
+        if not tenant_id:
+            raise ValueError("MessageBus.send(): tenant_id is required")
+        if not project:
+            raise ValueError("MessageBus.send(): project is required")
+
+        if not self._redis:
+            return
 
         channel = self.CHAN_GLOBAL
         if target_squad:
             channel = f"{self.CHAN_SQUAD}:{target_squad}"
         elif message.target and message.target != "broadcast":
-            # Sort IDs to ensure consistent channel name for 1:1 (A:B == B:A) is NOT desired here.
-            # We want an inbox model: private:{recipient_id}
+            # We want an inbox model: private:{recipient_id}.
             channel = f"{self.CHAN_PRIVATE}:{message.target}"
 
-        payload = message.to_json()
-        
-        # Inject Tracing Context (Mock OpenTelemetry injection)
-        # trace.inject(payload) 
-        
+        # Stamp scope on the payload before it crosses the wire. The JSON
+        # body already carries type/source/target/payload — we splice in
+        # the scope fields so downstream consumers can audit every entry
+        # against its tenant without re-deriving from channel names.
+        body = json.loads(message.to_json())
+        body["tenant_id"] = tenant_id
+        body["project"] = project
+        payload = json.dumps(body)
+
         await self._redis.publish(channel, payload)
         log.debug(f"Signal fired on {channel}: {message.type.value}")
 
@@ -118,14 +168,12 @@ class MessageBus:
         Connect an agent's brain to the nervous system.
         Subscribes to: Private Inbox + Squad Channels + Global.
         """
-        if not self._redis: return
+        if not self._redis:
+            return
 
         ps = self._redis.pubsub()
-        
-        channels = [
-            self.CHAN_GLOBAL,
-            f"{self.CHAN_PRIVATE}:{agent_id}"
-        ]
+
+        channels = [self.CHAN_GLOBAL, f"{self.CHAN_PRIVATE}:{agent_id}"]
         for squad in squads:
             channels.append(f"{self.CHAN_SQUAD}:{squad}")
 
@@ -148,15 +196,12 @@ class MessageBus:
         """
         Push a thought/action to short-term working memory.
         """
-        if not self._redis: return
-        
+        if not self._redis:
+            return
+
         key = f"{self.MEM_PREFIX}:{agent_id}"
-        entry = {
-            "content": content,
-            "role": role,
-            "ts": datetime.utcnow().isoformat()
-        }
-        
+        entry = {"content": content, "role": role, "ts": datetime.utcnow().isoformat()}
+
         # Push to list (Left Push)
         await self._redis.lpush(key, json.dumps(entry))
         # Trim to last 50 items (Working Memory Window)
@@ -166,20 +211,23 @@ class MessageBus:
         """
         Recall recent working memory.
         """
-        if not self._redis: return []
-        
+        if not self._redis:
+            return []
+
         key = f"{self.MEM_PREFIX}:{agent_id}"
         # LRANGE 0 N
         items = await self._redis.lrange(key, 0, limit - 1)
-        
+
         memories = []
         for item in items:
             memories.append(json.loads(item))
-            
+
         return memories
+
 
 # Singleton
 _bus = None
+
 
 def get_bus() -> MessageBus:
     global _bus

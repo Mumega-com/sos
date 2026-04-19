@@ -23,6 +23,7 @@ Wiring status:
   Remaining: bridge.py, sos_mcp.py, redis_bus.py — wired in follow-up sprint
   alongside "chat" → "send" and "broadcast" → "send"-to-channel migration.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,7 +36,7 @@ from sos.contracts.errors import (  # re-export for legacy call sites
     SourcePatternError,
     UnknownTypeError,
 )
-from sos.contracts.messages import MessageType, parse_message
+from sos.contracts.messages import parse_message
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,7 @@ def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
 
     if not is_v1_type(msg_type):
         typed_exc = UnknownTypeError(
-            f"unknown message type {msg_type!r}; expected one of: "
-            + ", ".join(sorted(_V1_TYPES)),
+            f"unknown message type {msg_type!r}; expected one of: " + ", ".join(sorted(_V1_TYPES)),
             details={"original_type": msg_type},
         )
         err = MessageValidationError(
@@ -134,6 +134,12 @@ def enforce(msg_dict: dict[str, Any]) -> dict[str, Any]:
         ) from typed_exc
 
     return msg_dict
+
+
+# Phase 2 / W1: scope enforcement lives in sos.kernel.bus so MCP (which
+# cannot import from sos.services.*) can reach it. Re-exported here for
+# service-layer call sites that already import from this module.
+from sos.kernel.bus import enforce_scope  # noqa: E402,F401
 
 
 def enforce_or_log(msg_dict: dict[str, Any]) -> dict[str, Any]:

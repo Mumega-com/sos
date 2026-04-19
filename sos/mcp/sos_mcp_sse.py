@@ -12,6 +12,7 @@ Endpoints:
 
 Port: 6070 (env: SOS_MCP_PORT)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +22,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,10 +39,10 @@ from sos.clients.integrations import AsyncIntegrationsClient
 from sos.clients.saas import AsyncSaasClient, SaasClient
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
+from sos.kernel.bus import enforce_scope
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
     TOOL_MAPPING,
-    get_customer_tools,
     get_tools_for_role,
     is_customer_tool,
     is_tool_allowed_for_role,
@@ -81,17 +81,14 @@ def _audit_tool_call(
         loop = None
     if loop is not None:
         loop.create_task(
-            _async_saas_client.log_tool_call(
-                tenant, tool, actor=actor, ip=ip, details=details
-            )
+            _async_saas_client.log_tool_call(tenant, tool, actor=actor, ip=ip, details=details)
         )
         return
     try:
-        _saas_client.log_tool_call(
-            tenant, tool, actor=actor, ip=ip, details=details
-        )
+        _saas_client.log_tool_call(tenant, tool, actor=actor, ip=ip, details=details)
     except Exception as exc:
         log.warning("audit log_tool_call failed: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -165,7 +162,11 @@ _redis: aioredis.Redis | None = None
 def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        url = f"redis://:{REDIS_PASSWORD}@localhost:6379/0" if REDIS_PASSWORD else "redis://localhost:6379/0"
+        url = (
+            f"redis://:{REDIS_PASSWORD}@localhost:6379/0"
+            if REDIS_PASSWORD
+            else "redis://localhost:6379/0"
+        )
         _redis = aioredis.from_url(url, decode_responses=True)
     return _redis
 
@@ -305,6 +306,7 @@ class _TokenCacheWithHotReload:
     Stores tokens.json mtime and reloads the cache if the file changes.
     Includes a 30-second TTL to avoid filesystem hits on every request.
     """
+
     def __init__(self):
         self._cache: dict[str, MCPAuthContext] = {}
         self._mtime: float = 0
@@ -320,7 +322,9 @@ class _TokenCacheWithHotReload:
             try:
                 current_mtime = os.path.getmtime(BUS_TOKENS_PATH)
                 if current_mtime != self._mtime:
-                    log.info(f"tokens.json changed (mtime {self._mtime:.1f} -> {current_mtime:.1f}), reloading")
+                    log.info(
+                        f"tokens.json changed (mtime {self._mtime:.1f} -> {current_mtime:.1f}), reloading"
+                    )
                     self._reload()
                     self._mtime = current_mtime
             except OSError:
@@ -378,7 +382,11 @@ _local_token_cache = _TokenCacheWithHotReload()
 
 
 def _system_tokens() -> set[str]:
-    tokens = {token.strip() for token in os.environ.get("MCP_ACCESS_TOKENS", "").split(",") if token.strip()}
+    tokens = {
+        token.strip()
+        for token in os.environ.get("MCP_ACCESS_TOKENS", "").split(",")
+        if token.strip()
+    }
     if SQUAD_SYSTEM_TOKEN:
         tokens.add(SQUAD_SYSTEM_TOKEN)
     return tokens
@@ -420,7 +428,8 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
             role = payload.get("role", "admin")
             if active and (project or agent_name):
                 ctx = MCPAuthContext(
-                    token=token, tenant_id=project,
+                    token=token,
+                    tenant_id=project,
                     is_system=project is None,
                     source="cloudflare_kv",
                     agent_name=agent_name,
@@ -534,7 +543,10 @@ def get_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent": {"type": "string", "description": "Agent name (e.g. athena, kasra, worker)"},
+                    "agent": {
+                        "type": "string",
+                        "description": "Agent name (e.g. athena, kasra, worker)",
+                    },
                     "message": {"type": "string", "description": "Question or task for the agent"},
                 },
                 "required": ["agent", "message"],
@@ -610,10 +622,23 @@ def get_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural language description of the code you're looking for"},
-                    "repo": {"type": "string", "description": "Filter by repo name (e.g. torivers-staging-dev). Omit to search all repos."},
-                    "kind": {"type": "string", "description": "Filter by node kind: function, class, method, etc."},
-                    "top_k": {"type": "integer", "default": 5, "description": "Number of results to return"},
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of the code you're looking for",
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Filter by repo name (e.g. torivers-staging-dev). Omit to search all repos.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Filter by node kind: function, class, method, etc.",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Number of results to return",
+                    },
                 },
                 "required": ["query"],
             },
@@ -676,7 +701,11 @@ def get_tools() -> list[dict[str, Any]]:
                     "project": {"type": "string", "description": "Filter by project (optional)"},
                     "agent": {"type": "string", "description": "Filter by assignee (optional)"},
                     "limit": {"type": "integer", "default": 20},
-                    "status": {"type": "string", "default": "queued", "description": "Filter: queued, claimed, in_progress, blocked, all"},
+                    "status": {
+                        "type": "string",
+                        "default": "queued",
+                        "description": "Filter: queued, claimed, in_progress, blocked, all",
+                    },
                 },
             },
         },
@@ -686,15 +715,43 @@ def get_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {"type": "string", "description": "Your name (required for agent onboarding)"},
-                    "mode": {"type": "string", "description": "Mode: 'agent' (default) or 'customer'"},
-                    "slug": {"type": "string", "description": "Customer slug (required for mode=customer)"},
-                    "label": {"type": "string", "description": "Customer display name (required for mode=customer)"},
-                    "email": {"type": "string", "description": "Customer email (optional, for mode=customer)"},
-                    "model": {"type": "string", "description": "LLM model (claude, gpt, gemini, gemma) — agent mode"},
-                    "role": {"type": "string", "description": "Agent role (builder, strategist, executor, researcher) — agent mode"},
-                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this agent provides — agent mode"},
-                    "routing": {"type": "string", "description": "How to wake this agent (mcp, tmux, openclaw) — agent mode"},
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Your name (required for agent onboarding)",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Mode: 'agent' (default) or 'customer'",
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "Customer slug (required for mode=customer)",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Customer display name (required for mode=customer)",
+                    },
+                    "email": {
+                        "type": "string",
+                        "description": "Customer email (optional, for mode=customer)",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "LLM model (claude, gpt, gemini, gemma) — agent mode",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Agent role (builder, strategist, executor, researcher) — agent mode",
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Skills this agent provides — agent mode",
+                    },
+                    "routing": {
+                        "type": "string",
+                        "description": "How to wake this agent (mcp, tmux, openclaw) — agent mode",
+                    },
                 },
                 "required": [],
             },
@@ -705,8 +762,14 @@ def get_tools() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string", "description": "What you need done (e.g. 'SEO audit for my dental site', 'Build a landing page')"},
-                    "priority": {"type": "string", "description": "Priority: low, medium, high (default: medium)"},
+                    "description": {
+                        "type": "string",
+                        "description": "What you need done (e.g. 'SEO audit for my dental site', 'Build a landing page')",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "Priority: low, medium, high (default: medium)",
+                    },
                 },
                 "required": ["description"],
             },
@@ -726,8 +789,16 @@ def get_tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "required": ["code"],
                 "properties": {
-                    "code": {"type": "string", "description": "Python snippet to execute. Last expression becomes the return value. Available names: `tools` (SimpleNamespace) and a small allowlist of builtins (int, str, list, dict, ...). Imports are blocked."},
-                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 10.0, "default": 5.0},
+                    "code": {
+                        "type": "string",
+                        "description": "Python snippet to execute. Last expression becomes the return value. Available names: `tools` (SimpleNamespace) and a small allowlist of builtins (int, str, list, dict, ...). Imports are blocked.",
+                    },
+                    "timeout_s": {
+                        "type": "number",
+                        "minimum": 0.1,
+                        "maximum": 10.0,
+                        "default": 5.0,
+                    },
                 },
             },
         },
@@ -761,20 +832,22 @@ async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
     statuses = []
     for name, info in KNOWN_AGENTS.items():
         status = "unknown"
-        current_task = None
 
         if info["type"] == "tmux":
             # Check tmux session
             try:
                 result = subprocess.run(
                     ["tmux", "has-session", "-t", name],
-                    capture_output=True, timeout=3,
+                    capture_output=True,
+                    timeout=3,
                 )
                 if result.returncode == 0:
                     # Check if at prompt (idle) or working (busy)
                     cap = subprocess.run(
                         ["tmux", "capture-pane", "-t", name, "-p"],
-                        capture_output=True, text=True, timeout=3,
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
                     )
                     last_lines = " ".join(cap.stdout.strip().split("\n")[-3:]).lower()
                     if any(p in last_lines for p in ["❯", "›", "$ ", "waiting", "you:"]):
@@ -806,29 +879,39 @@ async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
             except Exception:
                 status = "unknown"
 
-        statuses.append({
-            "agent": name,
-            "type": info["type"],
-            "model": info["model"],
-            "role": info["role"],
-            "status": status,
-        })
+        statuses.append(
+            {
+                "agent": name,
+                "type": info["type"],
+                "model": info["model"],
+                "role": info["role"],
+                "status": status,
+            }
+        )
     return statuses
 
 
 def _get_service_statuses_sync() -> list[dict[str, str]]:
     """Check systemd service statuses (sync, runs in executor)."""
     services = [
-        "sos-mcp-sse", "sos-squad", "sovereign-loop", "calcifer",
-        "agent-wake-daemon", "bus-bridge", "openclaw-gateway",
-        "kasra-agent-watchdog", "mumcp-agent-watchdog",
+        "sos-mcp-sse",
+        "sos-squad",
+        "sovereign-loop",
+        "calcifer",
+        "agent-wake-daemon",
+        "bus-bridge",
+        "openclaw-gateway",
+        "kasra-agent-watchdog",
+        "mumcp-agent-watchdog",
     ]
     statuses = []
     for svc in services:
         try:
             result = subprocess.run(
                 ["systemctl", "--user", "is-active", f"{svc}.service"],
-                capture_output=True, text=True, timeout=3,
+                capture_output=True,
+                text=True,
+                timeout=3,
                 env={**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"},
             )
             state = result.stdout.strip()
@@ -852,7 +935,10 @@ def _get_systemd_health_sync() -> dict[str, str]:
         try:
             proc = subprocess.run(
                 ["systemctl", "--user", "is-active", f"{svc}.service"],
-                capture_output=True, text=True, timeout=3, env=env,
+                capture_output=True,
+                text=True,
+                timeout=3,
+                env=env,
             )
             result[label] = proc.stdout.strip() or "unknown"
         except Exception:
@@ -876,9 +962,7 @@ _CODE_MODE_SAFE_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def _make_code_mode_sync_wrapper(
-    tool_name: str, auth: MCPAuthContext
-) -> Any:
+def _make_code_mode_sync_wrapper(tool_name: str, auth: MCPAuthContext) -> Any:
     """Build a sync callable that forwards kwargs to ``handle_tool(tool_name, ...)``.
 
     Runs the coroutine to completion using the event loop the helper itself
@@ -904,9 +988,7 @@ def _make_code_mode_sync_wrapper(
     return _sync
 
 
-async def _handle_code_mode(
-    args: dict[str, Any], auth: MCPAuthContext
-) -> dict[str, Any]:
+async def _handle_code_mode(args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     """Execute a Python snippet via ``sos.mcp.code_mode.execute_snippet``.
 
     Exposes a narrow, read-only slice of ``handle_tool`` as the ``tools``
@@ -948,7 +1030,17 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
     WRITE_TOOLS = {"send", "broadcast", "remember", "task_create", "task_update", "request"}
-    READ_TOOLS = {"inbox", "peers", "recall", "memories", "task_list", "status", "search_code"}
+    # Tools classified as read-only — kept as a documented contract, even
+    # though flow below only branches on SYSTEM_ONLY_TOOLS/WRITE_TOOLS.
+    READ_TOOLS = {  # noqa: F841
+        "inbox",
+        "peers",
+        "recall",
+        "memories",
+        "task_list",
+        "status",
+        "search_code",
+    }
 
     if name in SYSTEM_ONLY_TOOLS and not auth.is_system:
         # onboard tool handles its own mode check, but log the attempt
@@ -964,7 +1056,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         count += 1
         _token_windows[write_key] = (started_at, count)
         if count > 30:  # 30 writes/min for tenant tokens (vs 60 total)
-            await _publish_log("warn", "mcp", f"write rate limit hit by {agent_scope}", agent=agent_scope)
+            await _publish_log(
+                "warn", "mcp", f"write rate limit hit by {agent_scope}", agent=agent_scope
+            )
             return _text("Rate limit: too many write operations. Try again in a minute.")
 
     try:
@@ -1001,6 +1095,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         elif name == "send":
             to = _require_same_tenant_agent(auth, args.get("to"))
             text = args["text"]
+            # Phase 2 / W1: scope required on every publish. System tokens
+            # (no tenant) can't use `send` — they lack the project grouping
+            # the v0.9.1 contract requires. If a system token needs to
+            # deliver cross-tenant, it must issue a scoped sub-token first.
+            if not project_scope or not auth.tenant_id:
+                return _text(
+                    "error: SOS-4005 send requires tenant+project scope; "
+                    "system tokens must use a scoped sub-token"
+                )
             stream = _agent_stream(to, project_scope)
             # v0.4.0-beta.1: v1 "send" message with structured payload. Builds via
             # Pydantic model so all schema invariants (source pattern, target pattern,
@@ -1018,12 +1121,16 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 log.error(f"SendMessage construction failed: {ve}")
                 return _text(f"error: SOS-4001 {ve}")
             msg = sendmsg.to_redis_fields()
-            if project_scope:
-                msg["project"] = project_scope
+            msg["tenant_id"] = auth.tenant_id
+            msg["project"] = project_scope
             # Pydantic already validated on construction above — no second enforce()
             # pass because the Redis-field shape (payload as JSON string) is not
             # re-parseable by Pydantic without from_redis_fields() (which would be
             # wasted cycles). Validation happened at SendMessage(...) ingress.
+            # Scope guard (Phase 2 / W1): defense-in-depth check that both
+            # fields landed on the wire envelope before XADD. Cheap and
+            # raises on regression.
+            enforce_scope(msg)
             mid = await r.xadd(stream, msg)
             await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
@@ -1075,8 +1182,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     if cursor == 0:
                         break
             # Filter out internal system agents from non-system callers
-            internal_agents = {"sos-mcp-sse", "sos-squad", "sovereign-loop", "calcifer",
-                               "lifecycle", "task-poller", "wake-daemon"}
+            internal_agents = {
+                "sos-mcp-sse",
+                "sos-squad",
+                "sovereign-loop",
+                "calcifer",
+                "lifecycle",
+                "task-poller",
+                "wake-daemon",
+            }
             if not auth.is_system:
                 agents -= internal_agents
             scope = f"project:{project_scope}" if project_scope else "global"
@@ -1093,7 +1207,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}squad:{squad}"
             else:
                 stream = f"{_prefix(project_scope)}:broadcast"
-                channel = f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
+                channel = (
+                    f"sos:channel:{'project:' + project_scope + ':' if project_scope else ''}global"
+                )
             # v0.4.0: broadcast uses v1 "send" type with a channel target.
             try:
                 bmsg = SendMessage(
@@ -1122,17 +1238,20 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             # bus consumer picks it up and stores the engram automatically.
             try:
                 from uuid import uuid4 as _uuid4
+
                 rem_msg = {
                     "type": "send",
                     "source": f"agent:{agent_scope}",
                     "target": f"agent:{agent_scope}",
                     "timestamp": SendMessage.now_iso(),
                     "message_id": str(_uuid4()),
-                    "payload": json.dumps({
-                        "text": args["text"],
-                        "content_type": "text/plain",
-                        "remember": True,
-                    }),
+                    "payload": json.dumps(
+                        {
+                            "text": args["text"],
+                            "content_type": "text/plain",
+                            "remember": True,
+                        }
+                    ),
                 }
                 if project_scope:
                     rem_msg["project"] = project_scope
@@ -1284,7 +1403,16 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- task_board (prioritized unified view) ---
         elif name == "task_board":
-            REVENUE_PROJECTS = {"dentalnearyou", "dnu", "gaf", "viamar", "stemminds", "pecb", "digid", "torivers"}
+            REVENUE_PROJECTS = {
+                "dentalnearyou",
+                "dnu",
+                "gaf",
+                "viamar",
+                "stemminds",
+                "pecb",
+                "digid",
+                "torivers",
+            }
             PRIORITY_W = {"critical": 4, "urgent": 4, "high": 3, "medium": 2, "low": 1}
 
             # Pull exclusively from Squad Service — Mirror /tasks is retired (410).
@@ -1292,9 +1420,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             try:
                 squad_resp = await loop.run_in_executor(
                     None,
-                    lambda: requests.get(f"{SQUAD_SERVICE_URL}/tasks", headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"}, timeout=5).json(),
+                    lambda: requests.get(
+                        f"{SQUAD_SERVICE_URL}/tasks",
+                        headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                        timeout=5,
+                    ).json(),
                 )
-                squad_tasks = squad_resp if isinstance(squad_resp, list) else squad_resp.get("tasks", [])
+                squad_tasks = (
+                    squad_resp if isinstance(squad_resp, list) else squad_resp.get("tasks", [])
+                )
                 for t in squad_tasks:
                     t["_source"] = "squad"
                 all_tasks.extend(squad_tasks)
@@ -1310,7 +1444,11 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             if args.get("project"):
                 all_tasks = [t for t in all_tasks if t.get("project") == args["project"]]
             if args.get("agent"):
-                all_tasks = [t for t in all_tasks if t.get("assignee") == args["agent"] or t.get("agent") == args["agent"]]
+                all_tasks = [
+                    t
+                    for t in all_tasks
+                    if t.get("assignee") == args["agent"] or t.get("agent") == args["agent"]
+                ]
             if project_scope and not auth.is_system:
                 all_tasks = [t for t in all_tasks if t.get("project") == project_scope]
 
@@ -1323,7 +1461,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 if updated:
                     try:
                         from datetime import datetime as dt
-                        age = (dt.now(timezone.utc) - dt.fromisoformat(updated.replace("Z", "+00:00"))).days
+
+                        age = (
+                            dt.now(timezone.utc) - dt.fromisoformat(updated.replace("Z", "+00:00"))
+                        ).days
                         staleness = min(age, 30)
                     except Exception:
                         pass
@@ -1342,7 +1483,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 return _text(f"No {status_filter} tasks found.")
 
             lines = [f"### Task Board ({status_filter}) — {len(all_tasks)} tasks\n"]
-            lines.append(f"{'Score':>5} | {'Priority':>8} | {'Project':<14} | {'Agent':<10} | Title")
+            lines.append(
+                f"{'Score':>5} | {'Priority':>8} | {'Project':<14} | {'Agent':<10} | Title"
+            )
             lines.append(f"{'─'*5} | {'─'*8} | {'─'*14} | {'─'*10} | {'─'*30}")
             for t in all_tasks:
                 agent = t.get("assignee") or t.get("agent") or "—"
@@ -1402,8 +1545,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
             if not join_result.success:
                 return _text(
-                    f"Onboarding failed for '{agent_name}': "
-                    + "; ".join(join_result.errors)
+                    f"Onboarding failed for '{agent_name}': " + "; ".join(join_result.errors)
                 )
 
             lines = [
@@ -1421,11 +1563,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 lines.append("Warnings: " + "; ".join(join_result.errors))
             lines.append("")
             lines.append("--- MCP config (paste into your settings) ---")
-            lines.append(json.dumps({
-                "mcpServers": {
-                    "mumega": {"url": join_result.mcp_url}
-                }
-            }, indent=2))
+            lines.append(
+                json.dumps({"mcpServers": {"mumega": {"url": join_result.mcp_url}}}, indent=2)
+            )
             lines.append("")
             lines.append(join_result.team_briefing)
 
@@ -1447,16 +1587,22 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             desc_lower = description.lower()
             squad_type = "dev"  # default
             labels = ["customer-request"]
-            if any(kw in desc_lower for kw in ["seo", "audit", "meta", "schema", "ranking", "search"]):
+            if any(
+                kw in desc_lower for kw in ["seo", "audit", "meta", "schema", "ranking", "search"]
+            ):
                 squad_type = "seo"
                 labels.append("seo")
-            elif any(kw in desc_lower for kw in ["content", "blog", "write", "article", "post", "social"]):
+            elif any(
+                kw in desc_lower for kw in ["content", "blog", "write", "article", "post", "social"]
+            ):
                 squad_type = "content"
                 labels.append("content")
             elif any(kw in desc_lower for kw in ["outreach", "lead", "email", "sales", "crm"]):
                 squad_type = "outreach"
                 labels.append("outreach")
-            elif any(kw in desc_lower for kw in ["deploy", "monitor", "incident", "server", "infra"]):
+            elif any(
+                kw in desc_lower for kw in ["deploy", "monitor", "incident", "server", "infra"]
+            ):
                 squad_type = "ops"
                 labels.append("ops")
             else:
@@ -1486,18 +1632,27 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     # Squad might not exist yet — create it and retry
                     requests.post(
                         f"{SQUAD_SERVICE_URL}/squads",
-                        json={"id": squad_id, "name": f"{project} {squad_type}", "project": project,
-                              "objective": f"{squad_type} work for {project}", "status": "active"},
+                        json={
+                            "id": squad_id,
+                            "name": f"{project} {squad_type}",
+                            "project": project,
+                            "objective": f"{squad_type} work for {project}",
+                            "status": "active",
+                        },
                         headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
                         timeout=5,
                     )
                     requests.post(
                         f"{SQUAD_SERVICE_URL}/tasks",
                         json={
-                            "id": task_id, "squad_id": squad_id,
-                            "title": description[:120], "description": description,
-                            "project": project, "priority": priority,
-                            "labels": labels, "status": "backlog",
+                            "id": task_id,
+                            "squad_id": squad_id,
+                            "title": description[:120],
+                            "description": description,
+                            "project": project,
+                            "priority": priority,
+                            "labels": labels,
+                            "status": "backlog",
                         },
                         headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
                         timeout=5,
@@ -1509,9 +1664,13 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             try:
                 requests.post(
                     f"{MIRROR_URL}/engrams",
-                    json={"text": f"Customer request from {project}: {description}", "agent": project,
-                          "context_id": task_id},
-                    headers=MIRROR_HEADERS, timeout=5,
+                    json={
+                        "text": f"Customer request from {project}: {description}",
+                        "agent": project,
+                        "context_id": task_id,
+                    },
+                    headers=MIRROR_HEADERS,
+                    timeout=5,
                 )
             except Exception:
                 pass
@@ -1527,7 +1686,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- status (sos ps) ---
         elif name == "status":
             agent_statuses = await _get_agent_statuses(r)
-            svc_statuses = await asyncio.get_event_loop().run_in_executor(None, _get_service_statuses_sync)
+            svc_statuses = await asyncio.get_event_loop().run_in_executor(
+                None, _get_service_statuses_sync
+            )
 
             # Task counts from Squad Service
             task_counts = {}
@@ -1540,6 +1701,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 if resp.ok:
                     tasks = resp.json()
                     from collections import Counter
+
                     task_counts = dict(Counter(t.get("status", "?") for t in tasks))
             except Exception:
                 pass
@@ -1549,8 +1711,12 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             # Agents
             lines.append("## Agents")
             for a in sorted(agent_statuses, key=lambda x: x["status"]):
-                icon = {"idle": "🟢", "busy": "🔵", "active": "🟡", "dead": "🔴"}.get(a["status"], "⚪")
-                lines.append(f"{icon} **{a['agent']}** ({a['model']}) — {a['role']} [{a['status']}]")
+                icon = {"idle": "🟢", "busy": "🔵", "active": "🟡", "dead": "🔴"}.get(
+                    a["status"], "⚪"
+                )
+                lines.append(
+                    f"{icon} **{a['agent']}** ({a['model']}) — {a['role']} [{a['status']}]"
+                )
 
             # Services
             lines.append("\n## Services")
@@ -1595,9 +1761,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- my_subscriptions ---
         elif name == "my_subscriptions":
-            subs = await _async_saas_client.my_subscriptions(
-                project_scope or agent_scope
-            )
+            subs = await _async_saas_client.my_subscriptions(project_scope or agent_scope)
             if not subs:
                 text = "No active subscriptions."
             else:
@@ -1629,9 +1793,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- my_earnings ---
         elif name == "my_earnings":
-            earnings = await _async_saas_client.my_earnings(
-                project_scope or agent_scope
-            )
+            earnings = await _async_saas_client.my_earnings(project_scope or agent_scope)
             lines = [
                 f"Total MRR: ${earnings['total_mrr_cents'] / 100:.0f}",
                 f"Platform fee (5%): ${earnings['platform_fee_cents'] / 100:.0f}",
@@ -1652,13 +1814,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 if args.get(key) is not None:
                     prefs_updates[key] = args.get(key)
 
-            existing = await _async_saas_client.get_notification_preferences(
-                tenant_slug
-            )
+            existing = await _async_saas_client.get_notification_preferences(tenant_slug)
             existing.update(prefs_updates)
-            await _async_saas_client.set_notification_preferences(
-                tenant_slug, existing
-            )
+            await _async_saas_client.set_notification_preferences(tenant_slug, existing)
             text = (
                 f"Notification settings updated for {tenant_slug}:\n"
                 f"- Email: {'enabled' if existing.get('email') else 'disabled'}\n"
@@ -1700,7 +1858,11 @@ def _append_audit(token: str, tool_name: str, success: bool) -> None:
                     "token_last8": _token_label(token),
                     "tool": tool_name,
                     "status": "success" if success else "fail",
-                    "tenant_id": _resolve_token_context(token).tenant_id if _resolve_token_context(token) else None,
+                    "tenant_id": (
+                        _resolve_token_context(token).tenant_id
+                        if _resolve_token_context(token)
+                        else None
+                    ),
                 }
             )
             + "\n"
@@ -1734,11 +1896,19 @@ def _enforce_rate_limit(token: str) -> None:
 
 app = FastAPI(title="SOS MCP SSE", version="2.0.0")
 
-# CORS for Claude.ai connector and other browser-based clients
-from fastapi.middleware.cors import CORSMiddleware
+# CORS for Claude.ai connector and other browser-based clients.
+# Late import on purpose — depends on `app` being defined above.
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://claude.ai", "https://www.claude.ai", "https://chatgpt.com", "https://chat.openai.com", "*"],
+    allow_origins=[
+        "https://claude.ai",
+        "https://www.claude.ai",
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+        "*",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1767,7 +1937,9 @@ def _request_bearer_token(request: Request) -> str:
 
 
 def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
-    candidate = token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
+    candidate = (
+        token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
+    )
     context = _resolve_token_context(candidate)
     if not context:
         raise HTTPException(status_code=401, detail="invalid token")
@@ -1778,15 +1950,17 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
 async def oauth_discovery() -> JSONResponse:
     """OAuth discovery for ChatGPT/external MCP clients."""
     base = "https://mcp.mumega.com"
-    return JSONResponse({
-        "issuer": base,
-        "authorization_endpoint": f"{base}/oauth/authorize",
-        "token_endpoint": f"{base}/oauth/token",
-        "registration_endpoint": f"{base}/oauth/register",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
-        "code_challenge_methods_supported": ["S256"],
-    })
+    return JSONResponse(
+        {
+            "issuer": base,
+            "authorization_endpoint": f"{base}/oauth/authorize",
+            "token_endpoint": f"{base}/oauth/token",
+            "registration_endpoint": f"{base}/oauth/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+        }
+    )
 
 
 @app.post("/oauth/register")
@@ -1794,15 +1968,17 @@ async def oauth_register(request: Request) -> JSONResponse:
     """Dynamic client registration — auto-approves any client."""
     body = await request.json()
     client_id = f"client-{uuid4().hex[:12]}"
-    return JSONResponse({
-        "client_id": client_id,
-        "client_secret": client_id,
-        "client_name": body.get("client_name", "unknown"),
-        "redirect_uris": body.get("redirect_uris", []),
-        "grant_types": ["authorization_code"],
-        "response_types": ["code"],
-        "token_endpoint_auth_method": "client_secret_post",
-    })
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_secret": client_id,
+            "client_name": body.get("client_name", "unknown"),
+            "redirect_uris": body.get("redirect_uris", []),
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "client_secret_post",
+        }
+    )
 
 
 @app.get("/oauth/authorize")
@@ -1824,11 +2000,13 @@ async def oauth_token(request: Request) -> JSONResponse:
     """OAuth token exchange — returns the system MCP access token."""
     tokens = list(_system_tokens())
     access_token = tokens[0] if tokens else "no-token-configured"
-    return JSONResponse({
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": 86400,
-    })
+    return JSONResponse(
+        {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 86400,
+        }
+    )
 
 
 @app.get("/health")
@@ -1971,7 +2149,8 @@ async def health_full() -> JSONResponse:
 
     critical_down = redis_result.get("status") != "healthy"
     degraded_count = sum(
-        1 for k, v in services.items()
+        1
+        for k, v in services.items()
         if v.get("status") not in ("healthy",) and k not in ("redis", "mcp_sse")
     )
 
@@ -1986,22 +2165,25 @@ async def health_full() -> JSONResponse:
 
     elapsed_ms = round((time.monotonic() - t0) * 1000)
 
-    return JSONResponse({
-        "status": overall,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "elapsed_ms": elapsed_ms,
-        "services": services,
-        "agents": agents_info,
-        "tenants": tenants_info,
-        "kernel": kernel_info,
-        "systemd": systemd_statuses,
-        "flywheel": flywheel_info,
-    })
+    return JSONResponse(
+        {
+            "status": overall,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "elapsed_ms": elapsed_ms,
+            "services": services,
+            "agents": agents_info,
+            "tenants": tenants_info,
+            "kernel": kernel_info,
+            "systemd": systemd_statuses,
+            "flywheel": flywheel_info,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Public Organism Vitals — live data for mumega.com homepage
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/organism")
 async def organism_vitals() -> JSONResponse:
@@ -2011,7 +2193,6 @@ async def organism_vitals() -> JSONResponse:
     Fetched by the homepage every 60 seconds to show the organism is alive.
     """
     from pathlib import Path as _Path
-    import glob
 
     vitals: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -2020,6 +2201,7 @@ async def organism_vitals() -> JSONResponse:
     # Agent count from registry
     try:
         from sos.kernel.agent_registry import get_all_agents
+
         all_agents = get_all_agents()
         vitals["agents_total"] = len(all_agents)
     except Exception:
@@ -2049,6 +2231,7 @@ async def organism_vitals() -> JSONResponse:
     # Tasks from Squad Service
     try:
         import httpx
+
         async with httpx.AsyncClient(timeout=3) as client:
             resp = await client.get(
                 "http://localhost:8060/tasks",
@@ -2107,7 +2290,9 @@ async def organism_vitals() -> JSONResponse:
     except Exception:
         vitals["redis"] = False
 
-    vitals["services_count"] = 7  # calcifer, lifecycle, output-capture, wake-daemon, mcp-sse, squad, mirror
+    vitals["services_count"] = (
+        7  # calcifer, lifecycle, output-capture, wake-daemon, mcp-sse, squad, mirror
+    )
 
     return JSONResponse(vitals, headers={"Access-Control-Allow-Origin": "*"})
 
@@ -2125,6 +2310,7 @@ SQUAD_SERVICE_URL = "http://localhost:8060"
 def _atomic_json_append(path: Path, entry: dict, dedup_key: str, dedup_value: str) -> bool:
     """Atomically append an entry to a JSON array file. Returns False if duplicate."""
     import tempfile
+
     data = json.loads(path.read_text()) if path.exists() else []
     for item in data:
         if item.get(dedup_key) == dedup_value:
@@ -2162,20 +2348,25 @@ All tools are available via the `sos` MCP:
 - `task_create` / `task_list` / `task_update` — task management
 """)
 
-    (claude_dir / "settings.json").write_text(json.dumps({
-        "mcpServers": {
-            "sos": {
-                "type": "stdio",
-                "command": "node",
-                "args": ["$HOME/sos-remote.js"],
-                "env": {
-                    "SOS_TOKEN": bus_token,
-                    "MIRROR_TOKEN": mirror_token,
-                    "AGENT": slug,
-                },
-            }
-        }
-    }, indent=2))
+    (claude_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "sos": {
+                        "type": "stdio",
+                        "command": "node",
+                        "args": ["$HOME/sos-remote.js"],
+                        "env": {
+                            "SOS_TOKEN": bus_token,
+                            "MIRROR_TOKEN": mirror_token,
+                            "AGENT": slug,
+                        },
+                    }
+                }
+            },
+            indent=2,
+        )
+    )
 
     (proj_dir / ".env").write_text(f"""# {label} — Mumega Connection
 SOS_TOKEN={bus_token}
@@ -2216,17 +2407,33 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
     # 2. Store Mirror tenant key (atomic)
     mirror_added = _atomic_json_append(
         MIRROR_KEYS_PATH,
-        {"key": mirror_token, "key_hash": mirror_hash, "agent_slug": slug,
-         "created_at": timestamp, "active": True, "label": label},
-        dedup_key="agent_slug", dedup_value=slug,
+        {
+            "key": mirror_token,
+            "key_hash": mirror_hash,
+            "agent_slug": slug,
+            "created_at": timestamp,
+            "active": True,
+            "label": label,
+        },
+        dedup_key="agent_slug",
+        dedup_value=slug,
     )
 
     # 3. Store Bus token (atomic) — scope="customer" gates tool visibility
     bus_added = _atomic_json_append(
         BUS_TOKENS_PATH,
-        {"token": bus_token, "token_hash": "", "project": slug, "agent": slug,
-         "label": label, "active": True, "created_at": timestamp, "scope": "customer"},
-        dedup_key="project", dedup_value=slug,
+        {
+            "token": bus_token,
+            "token_hash": "",
+            "project": slug,
+            "agent": slug,
+            "label": label,
+            "active": True,
+            "created_at": timestamp,
+            "scope": "customer",
+        },
+        dedup_key="project",
+        dedup_value=slug,
     )
 
     if not mirror_added or not bus_added:
@@ -2251,9 +2458,13 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
     try:
         requests.post(
             f"{SQUAD_SERVICE_URL}/squads",
-            json={"id": f"{slug}-dev", "name": f"{label} Dev Squad", "project": slug,
-                  "objective": f"Development and delivery for {label}",
-                  "status": "active"},
+            json={
+                "id": f"{slug}-dev",
+                "name": f"{label} Dev Squad",
+                "project": slug,
+                "objective": f"Development and delivery for {label}",
+                "status": "active",
+            },
             headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
             timeout=5,
         )
@@ -2265,10 +2476,16 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
         task_id = f"{slug}-genesis-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         requests.post(
             f"{SQUAD_SERVICE_URL}/tasks",
-            json={"id": task_id, "squad_id": f"{slug}-dev",
-                  "title": f"Welcome {label} — initial audit", "project": slug,
-                  "description": f"Run initial audit for {label}. Check site health, identify quick wins.",
-                  "priority": "high", "labels": ["onboarding", "audit"], "status": "backlog"},
+            json={
+                "id": task_id,
+                "squad_id": f"{slug}-dev",
+                "title": f"Welcome {label} — initial audit",
+                "project": slug,
+                "description": f"Run initial audit for {label}. Check site health, identify quick wins.",
+                "priority": "high",
+                "labels": ["onboarding", "audit"],
+                "status": "backlog",
+            },
             headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
             timeout=5,
         )
@@ -2279,9 +2496,13 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
     try:
         requests.post(
             f"{MIRROR_URL}/engrams",
-            json={"text": f"Customer onboarded: {label} ({slug}), email: {email}, date: {timestamp}",
-                  "agent": "system", "context_id": f"onboard-{slug}"},
-            headers=MIRROR_HEADERS, timeout=5,
+            json={
+                "text": f"Customer onboarded: {label} ({slug}), email: {email}, date: {timestamp}",
+                "agent": "system",
+                "context_id": f"onboard-{slug}",
+            },
+            headers=MIRROR_HEADERS,
+            timeout=5,
         )
     except Exception:
         pass
@@ -2289,9 +2510,15 @@ async def _onboard_customer(slug: str, label: str, email: str) -> dict[str, Any]
     # 10. Announce on bus
     try:
         r = _get_redis()
-        await r.publish("sos:wake:kasra", json.dumps({
-            "source": "system", "text": f"New customer onboarded: {label} ({slug})",
-        }))
+        await r.publish(
+            "sos:wake:kasra",
+            json.dumps(
+                {
+                    "source": "system",
+                    "text": f"New customer onboarded: {label} ({slug})",
+                }
+            ),
+        )
         await _publish_log("info", "onboarding", f"Customer onboarded: {label} ({slug})")
     except Exception:
         pass
@@ -2334,7 +2561,9 @@ async def customer_signup(request: Request) -> JSONResponse:
     if not slug or not label:
         raise HTTPException(status_code=400, detail="slug and label required")
     if not slug.replace("-", "").isalnum():
-        raise HTTPException(status_code=400, detail="slug must be lowercase alphanumeric with hyphens")
+        raise HTTPException(
+            status_code=400, detail="slug must be lowercase alphanumeric with hyphens"
+        )
 
     result = await _onboard_customer(slug, label, email)
 
@@ -2347,6 +2576,7 @@ async def customer_signup(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # Stripe Webhook — Auto-provision tenant on payment
 # ---------------------------------------------------------------------------
+
 
 @app.post("/webhook/stripe")
 async def stripe_webhook(request: Request) -> Response:
@@ -2362,9 +2592,7 @@ async def stripe_webhook(request: Request) -> Response:
         )
     except Exception as exc:
         log.exception("billing webhook proxy failed")
-        return JSONResponse(
-            {"status": "error", "detail": str(exc)}, status_code=502
-        )
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=502)
     return Response(
         content=billing_resp.content,
         status_code=billing_resp.status_code,
@@ -2375,6 +2603,7 @@ async def stripe_webhook(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 # OAuth Callbacks — Per-tenant integration connections
 # ---------------------------------------------------------------------------
+
 
 @app.get("/oauth/ghl/callback")
 async def ghl_oauth_callback(request: Request) -> Response:
@@ -2397,12 +2626,14 @@ async def ghl_oauth_callback(request: Request) -> Response:
         raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
-    return JSONResponse({
-        "status": "connected",
-        "provider": "ghl",
-        "tenant": tenant,
-        "location_id": result.get("location_id", ""),
-    })
+    return JSONResponse(
+        {
+            "status": "connected",
+            "provider": "ghl",
+            "tenant": tenant,
+            "location_id": result.get("location_id", ""),
+        }
+    )
 
 
 @app.get("/oauth/google/callback")
@@ -2436,24 +2667,30 @@ async def google_oauth_callback(request: Request) -> Response:
         raise HTTPException(status_code=502, detail=f"integrations unavailable: {exc}") from exc
 
     # TODO: Redirect to dashboard with success message once dashboard exists
-    return JSONResponse({
-        "status": "connected",
-        "provider": f"google_{service}",
-        "tenant": tenant,
-    })
+    return JSONResponse(
+        {
+            "status": "connected",
+            "provider": f"google_{service}",
+            "tenant": tenant,
+        }
+    )
 
 
 async def _publish_log(level: str, service: str, message: str, agent: str = "") -> None:
     """Publish a log entry to the unified log stream."""
     try:
         r = _get_redis()
-        await r.xadd("sos:stream:logs", {
-            "level": level,
-            "service": service,
-            "agent": agent,
-            "message": message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }, maxlen=10000)
+        await r.xadd(
+            "sos:stream:logs",
+            {
+                "level": level,
+                "service": service,
+                "agent": agent,
+                "message": message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            maxlen=10000,
+        )
     except Exception:
         pass
 
@@ -2476,7 +2713,9 @@ async def install_skill(request: Request) -> JSONResponse:
     if source.startswith("http"):
         try:
             # Convert GitHub page URL to raw URL
-            raw_url = source.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+            raw_url = source.replace("github.com", "raw.githubusercontent.com").replace(
+                "/blob/", "/"
+            )
             if not raw_url.endswith("SKILL.md"):
                 raw_url = raw_url.rstrip("/") + "/SKILL.md"
             resp = requests.get(raw_url, timeout=10)
@@ -2504,6 +2743,7 @@ async def install_skill(request: Request) -> JSONResponse:
 
     # Parse SKILL.md YAML frontmatter
     import yaml
+
     if "---" in skill_content:
         parts = skill_content.split("---", 2)
         if len(parts) >= 3:
@@ -2540,19 +2780,23 @@ async def install_skill(request: Request) -> JSONResponse:
             timeout=5,
         )
         if resp.status_code >= 400:
-            return JSONResponse({"status": "error", "detail": resp.text}, status_code=resp.status_code)
+            return JSONResponse(
+                {"status": "error", "detail": resp.text}, status_code=resp.status_code
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Registration failed: {e}")
 
     await _publish_log("info", "skills", f"Installed skill: {meta.get('name', source)}")
 
-    return JSONResponse({
-        "status": "ok",
-        "skill": meta.get("name"),
-        "version": meta.get("version", "1.0.0"),
-        "labels": meta.get("labels", []),
-        "source": source,
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "skill": meta.get("name"),
+            "version": meta.get("version", "1.0.0"),
+            "labels": meta.get("labels", []),
+            "source": source,
+        }
+    )
 
 
 @app.get("/api/skills")
@@ -2605,7 +2849,10 @@ async def get_config(request: Request) -> JSONResponse:
     }
 
     # 3. Agents (from KNOWN_AGENTS)
-    config["agents"] = {name: {"type": info["type"], "model": info["model"], "role": info["role"]} for name, info in KNOWN_AGENTS.items()}
+    config["agents"] = {
+        name: {"type": info["type"], "model": info["model"], "role": info["role"]}
+        for name, info in KNOWN_AGENTS.items()
+    }
 
     # 4. Bus tokens (count only, not values)
     try:
@@ -2626,7 +2873,11 @@ async def get_config(request: Request) -> JSONResponse:
 
     # 6. Skills count
     try:
-        resp = requests.get(f"{SQUAD_SERVICE_URL}/skills", headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"}, timeout=3)
+        resp = requests.get(
+            f"{SQUAD_SERVICE_URL}/skills",
+            headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+            timeout=3,
+        )
         config["skills_count"] = len(resp.json()) if resp.ok else 0
     except Exception:
         config["skills_count"] = 0
@@ -2663,14 +2914,16 @@ async def get_logs(
             continue
         if agent and data.get("agent") != agent:
             continue
-        logs.append({
-            "id": mid,
-            "level": data.get("level", "info"),
-            "service": data.get("service", "?"),
-            "agent": data.get("agent", ""),
-            "message": data.get("message", ""),
-            "timestamp": data.get("timestamp", ""),
-        })
+        logs.append(
+            {
+                "id": mid,
+                "level": data.get("level", "info"),
+                "service": data.get("service", "?"),
+                "agent": data.get("agent", ""),
+                "message": data.get("message", ""),
+                "timestamp": data.get("timestamp", ""),
+            }
+        )
         if len(logs) >= limit:
             break
 
@@ -2692,7 +2945,9 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
     MCP SSE transport: client connects here and receives a session endpoint,
     then sends JSON-RPC requests to POST /messages?session_id=<id>.
     """
-    resolved_token = token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
+    resolved_token = (
+        token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
+    )
     auth = _require_auth(request, resolved_token)
     session_id = str(uuid4())
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -2852,9 +3107,7 @@ async def _process_jsonrpc(
         if auth.is_customer:
             rl_tenant = auth.project_scope or "system"
             try:
-                rl_result = await _async_saas_client.check_rate_limit(
-                    rl_tenant, auth.plan
-                )
+                rl_result = await _async_saas_client.check_rate_limit(rl_tenant, auth.plan)
                 allowed = bool(rl_result.get("allowed", True))
             except Exception as exc:
                 log.warning("rate limit check failed (fail-open): %s", exc)
