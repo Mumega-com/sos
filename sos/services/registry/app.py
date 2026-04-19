@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, Header, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
 from sos import __version__
@@ -95,7 +97,6 @@ def _raise_on_deny(decision: PolicyDecision, *, require_system: bool = False) ->
         raise HTTPException(status_code=403, detail=reason)
 
     if require_system:
-        pillars = set(decision.pillars_passed)
         # system/admin callers never get 'tenant_scope' added because the
         # gate short-circuits with 'system/admin scope' reason. Check that.
         if "system/admin" not in decision.reason:
@@ -319,6 +320,80 @@ async def get_agent_card(
             detail=f"no card for agent {agent_name!r}",
         )
     return card.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Mesh enrollment — v0.9.2
+# ---------------------------------------------------------------------------
+
+
+class MeshEnrollRequest(BaseModel):
+    agent_id: str  # must match AgentCard.identity_id pattern (^agent:...)
+    name: str  # must match AgentCard.name pattern
+    role: str  # must be valid AgentRole literal
+    skills: list[str] = []
+    squads: list[str] = []
+    heartbeat_url: str | None = None
+    project: str | None = None  # optional override; system tokens only
+
+
+@app.post("/mesh/enroll")
+async def mesh_enroll(
+    body: MeshEnrollRequest,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Enroll an agent into the mesh registry.
+
+    Thin wrapper over the AgentCard upsert path. Accepts a lighter payload
+    and server-fills required AgentCard fields (tool/type = "service",
+    registered_at/last_seen = utcnow). TTL is fixed at 300 s — agents must
+    heartbeat to stay enrolled.
+
+    Auth:
+    - Bearer required.
+    - Same project-scope rules as POST /agents/cards.
+    - Scoped tokens are forced to their own project; an explicit
+      ``project`` that differs from token scope → 403.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:mesh_enroll",
+        resource=body.name,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    entry = _verify_bearer(authorization)
+    effective_project = _resolve_project_scope(entry, body.project)
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        card = AgentCard(
+            identity_id=body.agent_id,
+            name=body.name,
+            role=body.role,
+            skills=body.skills,
+            squads=body.squads,
+            heartbeat_url=body.heartbeat_url,
+            project=effective_project,
+            tool="service",
+            type="service",
+            registered_at=now,
+            last_seen=now,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"invalid enroll payload: {exc}")
+
+    write_card(card, project=effective_project, ttl_seconds=300)
+    return {
+        "enrolled": True,
+        "name": card.name,
+        "project": effective_project,
+        "expires_in": 300,
+    }
 
 
 @app.get("/agents/{agent_id}")
