@@ -4,6 +4,42 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
+### v0.9.4-alpha.1 — Phase 5 `sos init` Step A (2026-04-19)
+
+First slice of the Phase 5 first-boot flow from the mothership plan
+(`docs/plans/2026-04-19-mumega-mothership.md` §5). Ships tenant
+provisioning via the SaaS service; downstream steps (Inkwell template
+copy + wrangler deploy, squad seeding + qNFT mint, standing workflows,
+first pulse run) are documented stubs that raise `NotImplementedError`
+with pointers to the blocker.
+
+#### Added
+- `sos/cli/init.py` — new Phase 5 tenant-provisioning CLI. Flags:
+  `--slug --label --email --plan --domain --industry --tagline`, plus
+  `--saas-base-url`, `--saas-token`, `--dry-run`. Validates the payload
+  through `sos.contracts.tenant.TenantCreate` and POSTs to
+  `/tenants` via `sos.clients.saas.SaasClient`. Steps B–E run
+  sequentially and report each block reason so the operator sees the
+  full punch list on one run.
+- `sos/cli/setup.py` — relocated the pre-v0.9.4 dev-machine setup
+  wizard (LLM provider / API key / bus tokens / Redis) so
+  `python -m sos.cli.setup` keeps working. Previously lived at
+  `sos.cli.init`.
+- `tests/cli/test_init.py` — 11 unit tests covering payload
+  construction, Step A client wiring (base URL + token overrides,
+  dry-run path), `argparse` defaults, and the B–E stub contract
+  (every stub raises `NotImplementedError` pointing at the plan doc).
+
+#### Known blockers (B–E, tracked in plan §5.3–5.6)
+- B (Inkwell deploy): `inkwell/instances/_template/` does not exist;
+  Cloudflare Pages credentials not wired into CI.
+- C (squad seed + qNFT): economy service has no qNFT mint endpoint.
+- D (standing workflows): depends on B (directory must exist).
+- E (pulse trigger): operations client missing a per-tenant
+  `trigger_pulse()` helper.
+
+Each step's docstring names the exact blocker and plan section.
+
 ---
 
 ## [0.9.2.1] — 2026-04-19 — Signed mesh enrollment + TOFU + per-service tokens
