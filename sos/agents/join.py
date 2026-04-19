@@ -40,9 +40,11 @@ MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
 SQUAD_SERVICE_URL = os.environ.get("SQUAD_SERVICE_URL", "http://localhost:8060")
 REDIS_URL = os.environ.get(
     "REDIS_URL",
-    f"redis://:{os.environ.get('REDIS_PASSWORD', '')}@localhost:6379/0"
-    if os.environ.get("REDIS_PASSWORD")
-    else "redis://localhost:6379/0",
+    (
+        f"redis://:{os.environ.get('REDIS_PASSWORD', '')}@localhost:6379/0"
+        if os.environ.get("REDIS_PASSWORD")
+        else "redis://localhost:6379/0"
+    ),
 )
 
 VALID_ROUTINGS = {"mcp", "tmux", "openclaw", "both"}
@@ -76,9 +78,7 @@ def _atomic_json_append(
             return False
     data.append(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", dir=str(path.parent), suffix=".tmp", delete=False
-    )
+    tmp = tempfile.NamedTemporaryFile(mode="w", dir=str(path.parent), suffix=".tmp", delete=False)
     try:
         json.dump(data, tmp, indent=2)
         tmp.close()
@@ -343,13 +343,9 @@ class AgentJoinService:
             if AGENT_ROUTING_PATH.exists():
                 raw = json.loads(AGENT_ROUTING_PATH.read_text())
                 # Filter out non-routing keys like _comment
-                routing_data = {
-                    k: v for k, v in raw.items() if not k.startswith("_")
-                }
+                routing_data = {k: v for k, v in raw.items() if not k.startswith("_")}
             routing_data[clean_name] = routing
-            routing_data["_comment"] = (
-                "Dynamic routing overrides. Wake daemon checks this file."
-            )
+            routing_data["_comment"] = "Dynamic routing overrides. Wake daemon checks this file."
             tmp = tempfile.NamedTemporaryFile(
                 mode="w",
                 dir=str(AGENT_ROUTING_PATH.parent),
@@ -418,6 +414,23 @@ class AgentJoinService:
             errors.append(f"Bus announcement failed: {exc}")
             logger.warning("Bus announcement failed for %s: %s", clean_name, exc)
 
+        # Step 8.5: Enroll into mesh registry (v0.9.2)
+        try:
+            from sos.clients.registry import AsyncRegistryClient
+
+            mesh_client = AsyncRegistryClient(token=admin_token or None)
+            await mesh_client.enroll_mesh(
+                agent_id=f"agent:{clean_name}",
+                name=clean_name,
+                role=role,
+                skills=skills or [],
+                squads=[],  # squads are assigned later via join flows, not at boot
+            )
+            logger.info("Mesh enrollment succeeded for %s", clean_name)
+        except Exception as exc:
+            errors.append(f"Mesh enrollment failed: {exc}")
+            logger.warning("Mesh enrollment failed for %s: %s", clean_name, exc)
+
         # Step 9: Nursery bounties — starter tasks for new agent
         nursery_bounty_ids: list[str] = []
         try:
@@ -466,31 +479,91 @@ class AgentJoinService:
 # Starter bounty templates by skill — low risk, small reward, first taste
 NURSERY_TEMPLATES: dict[str, list[dict[str, Any]]] = {
     "seo": [
-        {"title": "Run basic SEO check on a page", "reward": 5.0, "desc": "Check meta tags, heading structure, and image alt text on one page. Report findings."},
-        {"title": "Research 5 keywords for a topic", "reward": 8.0, "desc": "Find 5 relevant keywords with search volume estimates. Deliver as a list."},
-        {"title": "Write a meta description", "reward": 5.0, "desc": "Write an SEO-optimized meta description (155 chars) for a given page."},
+        {
+            "title": "Run basic SEO check on a page",
+            "reward": 5.0,
+            "desc": "Check meta tags, heading structure, and image alt text on one page. Report findings.",
+        },
+        {
+            "title": "Research 5 keywords for a topic",
+            "reward": 8.0,
+            "desc": "Find 5 relevant keywords with search volume estimates. Deliver as a list.",
+        },
+        {
+            "title": "Write a meta description",
+            "reward": 5.0,
+            "desc": "Write an SEO-optimized meta description (155 chars) for a given page.",
+        },
     ],
     "content": [
-        {"title": "Write a 300-word blog intro", "reward": 8.0, "desc": "Write a compelling blog post introduction on a given topic. SEO-friendly."},
-        {"title": "Summarize an article in 3 bullets", "reward": 5.0, "desc": "Read a provided article and create a 3-bullet summary."},
-        {"title": "Create 5 social media captions", "reward": 10.0, "desc": "Write 5 engaging social media captions for a given product or service."},
+        {
+            "title": "Write a 300-word blog intro",
+            "reward": 8.0,
+            "desc": "Write a compelling blog post introduction on a given topic. SEO-friendly.",
+        },
+        {
+            "title": "Summarize an article in 3 bullets",
+            "reward": 5.0,
+            "desc": "Read a provided article and create a 3-bullet summary.",
+        },
+        {
+            "title": "Create 5 social media captions",
+            "reward": 10.0,
+            "desc": "Write 5 engaging social media captions for a given product or service.",
+        },
     ],
     "web": [
-        {"title": "Check a page for broken links", "reward": 5.0, "desc": "Scan a webpage and list any broken or dead links."},
-        {"title": "Review page load speed", "reward": 8.0, "desc": "Test a page with PageSpeed Insights and summarize the results."},
+        {
+            "title": "Check a page for broken links",
+            "reward": 5.0,
+            "desc": "Scan a webpage and list any broken or dead links.",
+        },
+        {
+            "title": "Review page load speed",
+            "reward": 8.0,
+            "desc": "Test a page with PageSpeed Insights and summarize the results.",
+        },
     ],
     "code": [
-        {"title": "Review a small pull request", "reward": 10.0, "desc": "Review a PR with < 100 lines changed. Check for bugs and style."},
-        {"title": "Write a unit test for a function", "reward": 8.0, "desc": "Given a function signature, write 3 unit tests covering edge cases."},
+        {
+            "title": "Review a small pull request",
+            "reward": 10.0,
+            "desc": "Review a PR with < 100 lines changed. Check for bugs and style.",
+        },
+        {
+            "title": "Write a unit test for a function",
+            "reward": 8.0,
+            "desc": "Given a function signature, write 3 unit tests covering edge cases.",
+        },
     ],
     "outreach": [
-        {"title": "Draft a cold outreach email", "reward": 5.0, "desc": "Write a professional cold email for a given business and target audience."},
-        {"title": "Find 10 prospects in a niche", "reward": 10.0, "desc": "Research and list 10 businesses in a given niche with contact info."},
+        {
+            "title": "Draft a cold outreach email",
+            "reward": 5.0,
+            "desc": "Write a professional cold email for a given business and target audience.",
+        },
+        {
+            "title": "Find 10 prospects in a niche",
+            "reward": 10.0,
+            "desc": "Research and list 10 businesses in a given niche with contact info.",
+        },
     ],
     "_default": [
-        {"title": "Introduce yourself on the bus", "reward": 5.0, "desc": "Send a message on the SOS bus introducing yourself and your skills."},
-        {"title": "Check system status", "reward": 5.0, "desc": "Run sos status and report what you see. Note any issues."},
-        {"title": "Read the shared context", "reward": 5.0, "desc": "Read ~/.openclaw/shared-context.md and summarize the key points."},
+        {
+            "title": "Introduce yourself on the bus",
+            "reward": 5.0,
+            "desc": "Send a message on the SOS bus introducing yourself and your skills.",
+        },
+        {
+            "title": "Check system status",
+            "reward": 5.0,
+            "desc": "Run sos status and report what you see. Note any issues.",
+        },
+        {
+            "title": "Read the shared context",
+            "reward": 5.0,
+            "desc": "Read ~/.openclaw/shared-context.md and summarize the key points.",
+        },
     ],
 }
 
@@ -501,10 +574,12 @@ async def _create_nursery_bounties(agent_name: str, skills: list[str]) -> list[s
     Returns list of bounty IDs created.
     """
     import sys
+
     sys.path.insert(0, str(Path.home()))
 
     try:
         from sovereign.bounty_board import BountyBoard
+
         board = BountyBoard()
     except Exception as exc:
         logger.warning("BountyBoard unavailable: %s", exc)
@@ -544,7 +619,12 @@ async def _create_nursery_bounties(agent_name: str, skills: list[str]) -> list[s
                 creator_wallet="treasury:nursery",
             )
             bounty_ids.append(bounty_id)
-            logger.info("Nursery bounty %s: %s (%.0f MIND)", bounty_id, template["title"], template["reward"])
+            logger.info(
+                "Nursery bounty %s: %s (%.0f MIND)",
+                bounty_id,
+                template["title"],
+                template["reward"],
+            )
         except Exception as exc:
             logger.warning("Failed to create nursery bounty: %s", exc)
 

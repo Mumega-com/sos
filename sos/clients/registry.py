@@ -37,8 +37,10 @@ def _resolve_base_url(base_url: Optional[str]) -> str:
 
 
 def _resolve_token(token: Optional[str]) -> Optional[str]:
-    return token if token is not None else (
-        os.environ.get(_TOKEN_ENV) or os.environ.get("SOS_SYSTEM_TOKEN") or None
+    return (
+        token
+        if token is not None
+        else (os.environ.get(_TOKEN_ENV) or os.environ.get("SOS_SYSTEM_TOKEN") or None)
     )
 
 
@@ -57,11 +59,14 @@ def _build_physics(raw: Optional[Dict[str, Any]]) -> PhysicsState:
         C=float(raw.get("C", 0.95)),
         alpha_norm=float(raw.get("alpha_norm", 0.0)),
         regime=str(raw.get("regime", "stable")),
-        inner=dict(raw.get("inner") or {
-            "receptivity": 1.0,
-            "will": 0.8,
-            "logic": 0.9,
-        }),
+        inner=dict(
+            raw.get("inner")
+            or {
+                "receptivity": 1.0,
+                "will": 0.8,
+                "logic": 0.9,
+            }
+        ),
     )
 
 
@@ -69,9 +74,7 @@ def _build_economics(raw: Optional[Dict[str, Any]]) -> AgentEconomics:
     raw = raw or {}
     econ = AgentEconomics()
     econ.token_balance = float(raw.get("token_balance", econ.token_balance))
-    econ.daily_budget_limit = float(
-        raw.get("daily_budget_limit", econ.daily_budget_limit)
-    )
+    econ.daily_budget_limit = float(raw.get("daily_budget_limit", econ.daily_budget_limit))
     values = raw.get("values")
     if isinstance(values, dict):
         econ.values = {str(k): float(v) for k, v in values.items()}
@@ -84,9 +87,7 @@ def _build_dna(name: str, raw: Optional[Dict[str, Any]]) -> AgentDNA:
         id=f"agent:{name}",
         name=name,
         physics=_build_physics(raw.get("physics") if isinstance(raw, dict) else None),
-        economics=_build_economics(
-            raw.get("economics") if isinstance(raw, dict) else None
-        ),
+        economics=_build_economics(raw.get("economics") if isinstance(raw, dict) else None),
         learning_strategy=str(raw.get("learning_strategy", "balanced")),
         beliefs=list(raw.get("beliefs") or []),
         tools=list(raw.get("tools") or []),
@@ -148,14 +149,10 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
         self._token = _resolve_token(token)
 
     async def health(self) -> Dict[str, Any]:
-        resp = await self._request(
-            "GET", "/health", headers=_auth_headers(self._token)
-        )
+        resp = await self._request("GET", "/health", headers=_auth_headers(self._token))
         return resp.json()
 
-    async def list_agents(
-        self, project: Optional[str] = None
-    ) -> List[AgentIdentity]:
+    async def list_agents(self, project: Optional[str] = None) -> List[AgentIdentity]:
         """Return the list of agents visible to this token.
 
         ``project`` is forwarded as a query param. System / admin tokens may
@@ -166,9 +163,7 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
         path = "/agents"
         if project is not None:
             path = f"/agents?project={project}"
-        resp = await self._request(
-            "GET", path, headers=_auth_headers(self._token)
-        )
+        resp = await self._request("GET", path, headers=_auth_headers(self._token))
         body = resp.json()
         raw_list = body.get("agents", []) if isinstance(body, dict) else []
         agents: List[AgentIdentity] = []
@@ -190,9 +185,7 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
         if project is not None:
             path = f"{path}?project={project}"
         try:
-            resp = await self._request(
-                "GET", path, headers=_auth_headers(self._token)
-            )
+            resp = await self._request("GET", path, headers=_auth_headers(self._token))
         except SOSClientError as exc:
             if exc.status_code == 404:
                 return None
@@ -204,6 +197,43 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
             return _deserialize_agent(body)
         except Exception:
             return None
+
+    async def enroll_mesh(
+        self,
+        *,
+        agent_id: str,
+        name: str,
+        role: str,
+        skills: Optional[list[str]] = None,
+        squads: Optional[list[str]] = None,
+        heartbeat_url: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /mesh/enroll — register an agent into the mesh registry.
+
+        Returns the endpoint's response body on success.  Raises
+        :class:`SOSClientError` on non-2xx.
+        """
+        payload: Dict[str, Any] = {
+            "agent_id": agent_id,
+            "name": name,
+            "role": role,
+        }
+        if skills is not None:
+            payload["skills"] = skills
+        if squads is not None:
+            payload["squads"] = squads
+        if heartbeat_url is not None:
+            payload["heartbeat_url"] = heartbeat_url
+        if project is not None:
+            payload["project"] = project
+        resp = await self._request(
+            "POST",
+            "/mesh/enroll",
+            headers=_auth_headers(self._token),
+            json=payload,
+        )
+        return resp.json()
 
 
 class RegistryClient(BaseHTTPClient):
@@ -222,13 +252,9 @@ class RegistryClient(BaseHTTPClient):
         self._token = _resolve_token(token)
 
     def health(self) -> Dict[str, Any]:
-        return self._request(
-            "GET", "/health", headers=_auth_headers(self._token)
-        ).json()
+        return self._request("GET", "/health", headers=_auth_headers(self._token)).json()
 
-    def list_agents(
-        self, project: Optional[str] = None
-    ) -> List[AgentIdentity]:
+    def list_agents(self, project: Optional[str] = None) -> List[AgentIdentity]:
         path = "/agents"
         if project is not None:
             path = f"/agents?project={project}"
@@ -245,16 +271,12 @@ class RegistryClient(BaseHTTPClient):
                 continue
         return agents
 
-    def get_agent(
-        self, agent_id: str, project: Optional[str] = None
-    ) -> Optional[AgentIdentity]:
+    def get_agent(self, agent_id: str, project: Optional[str] = None) -> Optional[AgentIdentity]:
         path = f"/agents/{agent_id}"
         if project is not None:
             path = f"{path}?project={project}"
         try:
-            resp = self._request(
-                "GET", path, headers=_auth_headers(self._token)
-            )
+            resp = self._request("GET", path, headers=_auth_headers(self._token))
         except SOSClientError as exc:
             if exc.status_code == 404:
                 return None

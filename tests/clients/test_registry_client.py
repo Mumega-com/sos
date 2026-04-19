@@ -15,6 +15,7 @@ The HTTP layer is mocked via :class:`httpx.MockTransport`. Because
 inside ``_request``, we patch the ``AsyncClient`` symbol in
 ``sos.clients.base`` with a factory that injects our transport.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,6 @@ import pytest
 
 from sos.clients.registry import AsyncRegistryClient
 from sos.kernel.identity import AgentIdentity
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,9 +84,7 @@ async def test_list_agents_returns_agent_identities() -> None:
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         agents = await client.list_agents()
 
     assert len(agents) == 2
@@ -113,9 +111,7 @@ async def test_get_agent_returns_agent_identity_on_200() -> None:
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         agent = await client.get_agent("gamma")
 
     assert isinstance(agent, AgentIdentity)
@@ -131,17 +127,13 @@ async def test_get_agent_returns_agent_identity_on_200() -> None:
 @pytest.mark.asyncio
 async def test_get_agent_returns_none_on_404() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            404, content=json.dumps({"detail": "not found"}).encode()
-        )
+        return httpx.Response(404, content=json.dumps({"detail": "not found"}).encode())
 
     with patch(
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         result = await client.get_agent("missing-agent")
 
     assert result is None
@@ -168,9 +160,7 @@ async def test_list_agents_propagates_connect_error() -> None:
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         with pytest.raises(httpx.ConnectError):
             await client.list_agents()
 
@@ -184,9 +174,7 @@ async def test_get_agent_propagates_connect_error() -> None:
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         with pytest.raises(httpx.ConnectError):
             await client.get_agent("any-name")
 
@@ -208,10 +196,120 @@ async def test_list_agents_raises_on_500() -> None:
         "sos.clients.base.httpx.AsyncClient",
         _mock_async_client_factory(handler),
     ):
-        client = AsyncRegistryClient(
-            base_url="http://fake-registry:6067", token="test-token"
-        )
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
         with pytest.raises(SOSClientError) as exc_info:
             await client.list_agents()
 
     assert exc_info.value.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# enroll_mesh — happy path (minimal payload)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enroll_mesh_posts_expected_body_and_returns_response() -> None:
+    """enroll_mesh POSTs required fields; None-valued optional fields are omitted."""
+    response_body = {
+        "enrolled": True,
+        "name": "myagent",
+        "project": None,
+        "stale_after": 300,
+        "expires_in": 900,
+    }
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/mesh/enroll"
+        assert request.headers.get("authorization") == "Bearer mesh-token"
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=response_body)
+
+    with patch(
+        "sos.clients.base.httpx.AsyncClient",
+        _mock_async_client_factory(handler),
+    ):
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="mesh-token")
+        result = await client.enroll_mesh(
+            agent_id="agent:myagent",
+            name="myagent",
+            role="executor",
+            skills=["code", "deploy"],
+            squads=[],
+        )
+
+    assert result["enrolled"] is True
+    assert result["stale_after"] == 300
+    body = captured["body"]
+    assert body["agent_id"] == "agent:myagent"
+    assert body["name"] == "myagent"
+    assert body["role"] == "executor"
+    assert body["skills"] == ["code", "deploy"]
+    assert body["squads"] == []
+    # Optional fields not passed → must not appear in body
+    assert "heartbeat_url" not in body
+    assert "project" not in body
+
+
+# ---------------------------------------------------------------------------
+# enroll_mesh — optional fields included when set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enroll_mesh_includes_optional_fields_when_set() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"enrolled": True, "name": "myagent", "stale_after": 300, "expires_in": 900},
+        )
+
+    with patch(
+        "sos.clients.base.httpx.AsyncClient",
+        _mock_async_client_factory(handler),
+    ):
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="mesh-token")
+        await client.enroll_mesh(
+            agent_id="agent:myagent",
+            name="myagent",
+            role="builder",
+            heartbeat_url="http://agent.local/health",
+            project="mumega",
+        )
+
+    body = captured["body"]
+    assert body["heartbeat_url"] == "http://agent.local/health"
+    assert body["project"] == "mumega"
+
+
+# ---------------------------------------------------------------------------
+# enroll_mesh — non-2xx raises SOSClientError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enroll_mesh_raises_on_non_2xx() -> None:
+    from sos.clients.base import SOSClientError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, content=b'{"detail": "invalid agent_id"}')
+
+    with patch(
+        "sos.clients.base.httpx.AsyncClient",
+        _mock_async_client_factory(handler),
+    ):
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="mesh-token")
+        with pytest.raises(SOSClientError) as exc_info:
+            await client.enroll_mesh(
+                agent_id="bad-id",
+                name="myagent",
+                role="executor",
+            )
+
+    assert exc_info.value.status_code == 422
