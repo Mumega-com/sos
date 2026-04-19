@@ -102,16 +102,107 @@ def test_step_a_dry_run_does_not_hit_client(cfg: cli_init.InitConfig) -> None:
 @pytest.mark.parametrize(
     "fn",
     [
-        cli_init.step_c_seed_squads,
         cli_init.step_d_write_workflows,
     ],
 )
-def test_steps_c_and_d_are_documented_stubs(
+def test_step_d_is_documented_stub(
     fn: Any, cfg: cli_init.InitConfig
 ) -> None:
     with pytest.raises(NotImplementedError) as exc_info:
         fn(cfg, {"slug": "acme", "status": "provisioning"})
     assert "docs/plans/2026-04-19-mumega-mothership.md" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Step C — qNFT seat minting
+# ---------------------------------------------------------------------------
+
+
+class _FakeEconomyClient:
+    """Records mint_qnft calls and returns canned qNFT dicts."""
+
+    last_instance: "_FakeEconomyClient | None" = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.init_kwargs = kwargs
+        self.calls: list[dict[str, Any]] = []
+        _FakeEconomyClient.last_instance = self
+
+    def mint_qnft(
+        self,
+        tenant: str,
+        squad_id: str,
+        role: str,
+        seat_id: str,
+        *,
+        cost_mind: int | None = None,
+        project: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        record = {
+            "tenant": tenant,
+            "squad_id": squad_id,
+            "role": role,
+            "seat_id": seat_id,
+            "cost_mind": cost_mind,
+            "project": project,
+            "token_id": f"fake-{role}",
+        }
+        self.calls.append(record)
+        return record
+
+
+class _BrokeEconomyClient(_FakeEconomyClient):
+    """mint_qnft always raises a 402-like error."""
+
+    def mint_qnft(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise Exception("402 Payment Required: Insufficient funds")
+
+
+def test_step_c_mints_default_squad_with_cost_env_override(
+    cfg: cli_init.InitConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MUMEGA_DEFAULT_SQUADS", "social,content,outreach,analytics")
+    monkeypatch.setenv("MUMEGA_QNFT_SEAT_COST_MIND", "50")
+    _FakeEconomyClient.last_instance = None
+
+    result = cli_init.step_c_seed_squads(
+        cfg,
+        {"slug": "acme", "status": "provisioning"},
+        client_factory=_FakeEconomyClient,
+    )
+
+    assert _FakeEconomyClient.last_instance is not None
+    calls = _FakeEconomyClient.last_instance.calls
+    assert len(calls) == 4
+
+    roles = [c["role"] for c in calls]
+    assert set(roles) == {"social", "content", "outreach", "analytics"}
+
+    for call in calls:
+        assert call["cost_mind"] == 50
+        assert call["seat_id"] == f"acme:seat:{call['role']}"
+        assert call["squad_id"] == f"acme-squad-{call['role']}"
+        assert call["project"] == "acme"
+
+    assert len(result) == 4
+
+
+def test_step_c_raises_on_insufficient_funds(
+    cfg: cli_init.InitConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MUMEGA_DEFAULT_SQUADS", "social")
+    monkeypatch.setenv("MUMEGA_QNFT_SEAT_COST_MIND", "100")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        cli_init.step_c_seed_squads(
+            cfg,
+            {"slug": "acme", "status": "provisioning"},
+            client_factory=_BrokeEconomyClient,
+        )
+    assert "insufficient" in str(exc_info.value).lower() or "402" in str(exc_info.value)
 
 
 def _make_fake_completed_process(stdout: str = "https://acme.pages.dev") -> Any:
@@ -267,4 +358,4 @@ def test_main_dry_run_prints_and_returns_zero(
     assert "sos init — acme" in out
     assert "Step A" in out
     assert "Step B" in out and "skipped" in out
-    assert "Phase 5 Step A + E shipped." in out
+    assert "Phase 5 Steps A + C + E shipped." in out

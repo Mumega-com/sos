@@ -60,6 +60,37 @@ class EconomyClient(BaseHTTPClient):
         resp = self._request("GET", "/budget/can-spend", params={"project": project, "cost": cost})
         return resp.json()
 
+    def mint_qnft(
+        self,
+        tenant: str,
+        squad_id: str,
+        role: str,
+        seat_id: str,
+        *,
+        cost_mind: Optional[int] = None,
+        project: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /qnft/mint — debit wallet and issue a seat token."""
+        payload: Dict[str, Any] = {
+            "tenant": tenant,
+            "squad_id": squad_id,
+            "role": role,
+            "seat_id": seat_id,
+        }
+        if cost_mind is not None:
+            payload["cost_mind"] = cost_mind
+        if project is not None:
+            payload["project"] = project
+        headers: Dict[str, str] = {}
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        return self._request("POST", "/qnft/mint", json=payload, headers=headers).json()
+
+    def list_qnfts(self, tenant: str) -> List[Dict[str, Any]]:
+        """GET /qnft/{tenant} — list minted seat tokens for a tenant."""
+        return self._request("GET", f"/qnft/{tenant}").json().get("tokens", [])
+
     def list_usage(self, tenant: Optional[str] = None, limit: int = 100) -> List[UsageEvent]:
         """Read usage events from economy.
 
@@ -105,3 +136,36 @@ class AsyncEconomyClient(AsyncBaseHTTPClient):
             params={"project": project, "cost": cost},
         )
         return resp.json()
+
+    async def mint_qnft(
+        self,
+        tenant: str,
+        squad_id: str,
+        role: str,
+        seat_id: str,
+        *,
+        cost_mind: Optional[int] = None,
+        project: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Async variant — POST /qnft/mint."""
+        payload: Dict[str, Any] = {
+            "tenant": tenant,
+            "squad_id": squad_id,
+            "role": role,
+            "seat_id": seat_id,
+        }
+        if cost_mind is not None:
+            payload["cost_mind"] = cost_mind
+        if project is not None:
+            payload["project"] = project
+        headers: Dict[str, str] = {}
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        resp = await self._request("POST", "/qnft/mint", json=payload, headers=headers)
+        return resp.json()
+
+    async def list_qnfts(self, tenant: str) -> List[Dict[str, Any]]:
+        """Async variant — GET /qnft/{tenant}."""
+        resp = await self._request("GET", f"/qnft/{tenant}")
+        return resp.json().get("tokens", [])

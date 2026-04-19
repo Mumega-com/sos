@@ -33,9 +33,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import logging
+
+from sos.clients.economy import EconomyClient
 from sos.clients.operations import OperationsClient
 from sos.clients.saas import SaasClient
 from sos.contracts.tenant import TenantCreate, TenantPlan
+
+_log = logging.getLogger("sos.cli.init")
+
+_DEFAULT_SQUADS = "social,content,outreach,analytics"
+_DEFAULT_SEAT_COST = 100
 
 _TEXT_SUFFIXES = {
     ".ts", ".tsx", ".astro", ".md", ".json", ".toml", ".html", ".css",
@@ -190,19 +198,55 @@ def step_b_deploy_inkwell(
     }
 
 
-def step_c_seed_squads(cfg: InitConfig, tenant: dict[str, Any]) -> None:
-    """Step C — POST default squads to /agents/cards and mint qNFTs.
+def step_c_seed_squads(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    *,
+    client_factory: Any = EconomyClient,
+) -> list[dict[str, Any]]:
+    """Step C — Mint qNFT seat tokens for each default squad role.
 
-    Blocked: the economy service has no qNFT mint endpoint yet. The
-    ``/agents/cards`` POST exists (registry service), but the "hire"
-    transaction that debits the tenant wallet and issues a qNFT per
-    seat does not. Follow-up is Phase 5 §5.4 + the qNFT contract work
-    noted in the plan.
+    Design call: we do NOT write AgentCards here. A real AgentCard requires
+    an agent identity (keypair, DID) that doesn't exist at tenant-creation
+    time. Instead we mint lightweight seat tokens tagged with
+    {tenant, squad_id, role, seat_id}. When a real agent later enrolls via
+    POST /mesh/enroll it claims a seat by matching role + tenant.
+    This keeps the registry clean and defers identity binding to enrollment.
     """
-    raise NotImplementedError(
-        "Step C blocked on economy qNFT mint endpoint + qNFT contract. "
-        "See docs/plans/2026-04-19-mumega-mothership.md §5.4."
-    )
+    raw_squads = os.environ.get("MUMEGA_DEFAULT_SQUADS", _DEFAULT_SQUADS)
+    roles = [r.strip() for r in raw_squads.split(",") if r.strip()]
+    cost = int(os.environ.get("MUMEGA_QNFT_SEAT_COST_MIND", str(_DEFAULT_SEAT_COST)))
+
+    kwargs: dict[str, Any] = {}
+    if cfg.saas_token:
+        kwargs["token"] = cfg.saas_token
+    client = client_factory(**kwargs)
+
+    minted: list[dict[str, Any]] = []
+    for role in roles:
+        squad_id = f"{cfg.slug}-squad-{role}"
+        seat_id = f"{cfg.slug}:seat:{role}"
+        try:
+            token = client.mint_qnft(
+                cfg.slug,
+                squad_id,
+                role,
+                seat_id,
+                cost_mind=cost,
+                project=cfg.slug,
+            )
+        except Exception as exc:
+            msg = str(exc)
+            if "402" in msg or "insufficient" in msg.lower():
+                raise RuntimeError(
+                    f"Tenant '{cfg.slug}' has insufficient $MIND to mint seat '{role}'. "
+                    f"Top up via: POST /credit {{user_id: '{cfg.slug}', amount: {cost}}}"
+                ) from exc
+            raise
+        minted.append(token)
+        print(f"  {green('ok')} — seat minted: role={role} token_id={token.get('token_id', '?')}")
+
+    return minted
 
 
 def step_d_write_workflows(cfg: InitConfig, tenant: dict[str, Any]) -> None:
@@ -308,9 +352,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"  {warn('skipped')}: {exc}")
 
-    # Steps C–D — stubs with remediation pointers.
+    # Step C — real (qNFT seat minting).
+    print(f"\n{bold('Step C')} — mint qNFT seats for default squads")
+    try:
+        seats = step_c_seed_squads(cfg, tenant)
+        print(f"  {green('ok')} — {len(seats)} seat(s) minted")
+    except Exception as exc:
+        print(f"  {warn('skipped')}: {exc}")
+
+    # Step D — stub (blocked on Step B instance directory).
     stubs: list[tuple[str, Any]] = [
-        ("Step C", step_c_seed_squads),
         ("Step D", step_d_write_workflows),
     ]
     for name, fn in stubs:
@@ -328,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {warn('skipped')}: {exc}")
 
     print("\n" + "=" * 48)
-    print(f"{green('Phase 5 Step A + E shipped.')} B–D blocked (see above).")
+    print(f"{green('Phase 5 Steps A + C + E shipped.')} B, D blocked (see above).")
     print(f"  slug:   {cfg.slug}")
     print(f"  label:  {cfg.label}")
     print(f"  plan:   {cfg.plan.value}")

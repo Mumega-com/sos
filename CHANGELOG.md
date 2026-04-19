@@ -4,6 +4,42 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
+### v0.9.4-alpha.3 — Phase 5 `sos init` Step C (qNFT squad seed) (2026-04-19)
+
+Closes blocker C from alpha.2. Seeds each tenant with a set of seat
+qNFTs (not AgentCards) debited from the tenant's $MIND wallet. Future
+mesh enrollment claims a seat by setting `claimed_by`.
+Plan reference: `docs/plans/2026-04-19-mumega-mothership.md` §5.4 +
+task #246. Step D (standing_workflows) remains the last blocker.
+
+#### Added (alpha.3)
+- `sos/contracts/qnft.py` — pydantic v2 `QNFT` + `QNFTMintRequest`
+  models. Module header documents the seat-vs-AgentCard design call:
+  real AgentCards need an agent keypair that doesn't exist at
+  tenant-creation time, so Step C mints claimable seats instead.
+- `sos/services/economy/_qnft_store.py` — Redis-backed append/list
+  storage at `sos:qnft:{tenant}` with a 1y TTL. Injectable client.
+- `sos/services/economy/app.py` — `POST /qnft/mint`
+  (`Idempotency-Key` header, system-scoped, 402 on insufficient funds
+  via `wallet.debit`) and `GET /qnft/{tenant}`
+  (tenant-or-system scope).
+- `sos/clients/economy.py` — `mint_qnft(...)` and `list_qnfts(tenant)`
+  on both sync `EconomyClient` and `AsyncEconomyClient`.
+- `sos/cli/init.py::step_c_seed_squads` — real implementation. Reads
+  `MUMEGA_DEFAULT_SQUADS` (default `social,content,outreach,analytics`)
+  and `MUMEGA_QNFT_SEAT_COST_MIND` (default `100`). Mints one seat per
+  role at `squad_id=<slug>-squad-<role>` / `seat_id=<slug>:seat:<role>`.
+  Raises `RuntimeError` with remediation on 402.
+- Tests: `tests/contracts/test_qnft.py` (4 round-trip),
+  `tests/services/economy/test_qnft_app.py` (7 FastAPI TestClient),
+  plus 2 Step C cases in `tests/cli/test_init.py`. Stub parametrize
+  trimmed to Step D only.
+
+#### Remaining blockers
+- D (standing workflows) — enrich the template's
+  `standing_workflows.json` in `<INKWELL_ROOT>/instances/<slug>/` with
+  the squad IDs returned by Step C.
+
 ### v0.9.4-alpha.2 — Phase 5 `sos init` Steps A + B + E (2026-04-19)
 
 Adds the Inkwell template copy + wrangler deploy (Step B) and the

@@ -345,6 +345,106 @@ class SettleResponse(BaseModel):
     errors: list[str]
 
 
+# ---------------------------------------------------------------------------
+# qNFT seat tokens (Phase 5 §5.4)
+# ---------------------------------------------------------------------------
+#
+# POST /qnft/mint  — debit tenant wallet and record a seat token.
+# GET  /qnft/{tenant} — list all seat tokens for a tenant.
+#
+# Storage: JSON list in Redis at sos:qnft:{tenant} via _qnft_store.
+# Idempotency: header-keyed, matching /debit pattern.
+# Auth: require_system=True for mint (economy write); tenant-scoped read for list.
+
+import os as _os
+import uuid as _uuid
+from datetime import datetime, timezone
+
+from sos.contracts.qnft import QNFT, QNFTMintRequest
+from sos.services.economy._qnft_store import append_qnft, list_qnfts
+
+_DEFAULT_QNFT_SEAT_COST = int(_os.environ.get("MUMEGA_QNFT_SEAT_COST_MIND", "100"))
+
+
+@app.post("/qnft/mint", response_model=QNFT)
+async def mint_qnft(
+    req: QNFTMintRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    authorization: Optional[str] = Header(None),
+) -> QNFT:
+    """Debit the tenant wallet and issue a qNFT seat token.
+
+    System/admin scope required — CLI init calls this; tenants cannot
+    self-mint seats to avoid free-credit exploits.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="economy:qnft_mint",
+        resource=req.tenant,
+        tenant=req.tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision, require_system=True)
+
+    cost = req.cost_mind if req.cost_mind is not None else _DEFAULT_QNFT_SEAT_COST
+
+    from sos.kernel.idempotency import with_idempotency
+
+    async def _do() -> dict:
+        try:
+            await wallet.debit(req.tenant, cost, reason=f"qnft:mint:{req.role}:{req.seat_id}")
+        except InsufficientFundsError as exc:
+            raise HTTPException(status_code=402, detail=str(exc))
+
+        token = QNFT(
+            token_id=str(_uuid.uuid4()),
+            tenant=req.tenant,
+            squad_id=req.squad_id,
+            role=req.role,
+            seat_id=req.seat_id,
+            mint_cost_mind=cost,
+            minted_at=datetime.now(timezone.utc),
+            project=req.project,
+        )
+        token_dict = token.model_dump(mode="json")
+        await append_qnft(token_dict)
+        log.info(
+            "qnft minted",
+            token_id=token.token_id,
+            tenant=req.tenant,
+            role=req.role,
+            cost=cost,
+        )
+        return token_dict
+
+    return await with_idempotency(
+        key=idempotency_key,
+        tenant=req.tenant,
+        request_body=req.model_dump(),
+        fn=_do,
+    )
+
+
+@app.get("/qnft/{tenant}")
+async def get_qnfts(
+    tenant: str,
+    authorization: Optional[str] = Header(None),
+) -> dict[str, Any]:
+    """List all qNFT seat tokens minted for a tenant."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    decision = await can_execute(
+        action="economy:qnft_read",
+        resource=tenant,
+        tenant=tenant,
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+    tokens = await list_qnfts(tenant)
+    return {"tenant": tenant, "tokens": tokens, "count": len(tokens)}
+
+
 @app.post("/settle/{usage_event_id}", response_model=SettleResponse)
 async def retry_settle(
     usage_event_id: str,
