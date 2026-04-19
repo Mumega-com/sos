@@ -484,3 +484,10 @@ async def get_agent(
             detail=f"no agent {agent_id!r} in registry",
         )
     return ident.to_dict()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("SOS_REGISTRY_PORT", DEFAULT_PORT))
+    uvicorn.run(app, host="0.0.0.0", port=port)
