@@ -75,22 +75,47 @@ Eight phases, ~10 weeks end-to-end. Each phase has a gate: nothing downstream st
 - **1.5** Add import-linter contract R7: "Inkwell adapter signatures must match generated port types" (enforced via a kernel test).
 - **1.6** Version bump to SOS v0.9.0, CHANGELOG, tag.
 
-### Phase 2 — Bus stability (v0.9.1, ~5 days)
+### Phase 2 — Bus stability (v0.9.1) — ✅ SHIPPED 2026-04-19
 
 **Gate:** Zero silent drops. Every message acked. Every subject project-scoped.
 
-**Why second:** "Never think about stability" is a bus property. Until acks are enforced, everything above is unreliable.
+**Shipped as:** tag `v0.9.1`. Delivered via the agile wave plan in
+`docs/plans/2026-04-19-phase-2-bus-stability.md` (W0 → W7, one commit per
+wave). See `CHANGELOG.md` for the full wave ledger.
 
-**Steps:**
+**What landed (vs the original steps above):**
 
-- **2.1** Add `project` field to `sos/contracts/bus.BusMessage` (required, not optional).
-- **2.2** Update `sos/services/bus/delivery.py` to route by `{agent}.{project}` subject, not just `{agent}`.
-- **2.3** Update `inkwell/kernel/adapters/sos-bus.ts` `send()` signature to require `project`.
-- **2.4** Implement ack-or-retry in `services/bus/delivery.py`: consumer POSTs `/ack/{msg_id}`, delivery retries 3× on no-ack with exponential backoff, then dead-letters to `bus:dlq`.
-- **2.5** Add `/inbox/unacked` endpoint so any consumer can self-inspect.
-- **2.6** Migrate existing agents (codex, kasra, mumega, athena) to project-scoped subjects — one sweep, one PR.
-- **2.7** Kill `agent-comms.md` verbal-ack convention; delete it. Enforcement lives in code now.
-- **2.8** Ship v0.9.1.
+- **2.1 / W0** ✅ Both `tenant_id` and `project` are now required on
+  `BusMessage` (original plan said project only; tenant_id added during
+  implementation for tenant-boundary enforcement).
+- **2.2 / W1** ✅ Scope stamped at the kernel boundary in `kernel.bus.send()`
+  + `services/bus/enforcement.py`. Stream naming unchanged
+  (`sos:stream:global:squad:*` and scoped `sos:stream:project:{tenant}:{project}:squad:*`
+  coexist during transition).
+- **2.3** ⚠ Deferred — Inkwell adapter migration is a separate repo; will
+  land when Inkwell regenerates TS types from the new schemas.
+- **2.4 / W2 + W3 + W4** ✅ Ack-or-retry implemented as XACK + background
+  retry worker (exponential backoff 30s → 2m → 10m → DLQ). `BusPort.ack()`
+  primitive on the port. DLQ schema + dashboard read route.
+- **2.5** ⚠ Deferred — per-consumer pending-inspection is available via
+  `XPENDING` today; a dedicated HTTP endpoint (`/inbox/unacked`) is a nice-to-have,
+  not a gate.
+- **2.6 / W5 + W6** ✅ Consumer migrations. Pilot: journeys (W5). Follow-up:
+  brain + health (W6). Plan's original list (health, feedback, operations,
+  saas) revised after recon: feedback/operations/saas have no bus consumers;
+  execution/worker.py uses a task-queue pattern, out of scope.
+- **2.7** ⚠ Deferred — `agent-comms.md` still lives; the code-enforcement
+  primitives are in place, but ripping out the doc is a separate cleanup.
+- **2.8 / W7** ✅ Tagged `v0.9.1`.
+
+**Invariants enforced:** (a) publish without scope raises at kernel
+boundary; (b) handler exceptions leave entries unacked; retry worker
+reclaims after backoff; (c) 3 retries then DLQ with full metadata;
+(d) envelope-level `_LRUSet` dedup on top of XACK (retry re-XADDs produce
+new stream entries with the same `message_id`).
+
+**Exit gate met:** 13/13 bus integration tests green against real Redis.
+Per-service unit suites green.
 
 ### Phase 3 — Mesh enrollment (v0.9.2, ~4 days) — closes task #33
 
@@ -213,8 +238,8 @@ After this plan lands:
 
 | Version | Gate |
 |---------|------|
-| v0.9.0 | Phase 1 — port registry |
-| v0.9.1 | Phase 2 — bus stability |
+| v0.9.0 | Phase 1 — port registry ✅ |
+| v0.9.1 | Phase 2 — bus stability ✅ |
 | v0.9.2 | Phase 3 — mesh enrollment |
 | v0.9.3 | Phase 4 — unified edge |
 | v0.9.4 | Phase 5 — `sos init` |
