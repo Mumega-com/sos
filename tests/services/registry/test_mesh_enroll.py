@@ -359,3 +359,214 @@ def test_skills_and_squads_roundtrip(
     card: AgentCard = stored["card"]
     assert card.skills == ["x", "y"]
     assert card.squads == ["growth-intel"]
+
+
+# ---------------------------------------------------------------------------
+# TestMeshSquadResolve — GET /mesh/squad/{slug}  (phase3/W2)
+# ---------------------------------------------------------------------------
+
+
+def _make_card(name: str, squads: list[str], project: str | None = None) -> AgentCard:
+    """Build a minimal AgentCard for use in resolve tests."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    return AgentCard(
+        identity_id=f"agent:{name}",
+        name=name,
+        role="executor",
+        skills=[],
+        squads=squads,
+        project=project,
+        tool="service",
+        type="service",
+        registered_at=now,
+        last_seen=now,
+    )
+
+
+class TestMeshSquadResolve:
+    """Acceptance cases for GET /mesh/squad/{slug}."""
+
+    # ------------------------------------------------------------------
+    # Case 1 — missing bearer → 401
+    # ------------------------------------------------------------------
+
+    def test_missing_bearer_returns_401(self, client: TestClient) -> None:
+        resp = client.get("/mesh/squad/growth-intel")
+        assert resp.status_code == 401
+
+    # ------------------------------------------------------------------
+    # Case 2 — system token, no cards enrolled → 200, empty list
+    # ------------------------------------------------------------------
+
+    def test_no_cards_returns_empty(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token_suffix = "sys-resolve-empty"
+        monkeypatch.setattr(
+            "sos.services.registry.app._auth_verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr(
+            "sos.kernel.policy.gate.verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+        monkeypatch.setattr(
+            "sos.services.registry.app.read_all_cards",
+            lambda project=None: [],
+            raising=True,
+        )
+
+        resp = client.get(
+            "/mesh/squad/growth-intel",
+            headers={"Authorization": f"Bearer {token_suffix}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["slug"] == "growth-intel"
+        assert data["agents"] == []
+        assert data["count"] == 0
+
+    # ------------------------------------------------------------------
+    # Case 3 — 3 cards seeded; 2 match → 2 returned
+    # ------------------------------------------------------------------
+
+    def test_filter_by_squad_returns_matching_cards(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token_suffix = "sys-resolve-filter"
+        cards = [
+            _make_card("alpha", squads=["growth-intel"]),
+            _make_card("beta", squads=["growth-intel", "other-squad"]),
+            _make_card("gamma", squads=["other-squad"]),
+        ]
+        monkeypatch.setattr(
+            "sos.services.registry.app._auth_verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr(
+            "sos.kernel.policy.gate.verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+        monkeypatch.setattr(
+            "sos.services.registry.app.read_all_cards",
+            lambda project=None: cards,
+            raising=True,
+        )
+
+        resp = client.get(
+            "/mesh/squad/growth-intel",
+            headers={"Authorization": f"Bearer {token_suffix}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 2
+        names = {a["name"] for a in data["agents"]}
+        assert names == {"alpha", "beta"}
+
+    # ------------------------------------------------------------------
+    # Case 4 — scoped token sees only its own project's cards
+    # ------------------------------------------------------------------
+
+    def test_scoped_token_project_isolation(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token_suffix = "scoped-resolve-isolation"
+        scoped_project = "proj-a"
+
+        cards_by_project: dict[str | None, list[AgentCard]] = {
+            "proj-a": [_make_card("agent-a", squads=["growth-intel"], project="proj-a")],
+            "proj-b": [_make_card("agent-b", squads=["growth-intel"], project="proj-b")],
+        }
+
+        def fake_read_all_cards(project: str | None = None) -> list[AgentCard]:
+            return cards_by_project.get(project, [])
+
+        monkeypatch.setattr(
+            "sos.services.registry.app._auth_verify_bearer",
+            _fake_scoped_verify(scoped_project, token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr(
+            "sos.kernel.policy.gate.verify_bearer",
+            _fake_scoped_verify(scoped_project, token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+        monkeypatch.setattr(
+            "sos.services.registry.app.read_all_cards",
+            fake_read_all_cards,
+            raising=True,
+        )
+
+        resp = client.get(
+            "/mesh/squad/growth-intel",
+            headers={"Authorization": f"Bearer {token_suffix}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["agents"][0]["name"] == "agent-a"
+        assert data["project"] == scoped_project
+
+    # ------------------------------------------------------------------
+    # Case 5 — slug with no matching cards → 200, empty list
+    # ------------------------------------------------------------------
+
+    def test_unknown_squad_returns_empty(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token_suffix = "sys-resolve-nomatch"
+        cards = [_make_card("alpha", squads=["other-squad"])]
+        monkeypatch.setattr(
+            "sos.services.registry.app._auth_verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr(
+            "sos.kernel.policy.gate.verify_bearer",
+            _fake_system_verify(token_suffix),
+            raising=True,
+        )
+        monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+        monkeypatch.setattr(
+            "sos.services.registry.app.read_all_cards",
+            lambda project=None: cards,
+            raising=True,
+        )
+
+        resp = client.get(
+            "/mesh/squad/no-such-squad",
+            headers={"Authorization": f"Bearer {token_suffix}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agents"] == []
+        assert data["count"] == 0
+
+    # ------------------------------------------------------------------
+    # Case 6 — invalid slug format → 422 (FastAPI path validation)
+    # ------------------------------------------------------------------
+
+    def test_invalid_slug_format_returns_422(self, client: TestClient) -> None:
+        # URL-encode a space to produce "has%20spaces" as the path segment.
+        resp = client.get(
+            "/mesh/squad/has%20spaces",
+            headers={"Authorization": "Bearer some-token"},
+        )
+        assert resp.status_code == 422

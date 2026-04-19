@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, Header, HTTPException, Path
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -393,6 +393,43 @@ async def mesh_enroll(
         "name": card.name,
         "project": effective_project,
         "expires_in": 300,
+    }
+
+
+@app.get("/mesh/squad/{slug}")
+async def mesh_squad_resolve(
+    slug: str = Path(..., pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"),
+    project: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Return all enrolled agents whose ``squads`` list contains *slug*.
+
+    Scans cards in the caller's effective project scope (same bearer +
+    project-scope rules as ``GET /agents/cards``) and returns the subset
+    where ``slug in card.squads``.  Makes squad subjects like
+    ``squad:growth-intel.{project}`` resolvable at delivery time.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+
+    decision = await can_execute(
+        action="registry:mesh_squad_resolve",
+        resource=slug,
+        tenant="mumega",
+        authorization=authorization,
+    )
+    _raise_on_deny(decision)
+
+    entry = _verify_bearer(authorization)
+    effective_project = _resolve_project_scope(entry, project)
+
+    cards = read_all_cards(project=effective_project)
+    agents = [c for c in cards if slug in c.squads]
+    return {
+        "slug": slug,
+        "project": effective_project,
+        "agents": [c.model_dump() for c in agents],
+        "count": len(agents),
     }
 
 
