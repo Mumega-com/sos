@@ -7,6 +7,7 @@ stream, runs the consumer's tick, and asserts that
 Idempotency: the same ``message_id`` delivered twice must trigger exactly
 one call.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,13 +19,12 @@ import pytest
 
 try:
     import fakeredis.aioredis as fake_aioredis  # type: ignore[import-untyped]
+
     HAS_FAKEREDIS = True
 except ImportError:
     HAS_FAKEREDIS = False
 
-skipif_no_fakeredis = pytest.mark.skipif(
-    not HAS_FAKEREDIS, reason="fakeredis not installed"
-)
+skipif_no_fakeredis = pytest.mark.skipif(not HAS_FAKEREDIS, reason="fakeredis not installed")
 
 
 _STREAM = "sos:stream:global:squad:test-squad"
@@ -96,7 +96,6 @@ def test_task_completed_triggers_auto_evaluate() -> None:
             _STREAM,
             _make_task_completed_fields(task_id="task-001", agent_addr="worker-a"),
         )
-        await consumer._load_checkpoints()
         await consumer._tick()
         return tracker.calls
 
@@ -127,15 +126,12 @@ def test_duplicate_message_evaluates_once() -> None:
         await r.xadd(_STREAM, fields)
         await r.xadd(_STREAM, fields)
 
-        await consumer._load_checkpoints()
         await consumer._tick()
         await consumer._tick()
         return tracker.calls
 
     calls = asyncio.run(_go())
-    assert calls == ["worker-b"], (
-        f"duplicate delivery must not re-run auto_evaluate; got {calls}"
-    )
+    assert calls == ["worker-b"], f"duplicate delivery must not re-run auto_evaluate; got {calls}"
 
 
 @skipif_no_fakeredis
@@ -174,7 +170,6 @@ def test_system_source_is_skipped() -> None:
             ),
         }
         await r.xadd(_STREAM, fields)
-        await consumer._load_checkpoints()
         await consumer._tick()
         return tracker.calls
 
@@ -218,7 +213,6 @@ def test_falls_back_to_agent_addr_when_source_is_squad() -> None:
             ),
         }
         await r.xadd(_STREAM, fields)
-        await consumer._load_checkpoints()
         await consumer._tick()
         return tracker.calls
 
