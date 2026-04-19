@@ -459,4 +459,4 @@ def test_main_dry_run_prints_and_returns_zero(
     assert "sos init — acme" in out
     assert "Step A" in out
     assert "Step B" in out and "skipped" in out
-    assert "Phase 5 shipped" in out
+    assert "Phase 6 shipped" in out

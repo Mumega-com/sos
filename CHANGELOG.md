@@ -6,6 +6,128 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ---
 
+## [0.10.0] — 2026-04-19 — Phase 6 Glass layer (self-writing dashboards)
+
+Closes the Phase 6 mothership gate (task #211): every tenant's
+`/dashboard` is now self-writing. A tile declares **what** data to
+fetch (`SqlQuery` / `BusTailQuery` / `HttpQuery`) and **how** to
+display it (`TileTemplate` enum). The new `sos.services.glass` service
+resolves queries server-side and hands Inkwell a typed `TilePayload`.
+**No LLM in the render path** — rendering is deterministic, cached at
+the edge via `Cache-Control: max-age=<refresh_interval_s>`, and backed
+by a per-tenant Redis tile registry.
+
+The `sos init` flow grows a Step F between D and E: it seeds five
+default tiles (Health / Metabolism / Objectives / Decisions / Metrics)
+through `GlassClient.upsert_tile()` and writes the tile id list into
+`<INKWELL_ROOT>/instances/<slug>/glass.json` so Inkwell's
+`dashboard.astro` renders them on first visit.
+
+### Added in 0.10.0
+
+New contract (`sos/contracts/ports/glass.py`): pydantic v2 tagged
+union `TileQuery = SqlQuery | BusTailQuery | HttpQuery` discriminated
+on `kind`; `TileTemplate` enum (`number`, `sparkline`, `progress_bar`,
+`event_log`, `status_light`, `chart`); `Tile`, `TilePayload`, and
+`TileMintRequest` models with `extra="forbid"` across the board.
+
+New service (`sos/services/glass/`): FastAPI app on port 8092 with
+four routes — `POST /glass/tiles/{tenant}` (system-only, idempotent),
+`GET /glass/tiles/{tenant}` (tenant-or-system), `DELETE
+/glass/tiles/{tenant}/{tile_id}` (system-only), and the hot path `GET
+/glass/payload/{tenant}/{tile_id}` (system-or-tenant) which dispatches
+on `tile.query.kind`. `http` resolves via injectable module-level
+`httpx.AsyncClient`; `bus_tail` runs `XREVRANGE stream + - COUNT N`
+via `redis.asyncio`; `sql` returns 501 until Phase 7 ships the SQL
+resolver. Tile registry at Redis key `sos:glass:tiles:{tenant}` with
+1y TTL mirrors the `_qnft_store.py` pattern from Phase 5.
+
+New client (`sos/clients/glass.py`): sync `GlassClient` +
+`AsyncGlassClient` with `upsert_tile(tenant, tile, *,
+idempotency_key)`, `list_tiles(tenant)`, `delete_tile(tenant,
+tile_id)`, `get_payload(tenant, tile_id)`. Auth reads
+`SOS_GLASS_SYSTEM_TOKEN` → `SOS_SYSTEM_TOKEN` fallback. Default base
+URL `http://localhost:8092`.
+
+New default tile set (`sos/cli/_default_tiles.py`): five
+tiles keyed to the Phase 6 dashboard spec — Health (status_light,
+HTTP to `/registry/squad/<tenant>/status`), Metabolism (sparkline,
+SQL on `wallet_ledger`), Objectives (progress_bar, HTTP to
+`/objectives/roots/<tenant>`), Decisions (event_log, bus_tail on
+`audit:decisions:<tenant>`), Metrics (chart, HTTP to
+`/integrations/ga4/<tenant>`).
+
+New CLI wiring (`sos/cli/init.py::step_f_seed_glass_tiles`): mints the
+five default tiles via `GlassClient.upsert_tile` with deterministic
+idempotency keys (`sos-init:<slug>:tile:<tile_id>`) and writes
+`{"tenant": "...", "tile_ids": [...]}` to
+`<INKWELL_ROOT>/instances/<slug>/glass.json`. Runs between Step D
+(workflow enrichment) and Step E (pulse trigger).
+
+Inkwell adapter (Inkwell repo, `kernel/adapters/glass/sos.ts`):
+`createSosGlassAdapter({baseUrl, kv?, fetchImpl?})` factory with
+`fetchTile(tenant, tileId)` (KV-cached by `cache_ttl_s`) and
+`listTiles(tenant)`. Typed `GlassTileError` on non-200. Consumed by
+`instances/_template/pages/dashboard.astro` at request time, which
+dispatches rendering on `tile.template` through six per-template
+components (`NumberTile`, `SparklineTile`, `ProgressBarTile`,
+`EventLogTile`, `StatusLightTile`, `ChartTile`) plus a
+`PlaceholderTile` fallback. Components use plain CSS with
+`var(--ink-*)` tokens — no Tailwind.
+
+New import-linter contract (R2-glass, `pyproject.toml
+[tool.importlinter]`): `sos.services.glass` may import
+`sos.contracts` / `sos.clients.*` / `sos.kernel.*` /
+`sos.observability.*` but not `sos.services.*` (enforces the
+substrate-agnostic service boundary).
+
+### Tests (0.10.0)
+
+- `tests/contracts/test_glass.py` — 28 cases. Pydantic round-trip
+  for each `TileQuery` variant, enum completeness, `extra="forbid"`
+  assertion across all models, `Tile.id` slug regex, refresh-interval
+  bounds (5-3600s), path-starts-with-`/` guard on `HttpQuery`.
+- `tests/services/glass/test_tile_store.py` — 6 cases (fakeredis):
+  list empty, upsert, upsert overwrites, delete present/missing, 1y
+  TTL applied.
+- `tests/services/glass/test_app.py` — 10 route tests: happy paths,
+  401/403, missing `Idempotency-Key`, list empty/populated, delete
+  204/404, payload with http (mocked httpx) + Cache-Control header,
+  payload with sql → 501.
+- `tests/clients/test_glass.py` — 6 cases with `httpx.MockTransport`
+  covering every method on both sync and async clients.
+- `tests/e2e/test_glass_dashboard_round_trip.py` — new. Seeds all
+  five default tiles via the real POST route, mocks downstream
+  HTTP + populates a fakeredis audit stream, then hits
+  `GET /glass/payload/<tenant>/<tile_id>` for every non-sql tile and
+  asserts `TilePayload` shape + `Cache-Control: max-age=<ttl>`.
+- Inkwell adapter: 7 vitest cases in `kernel/__tests__/glass.test.ts`
+  — KV hit/miss, 4xx/5xx error mapping, `listTiles` pagination.
+
+### Step F wire into `sos init`
+
+`tests/e2e/test_sos_init_end_to_end.py` updated to cover the six-step
+round-trip (A → B → C → D → F → E). A `_RecordingGlass` fake captures
+`upsert_tile` calls and asserts deterministic idempotency keys; the
+test also reads the on-disk `glass.json` to confirm the tile id list
+is written where Inkwell expects it.
+
+### Non-goals (held for later phases)
+
+- No custom tile authoring UI — tiles are seeded by Step F (today) and
+  by Growth Intelligence writing `glass.json` entries (Phase 7+).
+- No cross-tenant dashboards — every call is tenant-scoped.
+- No GraphQL, no WebSocket push. Tiles pull on TTL.
+- No LLM in render path (by contract — see lint-imports R2-glass).
+
+### Known limitation
+
+The `sql` query kind is a stub; Step 6.9's e2e test confirms it still
+returns 501 so the Inkwell metabolism sparkline degrades gracefully
+until Phase 7 (#212) implements the SQL resolver.
+
+---
+
 ## [0.9.4] — 2026-04-19 — Phase 5 `sos init` first-boot flow complete
 
 Closes the Phase 5 mothership gate (task #210): `sos init <tenant>`

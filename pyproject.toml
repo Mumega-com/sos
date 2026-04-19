@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mumega"
-version = "0.9.4"
+version = "0.10.0"
 description = "Sovereign Operating System for AI Agents - Multi-model, autonomous, edge-native"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -237,6 +237,7 @@ modules = [
   "sos.services.squad",
   "sos.services.tools",
   "sos.services.voice",
+  "sos.services.glass",
 ]
 # Stale ignores tolerate silently — the shrinking list is the source of truth.
 unmatched_ignore_imports_alerting = "none"
@@ -273,6 +274,44 @@ ignore_imports = [
   # infra theme above covers this pattern.
   "sos.services.dashboard.routes.bus -> sos.services.bus.dlq",
 ]
+
+[[tool.importlinter.contracts]]
+# R2-glass — Glass service layer isolation.
+# sos.services.glass may import sos.contracts.* and sos.clients.* but
+# must NOT import any other sos.services.* sibling. This mirrors the
+# same isolation enforced by the R1 independence contract above and
+# makes the forbidden direction explicit for future reviewers.
+name = "R2-glass - glass service doesn't import other service internals"
+type = "forbidden"
+source_modules = ["sos.services.glass"]
+forbidden_modules = [
+  "sos.services.economy",
+  "sos.services.registry",
+  "sos.services.bus",
+  "sos.services.squad",
+  "sos.services.saas",
+  "sos.services.billing",
+  "sos.services.identity",
+  "sos.services.integrations",
+  "sos.services.journeys",
+  "sos.services.memory",
+  "sos.services.analytics",
+  "sos.services.auth_gateway",
+  "sos.services.autonomy",
+  "sos.services.brain",
+  "sos.services.content",
+  "sos.services.dashboard",
+  "sos.services.engine",
+  "sos.services.feedback",
+  "sos.services.gateway",
+  "sos.services.ghl",
+  "sos.services.health",
+  "sos.services.operations",
+  "sos.services.tools",
+  "sos.services.voice",
+]
+allow_indirect_imports = "true"
+unmatched_ignore_imports_alerting = "none"
 
 # R7 — "port contracts are consumed, not re-implemented" — lands in
 # v0.9.1 (Phase 2) once we have at least one concrete forbidden path to

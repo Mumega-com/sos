@@ -76,6 +76,31 @@ class _RecordingEconomy:
         return record
 
 
+class _RecordingGlass:
+    instances: list["_RecordingGlass"] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.init_kwargs = kwargs
+        self.calls: list[dict[str, Any]] = []
+        _RecordingGlass.instances.append(self)
+
+    def upsert_tile(
+        self,
+        tenant: str,
+        tile: Any,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        record = {
+            "tenant": tenant,
+            "tile_id": tile.id,
+            "template": tile.template.value,
+            "idempotency_key": idempotency_key,
+        }
+        self.calls.append(record)
+        return {"id": tile.id, "tenant": tenant}
+
+
 class _RecordingOperations:
     instances: list["_RecordingOperations"] = []
 
@@ -135,6 +160,7 @@ def test_sos_init_end_to_end_round_trip(
     # Clear instance registries (class-level state).
     _RecordingSaas.instances.clear()
     _RecordingEconomy.instances.clear()
+    _RecordingGlass.instances.clear()
     _RecordingOperations.instances.clear()
 
     # Fake wrangler + npm build so Step B doesn't shell out.
@@ -162,6 +188,11 @@ def test_sos_init_end_to_end_round_trip(
         {"client_factory": _RecordingEconomy},
     )
     monkeypatch.setattr(
+        cli_init.step_f_seed_glass_tiles,
+        "__kwdefaults__",
+        {"client_factory": _RecordingGlass},
+    )
+    monkeypatch.setattr(
         cli_init.step_e_trigger_pulse,
         "__kwdefaults__",
         {"client_factory": _RecordingOperations},
@@ -178,7 +209,7 @@ def test_sos_init_end_to_end_round_trip(
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "Phase 5 shipped" in out
+    assert "Phase 6 shipped" in out
 
     # --- Step A ---
     assert len(_RecordingSaas.instances) == 1
@@ -212,6 +243,25 @@ def test_sos_init_end_to_end_round_trip(
     }
     # Step B interpolation survived into Step D's round-trip.
     assert workflow_on_disk["workflows"][0]["name"] == "acme-daily"
+
+    # --- Step F ---
+    assert len(_RecordingGlass.instances) == 1
+    glass_calls = _RecordingGlass.instances[0].calls
+    assert {c["tile_id"] for c in glass_calls} == {
+        "health", "metabolism", "objectives", "decisions", "metrics"
+    }
+    assert all(c["tenant"] == "acme" for c in glass_calls)
+    # Idempotency keys deterministic on (slug, tile_id).
+    assert all(c["idempotency_key"] == f"sos-init:acme:tile:{c['tile_id']}" for c in glass_calls)
+
+    # Inkwell glass.json written with the tile id list.
+    glass_json = json.loads(
+        (tmp_path / "instances" / "acme" / "glass.json").read_text(encoding="utf-8")
+    )
+    assert glass_json["tenant"] == "acme"
+    assert set(glass_json["tile_ids"]) == {
+        "health", "metabolism", "objectives", "decisions", "metrics"
+    }
 
     # --- Step E ---
     assert len(_RecordingOperations.instances) == 1

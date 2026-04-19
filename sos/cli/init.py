@@ -4,16 +4,20 @@ Onboards a new Mumega tenant end-to-end. Old dev-wizard lives at
 ``sos.cli.setup`` now; this module is the Phase 5 flow described in
 ``docs/plans/2026-04-19-mumega-mothership.md`` §5.
 
-Five steps, sequenced:
-    A. POST /tenants on the SaaS service                             (shipped)
-    B. Copy inkwell/instances/_template → <slug>/, wrangler deploy   (shipped)
-    C. Create default squads + mint qNFTs in the economy             (shipped)
-    D. Write standing_workflows.json from template                   (shipped)
-    E. Trigger first pulse run in the operations service             (shipped)
+Six steps, sequenced:
+    A. POST /tenants on the SaaS service                             (v0.9.4)
+    B. Copy inkwell/instances/_template → <slug>/, wrangler deploy   (v0.9.4)
+    C. Create default squads + mint qNFTs in the economy             (v0.9.4)
+    D. Write standing_workflows.json from template                   (v0.9.4)
+    F. Seed default Glass tiles for the dashboard                    (v0.10.0)
+    E. Trigger first pulse run in the operations service             (v0.9.4)
 
-All five steps ship in v0.9.4. Step D enriches the template copy placed by
-Step B with the squad IDs minted in Step C, so running steps out of order
-will raise ``FileNotFoundError`` from Step D.
+Step D enriches the template copy placed by Step B with the squad IDs
+minted in Step C, so running steps out of order will raise
+``FileNotFoundError`` from Step D. Step F runs between D and E — it
+seeds the Glass tile registry and writes the rendered tile id list into
+``<INKWELL_ROOT>/instances/<slug>/glass.json`` so the Inkwell dashboard
+renders them on first visit.
 
 Run::
 
@@ -36,7 +40,9 @@ from typing import Any
 
 import logging
 
+from sos.cli._default_tiles import default_tiles
 from sos.clients.economy import EconomyClient
+from sos.clients.glass import GlassClient
 from sos.clients.operations import OperationsClient
 from sos.clients.saas import SaasClient
 from sos.contracts.tenant import TenantCreate, TenantPlan
@@ -299,6 +305,49 @@ def step_d_write_workflows(
     return data
 
 
+def step_f_seed_glass_tiles(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    *,
+    client_factory: Any = GlassClient,
+) -> list[dict[str, Any]]:
+    """Step F — seed the Glass tile registry with the default 5 tiles.
+
+    Mints each default tile through ``POST /glass/tiles/<tenant>`` and writes
+    the resulting id list into ``<INKWELL_ROOT>/instances/<slug>/glass.json``
+    so Inkwell's dashboard.astro knows which tiles to fetch at request time.
+
+    Idempotent — a second run upserts the same tiles and rewrites the same
+    glass.json, so re-running ``sos init`` never leaves the dashboard in a
+    partial state.
+    """
+    kwargs: dict[str, Any] = {}
+    if cfg.saas_token:
+        kwargs["token"] = cfg.saas_token
+    client = client_factory(**kwargs)
+
+    tiles = default_tiles(cfg.slug)
+    minted: list[dict[str, Any]] = []
+    for tile in tiles:
+        result = client.upsert_tile(
+            cfg.slug,
+            tile,
+            idempotency_key=f"sos-init:{cfg.slug}:tile:{tile.id}",
+        )
+        minted.append(result)
+        print(f"  {green('ok')} — tile seeded: id={tile.id} template={tile.template.value}")
+
+    # Write the tile id list into Inkwell so dashboard.astro can render them.
+    inkwell_root = Path(os.environ.get("INKWELL_ROOT", "/home/mumega/inkwell"))
+    glass_path = inkwell_root / "instances" / cfg.slug / "glass.json"
+    tile_ids = [tile.id for tile in tiles]
+    glass_path.write_text(
+        json.dumps({"tenant": cfg.slug, "tile_ids": tile_ids}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return minted
+
+
 def step_e_trigger_pulse(
     cfg: InitConfig,
     tenant: dict[str, Any],
@@ -405,6 +454,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"  {warn('skipped')}: {exc}")
 
+    # Step F — real (seed glass tiles + write glass.json for Inkwell).
+    print(f"\n{bold('Step F')} — seed default Glass tiles for the dashboard")
+    try:
+        minted_tiles = step_f_seed_glass_tiles(cfg, tenant)
+        print(f"  {green('ok')} — {len(minted_tiles)} tile(s) seeded")
+    except Exception as exc:
+        print(f"  {warn('skipped')}: {exc}")
+
     # Step E — real (operations service must be reachable).
     print(f"\n{bold('Step E')} — trigger first pulse run")
     try:
@@ -413,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {warn('skipped')}: {exc}")
 
     print("\n" + "=" * 48)
-    print(f"{green('Phase 5 shipped — Steps A + B + C + D + E all green.')}")
+    print(f"{green('Phase 6 shipped — Steps A + B + C + D + F + E all green.')}")
     print(f"  slug:   {cfg.slug}")
     print(f"  label:  {cfg.label}")
     print(f"  plan:   {cfg.plan.value}")
