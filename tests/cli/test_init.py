@@ -428,6 +428,80 @@ def test_step_e_forwards_token_to_client(cfg: cli_init.InitConfig) -> None:
     assert _FakeOperationsClient.last_instance.init_kwargs.get("token") == "sk-test"
 
 
+# ---------------------------------------------------------------------------
+# Step G — Mumega Playbook dogfood shelf seed
+# ---------------------------------------------------------------------------
+
+
+class _FakeShelfEconomyClient:
+    """Records add_shelf_product calls and returns a canned product dict."""
+
+    last_instance: "_FakeShelfEconomyClient | None" = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.init_kwargs = kwargs
+        self.calls: list[dict[str, Any]] = []
+        _FakeShelfEconomyClient.last_instance = self
+
+    def add_shelf_product(self, tenant: str, **kwargs: Any) -> dict[str, Any]:
+        record = {"tenant": tenant, **kwargs}
+        self.calls.append(record)
+        return {**kwargs, "tenant": tenant, "active": kwargs.get("active", True)}
+
+
+def test_step_g_skipped_for_non_mumega_tenants(
+    cfg: cli_init.InitConfig,
+) -> None:
+    _FakeShelfEconomyClient.last_instance = None
+    result = cli_init.step_g_seed_shelf(
+        cfg,
+        {"slug": "acme", "status": "provisioning"},
+        client_factory=_FakeShelfEconomyClient,
+    )
+    assert result is None
+    # Factory must never be invoked for non-mumega tenants.
+    assert _FakeShelfEconomyClient.last_instance is None
+
+
+def test_step_g_seeds_playbook_for_mumega_internal(
+    cfg: cli_init.InitConfig,
+) -> None:
+    cfg.slug = "mumega-internal"
+    _FakeShelfEconomyClient.last_instance = None
+
+    result = cli_init.step_g_seed_shelf(
+        cfg,
+        {"slug": "mumega-internal", "status": "provisioning"},
+        client_factory=_FakeShelfEconomyClient,
+    )
+
+    assert result is not None
+    assert result["id"] == "mumega-playbook"
+    assert result["price_cents"] == 2900
+    assert result["grant_id"] == "mumega-playbook"
+
+    assert _FakeShelfEconomyClient.last_instance is not None
+    call = _FakeShelfEconomyClient.last_instance.calls[0]
+    assert call["tenant"] == "mumega-internal"
+    assert call["id"] == "mumega-playbook"
+    assert call["title"] == "Mumega Playbook"
+    assert call["mind_multiplier"] == 0.5
+
+
+def test_step_g_forwards_token_to_client(cfg: cli_init.InitConfig) -> None:
+    cfg.slug = "mumega-internal"
+    cfg.saas_token = "sk-test"
+    _FakeShelfEconomyClient.last_instance = None
+
+    cli_init.step_g_seed_shelf(
+        cfg,
+        {"slug": "mumega-internal", "status": "provisioning"},
+        client_factory=_FakeShelfEconomyClient,
+    )
+    assert _FakeShelfEconomyClient.last_instance is not None
+    assert _FakeShelfEconomyClient.last_instance.init_kwargs.get("token") == "sk-test"
+
+
 def test_parse_args_requires_slug_label_email() -> None:
     with pytest.raises(SystemExit):
         cli_init.parse_args([])
@@ -459,4 +533,4 @@ def test_main_dry_run_prints_and_returns_zero(
     assert "sos init — acme" in out
     assert "Step A" in out
     assert "Step B" in out and "skipped" in out
-    assert "Phase 6 shipped" in out
+    assert "Phase 7 shipped" in out

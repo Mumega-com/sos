@@ -91,6 +91,36 @@ class EconomyClient(BaseHTTPClient):
         """GET /qnft/{tenant} — list minted seat tokens for a tenant."""
         return self._request("GET", f"/qnft/{tenant}").json().get("tokens", [])
 
+    def add_shelf_product(
+        self,
+        tenant: str,
+        *,
+        id: str,
+        title: str,
+        price_cents: int,
+        grant_id: str,
+        description: str = "",
+        currency: str = "usd",
+        mind_multiplier: float = 1.0,
+        active: bool = True,
+    ) -> Dict[str, Any]:
+        """POST /economy/shelf/{tenant} — admin-only (requires system token)."""
+        payload: Dict[str, Any] = {
+            "id": id,
+            "title": title,
+            "price_cents": price_cents,
+            "grant_id": grant_id,
+            "description": description,
+            "currency": currency,
+            "mind_multiplier": mind_multiplier,
+            "active": active,
+        }
+        return self._request("POST", f"/economy/shelf/{tenant}", json=payload).json()
+
+    def list_shelf(self, tenant: str) -> Dict[str, Any]:
+        """GET /economy/shelf/{tenant} — list a tenant's shelf products."""
+        return self._request("GET", f"/economy/shelf/{tenant}").json()
+
     def list_usage(self, tenant: Optional[str] = None, limit: int = 100) -> List[UsageEvent]:
         """Read usage events from economy.
 

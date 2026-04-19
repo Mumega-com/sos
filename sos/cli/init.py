@@ -351,6 +351,46 @@ def step_f_seed_glass_tiles(
     return minted
 
 
+_MUMEGA_DOGFOOD_SLUG = "mumega-internal"
+_MUMEGA_PLAYBOOK_PRODUCT: dict[str, Any] = {
+    "id": "mumega-playbook",
+    "title": "Mumega Playbook",
+    "description": "The SOS operator's handbook — shipped as the first dogfood product on the Mumega shelf.",
+    "price_cents": 2900,
+    "currency": "usd",
+    "grant_id": "mumega-playbook",
+    "mind_multiplier": 0.5,
+    "active": True,
+}
+
+
+def step_g_seed_shelf(
+    cfg: InitConfig,
+    tenant: dict[str, Any],
+    *,
+    client_factory: Any = EconomyClient,
+) -> dict[str, Any] | None:
+    """Step G — seed the Mumega Playbook dogfood product on the internal shelf.
+
+    Only runs for the ``mumega-internal`` tenant (checked by slug); every other
+    tenant gets an empty shelf on first boot. Idempotent: the shelf route
+    upserts on (tenant, id), so re-running ``sos init`` leaves one product.
+    """
+    if cfg.slug != _MUMEGA_DOGFOOD_SLUG:
+        return None
+
+    kwargs: dict[str, Any] = {}
+    if cfg.saas_token:
+        kwargs["token"] = cfg.saas_token
+    client = client_factory(**kwargs)
+    result = client.add_shelf_product(cfg.slug, **_MUMEGA_PLAYBOOK_PRODUCT)
+    print(
+        f"  {green('ok')} — shelf seeded: id={result.get('id')} "
+        f"price_cents={result.get('price_cents')}"
+    )
+    return result
+
+
 def step_e_trigger_pulse(
     cfg: InitConfig,
     tenant: dict[str, Any],
@@ -472,8 +512,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"  {warn('skipped')}: {exc}")
 
+    # Step G — dogfood shelf seed (mumega-internal only).
+    if cfg.slug == _MUMEGA_DOGFOOD_SLUG:
+        print(f"\n{bold('Step G')} — seed Mumega Playbook on the dogfood shelf")
+        try:
+            step_g_seed_shelf(cfg, tenant)
+        except Exception as exc:
+            print(f"  {warn('skipped')}: {exc}")
+
     print("\n" + "=" * 48)
-    print(f"{green('Phase 6 shipped — Steps A + B + C + D + F + E all green.')}")
+    print(f"{green('Phase 7 shipped — Steps A + B + C + D + F + E (+ G dogfood) all green.')}")
     print(f"  slug:   {cfg.slug}")
     print(f"  label:  {cfg.label}")
     print(f"  plan:   {cfg.plan.value}")
