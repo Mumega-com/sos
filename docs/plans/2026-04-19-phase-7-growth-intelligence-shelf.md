@@ -62,6 +62,31 @@ blocked on credentials:
 BrightData scrape + Stripe test checkout. Can be deferred to v0.10.1.1
 hotfix once creds land.
 
+## Inkwell v8.3 primitives we inherit (landed 2026-04-19, commit `54db2fe`)
+
+Three things Inkwell just shipped that change the Phase 7 surface area —
+less new code on the SOS side, more reuse of Inkwell's CF-native rails:
+
+- **CF Access middleware** (`workers/inkwell-api/src/middleware/cf-access.ts`)
+  — service tokens (machine-to-machine) + JWT RS256 via JWKS, KV-cached
+  1hr. **Use it for:** Stripe webhook auth on the Inkwell side, and any
+  Inkwell → SOS call that needs to prove identity without a user session.
+  Replaces the ad-hoc bearer pattern we'd otherwise have to build.
+- **CF Workflows** (`workers/inkwell-api/src/workflows/generic.ts`) —
+  `GenericWorkflow` with `fetch`/`sleep`/`db_query` steps, durable
+  across restarts. **Use it for:** BrightData/Apify poll loops (Step 7.2)
+  instead of custom async-poll code; and the growth-intel daily cron
+  (Step 7.4) as a native alternative to SOS pulse.
+- **5-provider automation chain** (`plugins/automation/mcp-tools.ts`)
+  detection order: **CF Workflows > ToRivers > n8n > Zapier > webhook**.
+  **Use it for:** Step 7.4 — tenant picks a provider via env; the same
+  growth-intel workflow runs against whichever is configured.
+
+**Net effect:** Step 7.2 poll loops can be 20 lines of Workflow YAML
+instead of a custom async poller. Step 7.4 doesn't need a new trigger
+system — it hooks into the existing automation chain. Step 7.6 Stripe
+webhook auth reuses the CF Access service-token pattern.
+
 ## Approaches considered
 
 **Option A: "Ship contracts + mockable adapters, defer live wiring"** — the shipping choice.
@@ -110,12 +135,13 @@ contract-first approach — an `IntelligenceProvider` protocol with
 ### Step 7.2 — BrightData + Apify adapters
 
 - Files: `sos/services/integrations/adapters/brightdata.py` (new), `sos/services/integrations/adapters/apify.py` (new)
-- Change: connector-style pull. Each adapter takes a `dataset_id` + tenant, posts to the provider's trigger endpoint, polls for completion, stores the result in a new `snapshots` table.
-  - BrightData: `POST https://api.brightdata.com/dca/trigger` → poll `/dca/dataset/<id>` → store.
-  - Apify: `POST https://api.apify.com/v2/acts/<id>/runs` → poll `/v2/actor-runs/<runId>` → store.
+- Change: connector-style pull. Each adapter takes a `dataset_id` + tenant, triggers the provider, waits for completion, stores the result in a new `snapshots` table.
+  - BrightData: `POST https://api.brightdata.com/dca/trigger` → wait for `/dca/dataset/<id>` ready → store.
+  - Apify: `POST https://api.apify.com/v2/acts/<id>/runs` → wait for `/v2/actor-runs/<runId>` finished → store.
   - Both emit `snapshot.created` on the bus for the narrative-synth agent to pick up.
+- **Poll loop strategy:** the adapter exposes `trigger()` + `fetch_result(run_id)` as two separate async methods. The SOS-side implementation has a simple `asyncio.sleep` poll for dev/CI. In production, the Inkwell-side `GenericWorkflow` orchestrates the trigger → sleep → fetch chain as durable Workflow steps (survives Worker restarts, no in-memory state). One interface, two execution modes.
 - Fake provider: `FakeSnapshotProvider` returns canned data so growth-intel squad loop runs in dev.
-- Outcome: 6 unit tests under `tests/services/integrations/test_adapters.py` covering trigger / poll / error / timeout for each.
+- Outcome: 6 unit tests under `tests/services/integrations/test_adapters.py` covering trigger / fetch / error / timeout for each.
 
 ### Step 7.3 — Growth-intel squad (3 agents)
 
@@ -135,8 +161,14 @@ contract-first approach — an `IntelligenceProvider` protocol with
   {"name": "{{SLUG}}-growth-intel", "schedule": "0 10 * * *",
    "description": "Daily growth intelligence pull + dossier",
    "steps": ["trend-finder", "narrative-synth", "dossier-writer"],
-   "bounty_mind": 50}
+   "bounty_mind": 50,
+   "trigger": "auto"}
   ```
+- **Trigger provider (auto-detect via Inkwell v8.3 automation chain):**
+  `trigger: "auto"` lets the Inkwell automation plugin pick the best
+  available: `CF Workflows > ToRivers > n8n > Zapier > generic webhook`.
+  No per-tenant wiring code — each instance config declares which
+  provider is configured, and the chain resolves at call time.
 - Wire: `sos/cli/init.py::step_d_write_workflows` picks this up automatically (it iterates over `data["workflows"]`).
 - Outcome: the e2e `sos init` test gets a fourth workflow entry asserted.
 
@@ -172,6 +204,7 @@ contract-first approach — an `IntelligenceProvider` protocol with
   - `POST /economy/shelf/checkout/{tenant}/{product_id}` → creates a Stripe Checkout Session, returns the `url` + `session_id`.
   - `POST /economy/shelf/capture` → Stripe webhook (signed with webhook secret). On `checkout.session.completed`, credits the tenant's $MIND wallet with the captured amount × exchange rate, writes a row to `shelf_captures`, grants access (the Inkwell adapter reads this to unlock content).
   - Inkwell adapter: `createSosCommerceAdapter({baseUrl, tenant})` with `listProducts()`, `createCheckout(productId)`, `grantedProducts(userId)`.
+  - **Auth path:** the Inkwell `/shelf` routes call SOS via the CF Access middleware (v8.3) — service-token JWT over JWKS, KV-cached. No per-request bearer wiring on the SOS side; SOS verifies the token against the shared issuer. The Stripe webhook itself verifies via `stripe.webhooks.construct_event` (signing secret, not CF Access).
 - Outcome: 10 tests covering happy/error paths + webhook signature verification.
 
 ### Step 7.7 — Mumega Playbook dogfood
