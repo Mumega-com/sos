@@ -1,0 +1,107 @@
+name: mumega-launch
+display: "Mumega Launch Task Force"
+description: "Four-agent squad formed by Hadi 2026-04-19 to deliver Mumega v1.0. Coordinates on the SOS bus (internal); squad timeline mirrors to Discord #agent-collab (read channel for Hadi). External surface to Hadi's Telegram is deferred until the squad is operating autonomously."
+formed: 2026-04-19
+charter: charter.md
+
+# Comms topology
+#   internal agent↔agent  : SOS Redis bus, squad scope "squad:mumega-launch"
+#   readable room         : Discord #agent-collab (bridged by sos/adapters/discord + redis-discord-bridge.service)
+#   external human-gate   : Telegram to Hadi (deferred — activate after in-sync milestone)
+
+agents:
+  loom:
+    runtime: anthropic-claude / tmux on mumega server
+    role: sos-dev
+    responsibilities:
+      - SOS kernel, bus, squads, mesh
+      - mumega-edge Worker (staging → canonical)
+      - squad-primitive maintenance
+    operates:
+      - /mnt/HC_Volume_104325311/SOS
+      - /home/mumega/mumega-edge
+    owns_surfaces: []  # loom builds; hermes operates prod
+
+  hermes:
+    runtime: openai-chatgpt-5.4 / ops MCP
+    role: ops
+    responsibilities:
+      - Production Mumega/Inkwell edge (api.mumega.com today)
+      - CF route bindings, wrangler prod deploys, D1 remote state
+      - Deploy gates, rollbacks
+    operates:
+      - inkwell-api Worker (CF account, *.mumega.com/* route)
+      - Mumega production D1s + KV
+    owns_surfaces:
+      - api.mumega.com
+      - "*.mumega.com/*"
+
+  kasra:
+    runtime: tmux agent on mumega server (Claude), Discord-connected
+    role: inkwell-dev
+    responsibilities:
+      - Inkwell forkable SaaS template
+      - Mumega-as-instance (the flagship tenant)
+      - Inkwell MCP tools + tenant-facing UX
+    operates:
+      - /home/mumega/inkwell
+      - mumega.com site content + subdomains
+    owns_surfaces:
+      - Inkwell MCP (inkwell.mumega.com/mcp)
+      - inkwell.config.ts / instances/_template
+
+  codex:
+    runtime: Codex-CLI (GPT), not on Claude — reachable via SOS bus + Discord
+    role: mumega-pm
+    responsibilities:
+      - Mumega.com storefront product direction (sitemap, IA, conversion flow)
+      - Marketplace backlog — which automations ship, in what order, at what price
+      - Brand voice + surface copy (landing, emails, onboarding, docs)
+      - PM loop between kasra (Inkwell template) and loom (SOS features)
+      - Surface-customer signal → squad backlog (what tenants are asking for)
+    operates:
+      - any tmux / Codex-CLI session Hadi spawns
+      - mumega.com content + marketplace catalog (via kasra's Inkwell MCP)
+    owns_surfaces:
+      - mumega.com (storefront + marketing surface)
+      - marketplace backlog (what ships, when, at what price)
+      - brand voice (landing, email, docs copy)
+    cross_substrate_note: "GPT agent — proves SOS substrate-agnosticism. Coordinates with Claude agents (loom, kasra) via SOS bus."
+
+# Coordination primitives — composed from existing SOS pieces, no new infra
+coordination:
+  channel: "squad:mumega-launch"         # bus broadcasts scoped via squad field
+  task_board: "squad:mumega-launch"      # task_create(squad=) visible only to members
+  shared_memory: "scope=squad:mumega-launch"  # remember(scope=) keyed per-squad
+  heartbeat: "mesh pruner — 5m stale, 15m remove; escalate to Hadi only on deadlock"
+  escalation:
+    bus_cycles_before_telegram: 2
+    telegram_recipient: hadi             # per ~/.claude/rules/agent-comms.md
+
+# Standing rules
+rules:
+  - "Internal comms live on the SOS bus. sos-claude MCP (Hadi's claude.ai) is external surface — only decisions, milestones, blockers. Never leak internal chatter there."
+  - "Shared-surface changes (CF routes, prod wrangler deploys, D1 remote migrations, cross-repo fork deletions) require explicit ack from the surface owner BEFORE touching."
+  - "Handoffs follow agent-comms standard: clear ask → ack → Done/Blocked."
+  - "If a member goes silent >2 bus cycles on a gating question, escalate to Telegram/Discord to Hadi with a single-line summary and recommended default."
+
+# Open loops at formation (2026-04-19)
+open_loops:
+  - id: ml-001
+    title: "Kasra bus enrollment"
+    owner: kasra
+    question: "Bus identity + connection shape (direct Redis / sos-mcp-sse bridge) + agent card"
+  - id: ml-002
+    title: "Inkwell MCP has no task/memory backend (NETWORK_API_URL unset)"
+    owner: kasra
+    severity: low
+    note: "Not squad-blocking — we use SOS bus. Fix when Kasra has cycles."
+  - id: ml-003
+    title: "api.mumega.com cutover decision"
+    owner: hermes + kasra
+    question: "Split by hostname (inkwell-api keeps *.mumega.com/* minus api; mumega-edge takes api.mumega.com), or different shape?"
+    blocks: "Phase 4 Step 4.7 (wrangler deploy + tag v0.9.3)"
+  - id: ml-004
+    title: "First Hermes bus reply"
+    owner: hermes
+    note: "Last loom↔hermes message: April 14. Two loom pings sent 2026-04-19 (1776614576589-0, 1776615406162-0). If silent >2 cycles, escalate."
