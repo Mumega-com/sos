@@ -172,15 +172,23 @@ class AgentCard(BaseModel):
     def resolve_identity(self) -> "Identity":
         """Return the canonical AgentIdentity for this card.
 
-        TODO: implement via sos.services.registry (Registry wiring island).
-        The registry will look up self.identity_id in Redis / the identity
-        store and return the fully hydrated AgentIdentity (with DNA, public_key,
-        verification_status, capabilities).
+        Looks up ``self.identity_id`` in the registry Redis keyspace via
+        :func:`sos.services.registry.read_one`. Raises LookupError if the
+        registry has no row for this identity (the AgentCard has no soul).
+
+        Wired in v0.9.2.1 alongside signed /mesh/enroll — first enrollment
+        TOFU-writes the AgentIdentity with ``public_key`` set, so every
+        card minted by a conformant client has a resolvable identity.
         """
-        raise NotImplementedError(
-            "resolve_identity() is a stub — wire sos.services.registry first. "
-            f"identity_id={self.identity_id!r}"
-        )
+        from sos.services.registry import read_one
+
+        ident = read_one(self.identity_id, project=self.project)
+        if ident is None:
+            raise LookupError(
+                f"no AgentIdentity for {self.identity_id!r} "
+                f"(project={self.project!r})"
+            )
+        return ident
 
     @staticmethod
     def now_iso() -> str:

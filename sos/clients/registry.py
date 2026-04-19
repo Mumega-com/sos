@@ -208,21 +208,71 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
         squads: Optional[list[str]] = None,
         heartbeat_url: Optional[str] = None,
         project: Optional[str] = None,
+        private_key_b64: Optional[str] = None,
     ) -> Dict[str, Any]:
         """POST /mesh/enroll — register an agent into the mesh registry.
+
+        Since v0.9.2.1 enrollment requires proof-of-key. The client will:
+        1. Load or generate an Ed25519 keypair (at ``~/.sos/keys/<name>.priv``)
+           unless ``private_key_b64`` is explicitly passed.
+        2. Fetch a one-time nonce from ``POST /mesh/challenge``.
+        3. Sign ``enroll_message(agent_id, nonce, hash(identity_fields))``.
+        4. POST the full signed envelope to ``/mesh/enroll``.
 
         Returns the endpoint's response body on success.  Raises
         :class:`SOSClientError` on non-2xx.
         """
+        from sos.kernel.crypto import (
+            canonical_payload_hash,
+            enroll_message,
+            load_or_create_keypair,
+            public_key_from_private,
+            sign,
+        )
+
+        if private_key_b64 is None:
+            private_key_b64, public_key_b64 = load_or_create_keypair(agent_id)
+        else:
+            public_key_b64 = public_key_from_private(private_key_b64)
+
+        skills_list = list(skills) if skills is not None else []
+        squads_list = list(squads) if squads is not None else []
+
+        # Fetch challenge (no auth required).
+        ch_resp = await self._request(
+            "POST",
+            "/mesh/challenge",
+            json={"agent_id": agent_id},
+        )
+        nonce = ch_resp.json().get("nonce", "")
+        if not nonce:
+            raise SOSClientError(
+                status_code=ch_resp.status_code or 500,
+                message="challenge returned no nonce",
+                body=ch_resp.text,
+            )
+
+        payload_for_hash = {
+            "agent_id": agent_id,
+            "name": name,
+            "role": role,
+            "skills": skills_list,
+            "squads": squads_list,
+            "public_key": public_key_b64,
+        }
+        payload_hash = canonical_payload_hash(payload_for_hash)
+        signature = sign(private_key_b64, enroll_message(agent_id, nonce, payload_hash))
+
         payload: Dict[str, Any] = {
             "agent_id": agent_id,
             "name": name,
             "role": role,
+            "skills": skills_list,
+            "squads": squads_list,
+            "public_key": public_key_b64,
+            "nonce": nonce,
+            "signature": signature,
         }
-        if skills is not None:
-            payload["skills"] = skills
-        if squads is not None:
-            payload["squads"] = squads
         if heartbeat_url is not None:
             payload["heartbeat_url"] = heartbeat_url
         if project is not None:

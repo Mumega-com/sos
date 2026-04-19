@@ -6,6 +6,122 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ---
 
+## [0.9.2.1] — 2026-04-19 — Signed mesh enrollment + TOFU + per-service tokens
+
+### Thesis
+Security wave on top of v0.9.2. The `POST /mesh/enroll` path shipped
+unsigned — any holder of `SOS_SYSTEM_TOKEN` could enroll any
+`agent_id`, and a rotated bearer could silently reassign an identity.
+This release makes enrollment cryptographically bound to the agent: a
+one-time challenge nonce, an Ed25519 signature over
+`"{agent_id}|{nonce}|sha256(canonical_payload)"`, and TOFU pinning of
+the public key on first enrollment. Second enroll with a different key
+→ 409 + SECURITY audit log. Env-token scopes narrowed per service so
+registry compromise can no longer publish on the bus.
+
+### Added — Crypto + nonce primitives
+- **S1** — `sos/kernel/crypto.py` Ed25519 helpers built on PyNaCl:
+  `generate_keypair()`, `sign()`, `verify()`, `canonical_payload_hash()`
+  (sorted-keys JSON → sha256), `enroll_message()`. All keys and
+  signatures are URL-safe base64 without padding. Covered by
+  `sos/tests/test_crypto.py` — 8 cases.
+- **S2** — `sos/services/registry/nonce_store.py`: `issue(agent_id)`
+  creates a 120s-TTL nonce at `sos:mesh:nonce:{agent_id}:{nonce}`;
+  `consume(agent_id, nonce)` is an atomic Redis `GETDEL` so replay is
+  impossible. Unknown / already-consumed nonce → False (endpoint maps
+  to 403).
+
+### Added — Signed /mesh/enroll + TOFU
+- **S3** — `POST /mesh/challenge` returns
+  `{nonce, expires_in: 120}` (no bearer required — the signature +
+  identity pin are what bind the enrollment). `POST /mesh/enroll` now
+  requires `public_key`, `nonce`, `signature` alongside the existing
+  fields. Server flow: consume nonce → verify signature → look up
+  existing `AgentIdentity` → TOFU-pin on first enroll, 409 if the
+  stored pubkey doesn't match. `first_seen` flag returned on the
+  response so callers can branch on "new to this mesh" vs "known".
+- **S3** — `sos/contracts/agent_card.py` — `AgentIdentity` soul-layer
+  model (`agent_id`, `public_key`, `verification_status`,
+  `first_enrolled_at`, `last_rotated_at`). Persisted at
+  `sos:identity:{agent_id}` on Redis and read/written via
+  `read_one()` / `write()` helpers in `sos.services.registry`.
+- **S3** — `AsyncRegistryClient.enroll_mesh(...)` now accepts and
+  forwards the signed envelope; `AsyncRegistryClient.challenge(...)`
+  is the paired nonce-fetch.
+
+### Added — First-seen alerting
+- **S4** — on first successful enrollment, `_emit_first_seen()`
+  appends to the `sos:stream:mesh:first_seen` Redis stream with
+  `{agent_id, name, role, project, public_key, enrolled_at}`. If
+  `SOS_MESH_FIRST_SEEN_WEBHOOK` is set, the same payload is POSTed to
+  the webhook (fire-and-forget, non-blocking). Stream emission never
+  blocks the enroll response — failures are logged at `warn`.
+
+### Added — Per-service narrow-scope tokens
+- **S5** — `AuthContext.has_scope(scope)` helper on
+  `sos/kernel/auth.py`. `_verify_bearer` now understands the following
+  env tokens and tags them with scoped capabilities:
+  `SOS_REGISTRY_TOKEN` (`registry:*`), `SOS_BUS_TOKEN` (`bus:*`),
+  `SOS_SQUAD_TOKEN` (`squad:*`), `SOS_MEMORY_TOKEN` (`memory:*`),
+  `SOS_SYSTEM_TOKEN` (`*`). Registry-side endpoints now gate on
+  `registry:*` (not system-wide), so an exfiltrated registry token
+  cannot publish on the bus or call other services.
+- **S5** — `systemd/sos-registry.service` comment block documents the
+  v0.9.2.1 preference for `SOS_REGISTRY_TOKEN` over the mesh-wide
+  `SOS_SYSTEM_TOKEN`.
+
+### Tests
+- **S6** — `tests/contracts/test_mesh_enroll_signed.py` (7 cases):
+  missing signature → 401, bad signature → 403, replayed nonce → 403,
+  TOFU first enroll → 200 (`first_seen=True`, status=VERIFIED), pubkey
+  mismatch → 409, re-enroll matching pubkey → 200 (`first_seen=False`),
+  tampered payload (role changed after sign) → 403.
+- **S6** — `tests/services/registry/test_mesh_enroll.py` — 5
+  pre-existing happy-path tests updated to sign bodies before POST;
+  `_install_signed_harness` + `_sign_enroll_body` helpers reusable
+  across the file.
+- **S6** — `tests/test_mesh_enroll_e2e.py` (3 cases, guarded by
+  `fakeredis`): challenge → sign → enroll roundtrip with nonce key
+  proven deleted post-consume; rotated-key 409; fabricated nonce 403.
+  Drives the real nonce_store + crypto paths against fakeredis, no
+  live Redis needed.
+- **S6** — `sos/tests/test_crypto.py` — 8 crypto primitive cases
+  (roundtrip, tampered payload, bad-base64, etc.).
+- **S6** — `tests/contracts/test_mesh_enroll_in_bootloader.py` —
+  AST invariant from v0.9.2 still holds; signed flow preserved.
+- Gate at release: 36 mesh-security tests green. Full-repo sweep
+  shows no regressions introduced by this wave (45 orthogonal
+  pre-existing fails tracked separately).
+
+### Fixed
+- `sos/services/registry/app.py` — 3 call sites using
+  `log.warning(...)` crashed on the SECURITY branch because `SOSLogger`
+  only exposes `.warn()`. Swapped to `log.warn(...)` (discovery failure,
+  pubkey-mismatch audit, first_seen stream failures).
+
+### Rollback posture
+Pre-release security patch on top of v0.9.2. `/mesh/enroll` is the
+only breaking change — unsigned callers now get 401. The v0.9.2-era
+`AsyncRegistryClient.enroll_mesh` forwards the signed envelope
+transparently; services on the current client version keep working.
+Rolling back is a single-commit revert — the new `/mesh/challenge`
+endpoint and nonce store become unused, and the signed fields on
+`MeshEnrollRequest` go back to `Optional[...]` with no DB migration
+required (AgentIdentity records are additive).
+
+### Non-goals for v0.9.2.1
+- No key rotation flow. A second enrollment with a different key is
+  rejected at 409 — operator-approved rotation lives in v0.9.3.
+- No mutual-TLS between services. Token narrowing is the v0.9.2.1
+  step; mTLS is Phase 4 Mumega-edge.
+- No certificate authority / PKI. TOFU covers the mesh; CA design
+  deferred until multi-tenant federation.
+
+### Closes
+- Task #244 — v0.9.2.1 security wave (signed mesh enrollment + TOFU).
+
+---
+
 ## [0.9.2] — 2026-04-19 — Mesh enrollment + squad addressability
 
 ### Thesis

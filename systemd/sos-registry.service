@@ -9,7 +9,10 @@ Group=mumega
 WorkingDirectory=/home/mumega/SOS
 Environment=PYTHONPATH=/home/mumega/SOS
 Environment=SOS_REGISTRY_PORT=6067
-# API keys loaded from .env file (not committed)
+# API keys loaded from .env file (not committed).
+# v0.9.2.1 — prefer SOS_REGISTRY_TOKEN (scoped to registry:*) over the
+# mesh-wide SOS_SYSTEM_TOKEN so a compromised registry host cannot
+# impersonate the saas / billing / squad services.
 EnvironmentFile=-/home/mumega/SOS/.env
 
 ExecStart=/usr/bin/python3 -m sos.services.registry.app

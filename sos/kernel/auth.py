@@ -43,12 +43,21 @@ logger = logging.getLogger("sos.auth")
 TOKENS_PATH = Path(__file__).resolve().parent.parent / "bus" / "tokens.json"
 
 # Env vars whose values count as "system-level" tokens when matched.
-# Tuple of (env_var_name, is_admin_scope).
-_ENV_TOKENS: tuple[tuple[str, bool], ...] = (
-    ("SOS_SYSTEM_TOKEN", True),
-    ("MIRROR_TOKEN", True),
-    ("BUS_BRIDGE_TOKEN", True),
-    ("CYRUS_BUS_TOKEN", False),
+# Tuple of (env_var_name, is_admin_scope, scopes_list).
+#
+# v0.9.2.1 — per-service narrow tokens. Every service host should run with
+# its own token so a single compromised host doesn't yield mesh-wide
+# authority. Wildcard "*" keeps break-glass and legacy paths working.
+_ENV_TOKENS: tuple[tuple[str, bool, tuple[str, ...]], ...] = (
+    ("SOS_SYSTEM_TOKEN", True, ("*",)),  # break-glass admin — keep scarce
+    ("MIRROR_TOKEN", True, ("*",)),
+    ("BUS_BRIDGE_TOKEN", True, ("bus:*",)),
+    ("CYRUS_BUS_TOKEN", False, ("bus:send",)),
+    ("SOS_REGISTRY_TOKEN", True, ("registry:*",)),
+    ("SOS_SAAS_TOKEN", True, ("saas:*",)),
+    ("SOS_SQUAD_TOKEN", True, ("squad:*",)),
+    ("SOS_BILLING_TOKEN", True, ("billing:*",)),
+    ("SOS_INTEGRATIONS_TOKEN", True, ("integrations:*",)),
 )
 
 # Admin agents (token-file agents that always get is_admin=True).
@@ -73,6 +82,9 @@ class AuthContext(BaseModel):
     label: str = ""
     raw_token_hash: str | None = None
     env_source: str | None = None  # which env var matched, if any
+    # v0.9.2.1 — per-service scope narrowing. Wildcard "*" = superuser.
+    # Service tokens get narrow prefixes like "registry:*" or "bus:send".
+    scopes: list[str] = []
 
 
 class AuthResult(Enum):
@@ -149,7 +161,7 @@ def _sha256(value: str) -> str:
 
 def _check_env_tokens(raw_token: str) -> AuthContext | None:
     """Return an AuthContext if *raw_token* matches any configured env-var token."""
-    for env_var, is_admin in _ENV_TOKENS:
+    for env_var, is_admin, scopes in _ENV_TOKENS:
         env_val = os.environ.get(env_var, "")
         if env_val and env_val == raw_token:
             return AuthContext(
@@ -161,8 +173,34 @@ def _check_env_tokens(raw_token: str) -> AuthContext | None:
                 label=f"env:{env_var}",
                 raw_token_hash=_sha256(raw_token),
                 env_source=env_var,
+                scopes=list(scopes),
             )
     return None
+
+
+def has_scope(ctx: "AuthContext", required: str) -> bool:
+    """Return True iff *ctx* satisfies the *required* scope.
+
+    Scope syntax is colon-delimited with ``*`` as wildcard:
+      - ``*``            — matches every required scope (superuser)
+      - ``registry:*``   — matches ``registry:mesh_enroll``, ``registry:read``
+      - ``registry:read`` — exact match only
+
+    Admin contexts always pass (break-glass). Scoped service tokens must
+    carry a matching prefix. Tokens from tokens.json that have no
+    ``scopes`` field default to empty → callers must rely on is_admin /
+    project scope, which preserves existing behavior.
+    """
+    if ctx.is_admin:
+        return True
+    for scope in ctx.scopes:
+        if scope == "*" or scope == required:
+            return True
+        if scope.endswith(":*"):
+            prefix = scope[:-1]  # "registry:"
+            if required.startswith(prefix):
+                return True
+    return False
 
 
 def _check_tokens_json(raw_token: str) -> AuthContext | None:

@@ -39,13 +39,17 @@ from sos.kernel.health import health_response
 from sos.kernel.policy.gate import can_execute
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
+from sos.kernel.crypto import canonical_payload_hash, enroll_message, verify as _sig_verify
+from sos.kernel.identity import AgentIdentity, VerificationStatus
 from sos.services.registry import (
     read_all,
     read_all_cards,
     read_card,
     read_one,
+    write,
     write_card,
 )
+from sos.services.registry import nonce_store
 
 SERVICE_NAME = "registry"
 DEFAULT_PORT = 6067
@@ -75,7 +79,7 @@ async def _startup() -> None:
 
         await register_service(SERVICE_NAME, DEFAULT_PORT)
     except Exception as exc:  # pragma: no cover — discovery is best-effort
-        log.warning("registry discovery registration failed", error=str(exc))
+        log.warn("registry discovery registration failed", error=str(exc))
 
     from sos.services.registry.pruner import HeartbeatPruner
 
@@ -349,6 +353,10 @@ async def get_agent_card(
 # ---------------------------------------------------------------------------
 
 
+class MeshChallengeRequest(BaseModel):
+    agent_id: str  # ^agent:[a-z][a-z0-9-]*$
+
+
 class MeshEnrollRequest(BaseModel):
     agent_id: str  # must match AgentCard.identity_id pattern (^agent:...)
     name: str  # must match AgentCard.name pattern
@@ -358,6 +366,50 @@ class MeshEnrollRequest(BaseModel):
     heartbeat_url: str | None = None
     project: str | None = None  # optional override; system tokens only
 
+    # v0.9.2.1 — signed enrollment. All three are required; set to ""
+    # intentionally for test fixtures that exercise the "missing" paths.
+    public_key: str = ""  # base64 Ed25519 public key (32 bytes)
+    nonce: str = ""  # value returned from /mesh/challenge
+    signature: str = ""  # sign(priv, enroll_message(agent_id, nonce, payload_hash))
+
+
+def _enroll_payload_for_hash(body: MeshEnrollRequest) -> Dict[str, Any]:
+    """Exact subset of the enroll body bound by the signature.
+
+    Must stay in sync with the client (agents/join.py etc). Only the
+    identity-shaping fields are signed — transport echoes like
+    heartbeat_url can change across re-enrolls without a re-sign.
+    """
+    return {
+        "agent_id": body.agent_id,
+        "name": body.name,
+        "role": body.role,
+        "skills": list(body.skills),
+        "squads": list(body.squads),
+        "public_key": body.public_key,
+    }
+
+
+@app.post("/mesh/challenge")
+async def mesh_challenge(body: MeshChallengeRequest) -> Dict[str, Any]:
+    """Issue a single-use nonce for a subsequent /mesh/enroll.
+
+    No bearer required — a nonce alone is useless without the matching
+    private key. Rate-limited upstream via the service's shared limiter.
+    Nonces live 60 s in Redis and are atomically consumed by enroll.
+    """
+    try:
+        nonce, expires_at = nonce_store.issue(body.agent_id)
+    except Exception as exc:
+        log.error("mesh_challenge redis failure", error=str(exc))
+        raise HTTPException(status_code=503, detail="nonce store unavailable")
+    return {
+        "agent_id": body.agent_id,
+        "nonce": nonce,
+        "expires_at": expires_at,
+        "ttl_seconds": nonce_store.NONCE_TTL_SECONDS,
+    }
+
 
 @app.post("/mesh/enroll")
 async def mesh_enroll(
@@ -366,16 +418,20 @@ async def mesh_enroll(
 ) -> Dict[str, Any]:
     """Enroll an agent into the mesh registry.
 
-    Thin wrapper over the AgentCard upsert path. Accepts a lighter payload
-    and server-fills required AgentCard fields (tool/type = "service",
-    registered_at/last_seen = utcnow). TTL is fixed at 300 s — agents must
-    heartbeat to stay enrolled.
+    Since v0.9.2.1 every enroll MUST carry a valid Ed25519 signature over
+    ``enroll_message(agent_id, nonce, canonical_payload_hash(identity_fields))``.
+
+    First enrollment for an agent_id uses TOFU: we accept + persist the
+    submitted public_key onto the AgentIdentity and fire
+    ``agent.enrolled.first_seen`` on the bus. Subsequent enrolls must sign
+    with the same private key — a mismatched public_key in the payload
+    triggers 409 and a SECURITY audit event.
 
     Auth:
-    - Bearer required.
-    - Same project-scope rules as POST /agents/cards.
-    - Scoped tokens are forced to their own project; an explicit
-      ``project`` that differs from token scope → 403.
+    - Bearer required (policy gate action registry:mesh_enroll).
+    - Scoped tokens are pinned to their own project.
+    - Holding a valid bearer is no longer enough — the caller must also
+      prove custody of the agent's private key.
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="missing bearer token")
@@ -391,6 +447,63 @@ async def mesh_enroll(
     entry = _verify_bearer(authorization)
     effective_project = _resolve_project_scope(entry, body.project)
 
+    # --- Signature gate ------------------------------------------------------
+    if not body.public_key or not body.nonce or not body.signature:
+        raise HTTPException(
+            status_code=401,
+            detail="signed enrollment required: public_key, nonce, signature",
+        )
+
+    if not nonce_store.consume(body.agent_id, body.nonce):
+        raise HTTPException(status_code=403, detail="nonce invalid, expired, or replayed")
+
+    payload_hash = canonical_payload_hash(_enroll_payload_for_hash(body))
+    msg = enroll_message(body.agent_id, body.nonce, payload_hash)
+    if not _sig_verify(body.public_key, msg, body.signature):
+        raise HTTPException(status_code=403, detail="signature verification failed")
+
+    # --- TOFU vs. pinned pubkey ---------------------------------------------
+    existing = read_one(body.agent_id, project=effective_project)
+    first_seen = False
+    if existing is None:
+        first_seen = True
+        # TOFU — pin the submitted key now. Future enrolls must match.
+        ident = AgentIdentity(
+            name=body.name,
+            model=None,
+            public_key=body.public_key,
+            edition="business",
+        )
+        ident.verification_status = VerificationStatus.VERIFIED
+        ident.verified_by = entry.get("agent") or entry.get("label") or "tofu"
+        ident.metadata["project"] = effective_project or ""
+        ident.metadata["role"] = body.role
+        ident.metadata["status"] = "active"
+        ident.capabilities = list(body.skills)
+        write(ident, project=effective_project, ttl_seconds=0)
+    else:
+        stored_pub = existing.public_key or ""
+        if stored_pub and stored_pub != body.public_key:
+            log.warn(
+                "SECURITY: mesh enroll public_key mismatch",
+                agent_id=body.agent_id,
+                project=effective_project,
+                stored_fp=stored_pub[:12],
+                submitted_fp=body.public_key[:12],
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="public_key does not match stored identity; rotation requires admin path",
+            )
+        if not stored_pub:
+            # Legacy identity with no pubkey — adopt this one as TOFU.
+            existing.public_key = body.public_key
+            existing.verification_status = VerificationStatus.VERIFIED
+            existing.verified_by = entry.get("agent") or entry.get("label") or "tofu"
+            write(existing, project=effective_project, ttl_seconds=0)
+            first_seen = True
+
+    # --- AgentCard upsert (the runtime overlay) -----------------------------
     now = datetime.now(timezone.utc).isoformat()
     try:
         card = AgentCard(
@@ -410,13 +523,80 @@ async def mesh_enroll(
         raise HTTPException(status_code=422, detail=f"invalid enroll payload: {exc}")
 
     write_card(card, project=effective_project, ttl_seconds=900)
+
+    # --- First-seen alert (best-effort, non-blocking) -----------------------
+    if first_seen:
+        await _emit_first_seen(body.agent_id, effective_project, body.public_key, now)
+
     return {
         "enrolled": True,
         "name": card.name,
         "project": effective_project,
         "stale_after": 300,
         "expires_in": 900,
+        "first_seen": first_seen,
     }
+
+
+FIRST_SEEN_STREAM = "sos:stream:mesh:first_seen"
+
+
+async def _emit_first_seen(
+    agent_id: str,
+    project: Optional[str],
+    public_key: str,
+    enrolled_at: str,
+) -> None:
+    """Emit a ``agent.enrolled.first_seen`` record + optional webhook ping.
+
+    Fail-soft: neither the XADD nor the webhook can break enrollment. The
+    409-on-pubkey-mismatch gate is the hard guarantee; first-seen is the
+    human-visible backstop.
+    """
+    import hashlib
+
+    pub_fp = hashlib.sha256(public_key.encode()).hexdigest()[:12]
+    fields = {
+        "event": "agent.enrolled.first_seen",
+        "agent_id": agent_id,
+        "project": project or "",
+        "public_key_fp": pub_fp,
+        "enrolled_at": enrolled_at,
+    }
+    try:
+        import redis  # type: ignore[import-untyped]
+        from sos.kernel.settings import get_settings
+
+        s = get_settings().redis
+        r = redis.Redis(
+            host=s.host,
+            port=s.port,
+            password=s.password_str or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        r.xadd(FIRST_SEEN_STREAM, fields, maxlen=10000)
+    except Exception as exc:
+        log.warn("first_seen xadd failed", error=str(exc))
+
+    webhook = os.environ.get("SOS_ALERT_WEBHOOK", "").strip()
+    if webhook:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    webhook,
+                    json={
+                        "content": (
+                            f":new: New agent on mesh: **{agent_id}** "
+                            f"(project={project}, fp={pub_fp})"
+                        )
+                    },
+                )
+        except Exception as exc:
+            log.warn("first_seen webhook failed", error=str(exc))
 
 
 @app.get("/mesh/squad/{slug}")

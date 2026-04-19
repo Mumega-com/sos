@@ -26,6 +26,7 @@ router = APIRouter()
 logger = logging.getLogger("dashboard")
 
 _UNSQUADDED_KEY = "__unsquadded__"
+_FIRST_SEEN_WINDOW_SECONDS = 86400  # 24h — NEW badge lifespan
 
 
 # ---------------------------------------------------------------------------
@@ -54,17 +55,35 @@ def _stale_badge(stale: bool) -> str:
     return '<span class="badge badge-green">live</span>'
 
 
+def _first_seen_badge(registered_at: str) -> str:
+    """Render a NEW badge if the card's registered_at is within the last 24h.
+
+    Makes newly-TOFU'd agents visible in the mesh tab so an operator
+    notices fresh enrollments at a glance. Purely a hint — the hard
+    security guarantee is the 409-on-pubkey-mismatch in /mesh/enroll.
+    """
+    try:
+        ts = datetime.fromisoformat(registered_at.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return ""
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if 0 <= age <= _FIRST_SEEN_WINDOW_SECONDS:
+        return ' <span class="badge badge-blue">NEW</span>'
+    return ""
+
+
 def _render_squad_section(slug: str, cards: list, display: str) -> str:
     rows = ""
     for card in sorted(cards, key=lambda c: c.name):
         age_label = _relative_time(card.last_seen)
         badge = _stale_badge(card.stale)
+        new_badge = _first_seen_badge(card.registered_at)
         hb = heartbeat_cell(card.heartbeat_url)
         proj = card.project or '<span class="muted">\u2014</span>'
         rows += (
             "<tr>"
             f'<td style="padding:10px 12px;font-weight:500;color:#F8FAFC">'
-            f"{card.name}</td>"
+            f"{card.name}{new_badge}</td>"
             f'<td style="padding:10px 12px;color:#CBD5E1">{card.role}</td>'
             f'<td style="padding:10px 12px">{badge}</td>'
             f'<td style="padding:10px 12px;color:#94A3B8">{age_label}</td>'

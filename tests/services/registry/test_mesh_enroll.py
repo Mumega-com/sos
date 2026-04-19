@@ -20,7 +20,93 @@ from fastapi.testclient import TestClient
 from sos.contracts.agent_card import AgentCard
 from sos.contracts.policy import PolicyDecision
 from sos.kernel.auth import AuthContext
+from sos.kernel.crypto import (
+    canonical_payload_hash,
+    enroll_message,
+    generate_keypair,
+    sign,
+)
 from sos.services.registry.app import app
+
+
+# ---------------------------------------------------------------------------
+# v0.9.2.1 — signed-enroll helpers (shared by all happy-path tests below)
+# ---------------------------------------------------------------------------
+
+
+def _install_signed_harness(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Fake nonce store + no-existing-identity so TOFU path returns 200.
+
+    Returns a dict with ``priv_b64``, ``pub_b64`` for the caller to use
+    when building bodies with ``_sign_enroll_body``.
+    """
+    state: dict[str, bool] = {}
+
+    def fake_issue(agent_id: str, ttl_s: int = 60) -> tuple[str, int]:
+        import secrets
+
+        nonce = secrets.token_urlsafe(16)
+        state[f"{agent_id}:{nonce}"] = True
+        return nonce, 0
+
+    def fake_consume(agent_id: str, nonce: str) -> bool:
+        return state.pop(f"{agent_id}:{nonce}", False)
+
+    monkeypatch.setattr(
+        "sos.services.registry.app.nonce_store.issue", fake_issue, raising=True
+    )
+    monkeypatch.setattr(
+        "sos.services.registry.app.nonce_store.consume", fake_consume, raising=True
+    )
+    monkeypatch.setattr(
+        "sos.services.registry.app.read_one",
+        lambda *_a, **_kw: None,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "sos.services.registry.app.write",
+        lambda *_a, **_kw: None,
+        raising=True,
+    )
+
+    async def _noop_emit(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "sos.services.registry.app._emit_first_seen", _noop_emit, raising=True
+    )
+
+    priv_b64, pub_b64 = generate_keypair()
+    return {"priv_b64": priv_b64, "pub_b64": pub_b64, "state": state}
+
+
+def _sign_enroll_body(
+    client: TestClient,
+    body: dict[str, Any],
+    priv_b64: str,
+    pub_b64: str,
+) -> dict[str, Any]:
+    """Fetch a challenge nonce and sign ``body`` in place. Returns the full body."""
+    agent_id = body["agent_id"]
+    ch = client.post("/mesh/challenge", json={"agent_id": agent_id})
+    assert ch.status_code == 200
+    nonce = ch.json()["nonce"]
+
+    payload_hash = canonical_payload_hash(
+        {
+            "agent_id": agent_id,
+            "name": body["name"],
+            "role": body["role"],
+            "skills": list(body.get("skills") or []),
+            "squads": list(body.get("squads") or []),
+            "public_key": pub_b64,
+        }
+    )
+    sig = sign(priv_b64, enroll_message(agent_id, nonce, payload_hash))
+    body["public_key"] = pub_b64
+    body["nonce"] = nonce
+    body["signature"] = sig
+    return body
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -159,8 +245,14 @@ def test_system_token_valid_body_returns_200(
     monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
     monkeypatch.setattr("sos.services.registry.app.write_card", fake_write_card, raising=True)
     monkeypatch.setattr("sos.services.registry.app.read_card", fake_read_card, raising=True)
+    harness = _install_signed_harness(monkeypatch)
 
-    body = _valid_body(heartbeat_url="https://example.com/hb")
+    body = _sign_enroll_body(
+        client,
+        _valid_body(heartbeat_url="https://example.com/hb"),
+        harness["priv_b64"],
+        harness["pub_b64"],
+    )
     resp = client.post(
         "/mesh/enroll",
         json=body,
@@ -211,9 +303,15 @@ def test_scoped_token_own_project_returns_200(
     )
     monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
     monkeypatch.setattr("sos.services.registry.app.write_card", fake_write_card, raising=True)
+    harness = _install_signed_harness(monkeypatch)
 
     # Scoped token; body.project matches token scope
-    body = _valid_body(project=scoped_project)
+    body = _sign_enroll_body(
+        client,
+        _valid_body(project=scoped_project),
+        harness["priv_b64"],
+        harness["pub_b64"],
+    )
     resp = client.post(
         "/mesh/enroll",
         json=body,
@@ -279,8 +377,14 @@ def test_invalid_name_returns_422(
         raising=True,
     )
     monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+    harness = _install_signed_harness(monkeypatch)
 
-    body = _valid_body(name="Bad Name", agent_id="agent:bad-name")
+    body = _sign_enroll_body(
+        client,
+        _valid_body(name="Bad Name", agent_id="agent:bad-name"),
+        harness["priv_b64"],
+        harness["pub_b64"],
+    )
     resp = client.post(
         "/mesh/enroll",
         json=body,
@@ -310,8 +414,14 @@ def test_invalid_role_returns_422(
         raising=True,
     )
     monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
+    harness = _install_signed_harness(monkeypatch)
 
-    body = _valid_body(role="wizard")
+    body = _sign_enroll_body(
+        client,
+        _valid_body(role="wizard"),
+        harness["priv_b64"],
+        harness["pub_b64"],
+    )
     resp = client.post(
         "/mesh/enroll",
         json=body,
@@ -349,8 +459,14 @@ def test_skills_and_squads_roundtrip(
     )
     monkeypatch.setattr("sos.services.registry.app.can_execute", _allow_gate, raising=True)
     monkeypatch.setattr("sos.services.registry.app.write_card", fake_write_card, raising=True)
+    harness = _install_signed_harness(monkeypatch)
 
-    body = _valid_body(skills=["x", "y"], squads=["growth-intel"])
+    body = _sign_enroll_body(
+        client,
+        _valid_body(skills=["x", "y"], squads=["growth-intel"]),
+        harness["priv_b64"],
+        harness["pub_b64"],
+    )
     resp = client.post(
         "/mesh/enroll",
         json=body,

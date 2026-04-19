@@ -28,6 +28,7 @@ nav a:hover{color:#F8FAFC}
 .badge-green{background:#064E3B;color:#34D399}
 .badge-red{background:#450A0A;color:#F87171}
 .badge-amber{background:#451A03;color:#FBBF24}
+.badge-blue{background:#1E3A8A;color:#93C5FD}
 """
 
 
