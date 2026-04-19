@@ -117,19 +117,39 @@ new stream entries with the same `message_id`).
 **Exit gate met:** 13/13 bus integration tests green against real Redis.
 Per-service unit suites green.
 
-### Phase 3 — Mesh enrollment (v0.9.2, ~4 days) — closes task #33
+### Phase 3 — Mesh enrollment (v0.9.2, ~4 days) — closes task #33 ✅ SHIPPED 2026-04-19
 
-**Gate:** Agents and squads self-register on boot. Dashboard lists them live.
+**Gate met:** Agents and squads self-register on boot. Dashboard lists them live at `/sos/mesh`.
+
+**Design chosen: Option B — extend `/agents/cards` path** on durability/trust/security/intelligence.
+AgentCard stays single source of truth (no third keyspace). Hardened bearer + project-scope
+reused. Plan: `docs/plans/2026-04-19-phase-3-mesh-enrollment.md`. Seven waves, seven
+revertable commits (W0 `9a16bdb1` → W7 `cd488f05`).
 
 **Steps:**
 
-- **3.1** Add `/mesh/enroll` to `sos/services/registry/app.py` — POST `{agent_id, squad_id?, skills[], heartbeat_url}`.
-- **3.2** Agents call `/mesh/enroll` in their startup sequence (first HTTP request on boot).
-- **3.3** Squads get addressable subjects: `squad:growth-intel.{project}` resolves via registry lookup at delivery time.
-- **3.4** Heartbeat-driven pruning: if registry hasn't seen a heartbeat in 5 minutes, mark stale; if 15 minutes, remove.
-- **3.5** `/sos/brain` dashboard page gains a "Mesh" tab showing live agents + squads + heartbeat age.
-- **3.6** Contract test: assert every agent under `sos/agents/*` calls `/mesh/enroll` in its bootloader.
-- **3.7** Ship v0.9.2. Close task #33.
+- **3.1** ✅ `POST /mesh/enroll` in `sos/services/registry/app.py` — W1 commit `e97cf0db`.
+  Accepts `{agent_id, name, role, skills[], squads[]?, heartbeat_url?, project?}`;
+  server-fills `tool`/`type`/timestamps; `write_card(ttl_seconds=900)`.
+- **3.2** ✅ Agents call `/mesh/enroll` in their startup sequence — W4 commit `3595fde5`.
+  `AgentJoinService.join()` Step 8.5 (after bus announce, before nursery bounties) calls
+  `AsyncRegistryClient.enroll_mesh()`. Failure non-blocking.
+- **3.3** ✅ Squad subjects addressable at delivery time — W2 commit `81eaf021`.
+  `GET /mesh/squad/{slug}` scans cards in scope and returns agents with slug in `squads[]`.
+  Path param validated against slug regex.
+- **3.4** ✅ Heartbeat-driven pruning — W3 commit `1989a3db`.
+  `HeartbeatPruner` scans every 60s; 5m → `stale=True` with decremented TTL;
+  15m → `redis.delete()`. Wired into registry startup/shutdown.
+- **3.5** ✅ Dashboard mesh tab — W5 commit `8dd4bffe`. `GET /sos/mesh` (HTML, admin-gated)
+  and `GET /sos/mesh/api` (JSON). Groups by squad; `unsquadded` bucket; 30s auto-refresh.
+- **3.6** ✅ Contract test — W6 commit `885efc10`.
+  `tests/contracts/test_mesh_enroll_in_bootloader.py` AST-scans `sos/agents/join.py` and
+  asserts `AgentJoinService.join` references `enroll_mesh` or `/mesh/enroll`.
+- **3.7** ✅ v0.9.2 shipped — W7 commit `cd488f05`, tag `v0.9.2`. Closes task #33.
+
+**Exit gate met:** 505 tests pass across contracts + registry + dashboard + registry client.
+Two fields added to AgentCard (`heartbeat_url`, `stale`) — both optional, both round-trip
+through Redis. No import-linter flare (dashboard→registry already whitelisted).
 
 ### Phase 4 — Mumega-edge as canonical API (v0.9.3, ~1 week)
 
