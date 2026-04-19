@@ -8,6 +8,7 @@ reflects the update. Also proves idempotency: consuming the same message
 
 Mirrors the fakeredis + tick pattern used by ``tests/brain/test_e2e_brain.py``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,13 +21,12 @@ import pytest
 
 try:
     import fakeredis.aioredis as fake_aioredis  # type: ignore[import-untyped]
+
     HAS_FAKEREDIS = True
 except ImportError:
     HAS_FAKEREDIS = False
 
-skipif_no_fakeredis = pytest.mark.skipif(
-    not HAS_FAKEREDIS, reason="fakeredis not installed"
-)
+skipif_no_fakeredis = pytest.mark.skipif(not HAS_FAKEREDIS, reason="fakeredis not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,6 @@ def test_task_completed_updates_conductance(
         )
         await r.xadd(_STREAM, fields)
 
-        await consumer._load_checkpoints()
         await consumer._tick()
         return calcifer._load_conductance()
 
@@ -147,7 +146,6 @@ def test_duplicate_message_does_not_double_increment(
         await r.xadd(_STREAM, fields)
         await r.xadd(_STREAM, fields)
 
-        await consumer._load_checkpoints()
         await consumer._tick()
         G_after_first = calcifer._load_conductance()
         seo_after_first = G_after_first.get("worker-b", {}).get("seo", 0.0)
@@ -162,8 +160,7 @@ def test_duplicate_message_does_not_double_increment(
     first, second = asyncio.run(_go())
     assert first > 0, "First delivery should have updated conductance"
     assert first == second, (
-        f"Duplicate delivery must not double-update conductance; "
-        f"first={first} second={second}"
+        f"Duplicate delivery must not double-update conductance; " f"first={first} second={second}"
     )
 
 
@@ -185,14 +182,13 @@ def test_zero_reward_skips_conductance_update(
             reward_mind=0.0,
         )
         await r.xadd(_STREAM, fields)
-        await consumer._load_checkpoints()
         await consumer._tick()
         return calcifer._load_conductance()
 
     G = asyncio.run(_go())
-    assert "worker-c" not in G or not G["worker-c"], (
-        "Zero-reward completion must not create a conductance entry"
-    )
+    assert (
+        "worker-c" not in G or not G["worker-c"]
+    ), "Zero-reward completion must not create a conductance entry"
 
 
 @skipif_no_fakeredis
@@ -229,11 +225,10 @@ def test_malformed_payload_does_not_crash(
                 reward_mind=5.0,
             ),
         )
-        await consumer._load_checkpoints()
         await consumer._tick()
         return calcifer._load_conductance()
 
     G = asyncio.run(_go())
-    assert G.get("worker-d", {}).get("video", 0) > 0, (
-        "Consumer must fail-open and still process the good message"
-    )
+    assert (
+        G.get("worker-d", {}).get("video", 0) > 0
+    ), "Consumer must fail-open and still process the good message"
