@@ -334,6 +334,61 @@ Ships tenant provisioning via the SaaS service.
 
 ---
 
+## [0.9.3] — 2026-04-19 — Phase 4 Mumega-edge canonical API
+
+Closes the Phase 4 mothership gate on the SOS-repo side (task #209, #205
+EPIC): `api.mumega.com` becomes the single ingress for every Inkwell
+instance — one Hono router, one auth middleware, one CORS allow-list.
+Per-instance `workers/inkwell-api/` forks are retired in favour of the
+shared edge.
+
+### What landed in this tag (SOS repo)
+
+- **4.1 / #259** Audit of every `mumega-edge/src/routes/` route — classified
+  as SOS-proxy, Inkwell-specific, or legacy-retire.
+- **4.2 / #260** SOS-proxy route groups under `/sos/bus/*`, `/sos/economy/*`,
+  `/sos/registry/*`, `/sos/objectives/*`, `/sos/mesh/*` with shared
+  `authMiddleware` (bearer → `TOKENS` KV → tenant/project scope header).
+- **4.3 / #261** Inkwell route groups under `/inkwell/content/*`,
+  `/inkwell/glass/*`, `/inkwell/shelf/*` sharing the same auth pipeline.
+- **4.6 / #262** `docs/architecture/mumega-edge.md` — the Worker is the
+  single ingress; per-instance Workers are an anti-pattern.
+- **W0 / #271** Inkwell base default: `workerUrl: 'https://api.mumega.com'`
+  at `inkwell.config.ts:160` (commit `4ef129e` in `Mumega-com/inkwell`).
+
+### Release mechanics
+
+`pyproject.toml` was already at `0.10.1` when Phase 7 shipped — `v0.9.3`
+is a retro-tag at the commit that closes Phase 4 on the SOS side, placed
+so the tag chronology remains monotone between `v0.9.2.1` and `v0.9.4`.
+No version-number rewrite; tag-from-commit only. Plan:
+`docs/plans/2026-04-19-phase-4-completion-sprint.md`.
+
+### Coordinated externally (GH issues, encapsulation rule)
+
+Three slices live in sibling repos and do **not** gate this tag:
+
+- **W1 fork audit** — `gh issue` on `Mumega-com/inkwell` asking its agent
+  for per-fork status (`workerUrl`, presence of `workers/inkwell-api/`,
+  Pages project, last deploy SHA).
+- **W2 per-instance cutover** — one issue per fork repo
+  (`mumega-internal-inkwell`, `shabrang-inkwell`, `digid-inkwell`) to
+  delete `workers/inkwell-api/` and inherit the shared default. Hadi
+  gates each redeploy; SOS Medic probes dashboard + session cookie
+  post-deploy and comments the result on the issue.
+- **W4 live deploy** — `wrangler deploy` on `mumega-edge` (Hadi-run).
+  Pre-flight: `TOKENS` KV sync, DNS + CF route confirmation, CORS
+  allow-list covering `digid.com`, `shabrang.ai`, `mumega.com`,
+  `*.pages.dev`. Medic runs a 10-min smoke post-cutover; rollback via
+  `wrangler rollback` on any regression.
+
+The full Phase 4 exit gate (task #209 → completed) closes when the
+`api.mumega.com` unified router is live and all three named forks pass
+the post-redeploy probe. This tag marks the SOS-repo deliverable;
+#209 stays in-progress until W2 + W4 land.
+
+---
+
 ## [0.9.2.1] — 2026-04-19 — Signed mesh enrollment + TOFU + per-service tokens
 
 ### Thesis
