@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
+from sos.contracts.done_check import DoneCheck
+
 
 # ── Squad ─────────────────────────────────────────────────────────────────────
 
@@ -129,6 +131,7 @@ class SquadTask:
     token_budget: int = 0
     bounty: dict[str, Any] = field(default_factory=dict)
     external_ref: Optional[str] = None  # ClickUp/Notion/Linear ID
+    done_when: list[DoneCheck] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
     completed_at: Optional[str] = None

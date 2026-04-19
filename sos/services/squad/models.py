@@ -74,6 +74,7 @@ class SquadTask(Base):
     token_budget = Column(Integer, nullable=False)
     bounty_json = Column(Text, nullable=False)
     external_ref = Column(Text)
+    done_when_json = Column(Text, nullable=False, server_default=text("'[]'"))
     created_at = Column(Text, nullable=False)
     updated_at = Column(Text, nullable=False)
     completed_at = Column(Text)

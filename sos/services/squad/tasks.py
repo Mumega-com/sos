@@ -8,6 +8,7 @@ import uuid as _uuid
 from dataclasses import asdict
 from typing import Any
 
+from sos.contracts.done_check import DoneCheck, all_done
 from sos.contracts.messages import TaskCompletedMessage, TaskCompletedPayload
 from sos.contracts.squad import RoutingDecision, SquadTask, TaskClaim, TaskPriority, TaskStatus
 from sos.kernel import Response, ResponseStatus
@@ -16,6 +17,14 @@ from sos.services.squad.service import DEFAULT_TENANT_ID, SquadBus, SquadDB, now
 
 
 log = get_logger("squad_tasks")
+
+
+class NotAllDoneError(ValueError):
+    """Raised when a SquadTask's ``done_when`` gate is not satisfied on /complete.
+
+    Distinct from ValueError so the app layer can map it to HTTP 400
+    (client mis-submitted) rather than 409 (concurrent-state conflict).
+    """
 
 
 # --- Bus envelope helpers -----------------------------------------------------
@@ -137,7 +146,50 @@ def _dumps(value: Any) -> str:
     return json.dumps(value)
 
 
+def _task_to_bus_payload(task: SquadTask) -> dict[str, Any]:
+    """asdict(task) with ``done_when`` rendered as plain dicts.
+
+    Plain ``asdict`` on SquadTask keeps pydantic DoneCheck instances as-is,
+    which breaks the downstream ``json.dumps`` inside ``SquadBus.emit``.
+    Every bus emit that wants to round-trip a full task payload must go
+    through this helper.
+    """
+    payload = asdict(task)
+    payload["done_when"] = [
+        item.model_dump() if isinstance(item, DoneCheck) else dict(item)
+        for item in (task.done_when or [])
+    ]
+    return payload
+
+
+def _rehydrate_done_when(raw: Any) -> list[DoneCheck]:
+    """Coerce the stored JSON list into DoneCheck instances.
+
+    Rows written before migration 0002 parse as ``[]`` (DB default).
+    Malformed entries are dropped rather than raising — an operator
+    fixing a bad row shouldn't lock out every /complete attempt.
+    """
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else []
+    out: list[DoneCheck] = []
+    for item in items:
+        if isinstance(item, DoneCheck):
+            out.append(item)
+            continue
+        if isinstance(item, dict):
+            try:
+                out.append(DoneCheck(**item))
+            except Exception as exc:  # pydantic.ValidationError et al
+                log.warn("done_when rehydrate skipped malformed entry", error=str(exc))
+    return out
+
+
 def row_to_task(row: sqlite3.Row) -> SquadTask:
+    # ``done_when_json`` column was added in Alembic 0002. Access via dict-
+    # style lookup guarded by the row's key set so pre-migration test rows
+    # (if any survive) don't KeyError here.
+    done_when_raw = row["done_when_json"] if "done_when_json" in row.keys() else None
     return SquadTask(
         id=row["id"],
         squad_id=row["squad_id"],
@@ -156,6 +208,7 @@ def row_to_task(row: sqlite3.Row) -> SquadTask:
         token_budget=row["token_budget"],
         bounty=_loads(row["bounty_json"], {}),
         external_ref=row["external_ref"],
+        done_when=_rehydrate_done_when(_loads(done_when_raw, [])),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         completed_at=row["completed_at"],
@@ -304,14 +357,18 @@ class SquadTaskService:
             task.inputs["fuel_grade"] = budget["fuel_grade"]
             task.inputs["estimated_cost_cents"] = budget["estimated_cost_cents"]
             task.inputs["model"] = budget["model"]
+        done_when_serialized = [
+            item.model_dump() if isinstance(item, DoneCheck) else dict(item)
+            for item in (task.done_when or [])
+        ]
         with self.db.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO squad_tasks (
                     id, tenant_id, squad_id, title, description, status, priority, assignee, skill_id, project,
                     labels_json, blocked_by_json, blocks_json, inputs_json, result_json, token_budget,
-                    bounty_json, external_ref, created_at, updated_at, completed_at, claimed_at, attempt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bounty_json, external_ref, done_when_json, created_at, updated_at, completed_at, claimed_at, attempt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -332,6 +389,7 @@ class SquadTaskService:
                     task.token_budget,
                     _dumps(task.bounty),
                     task.external_ref,
+                    _dumps(done_when_serialized),
                     task.created_at,
                     task.updated_at,
                     task.completed_at,
@@ -339,8 +397,9 @@ class SquadTaskService:
                     task.attempt,
                 ),
             )
-        self.bus.emit("task.created", task.squad_id, actor, asdict(task))
-        return Response(message_id=task.id, status=ResponseStatus.SUCCESS, data={"task": asdict(task)})
+        bus_payload = _task_to_bus_payload(task)
+        self.bus.emit("task.created", task.squad_id, actor, bus_payload)
+        return Response(message_id=task.id, status=ResponseStatus.SUCCESS, data={"task": bus_payload})
 
     def get(self, task_id: str, tenant_id: str | None = DEFAULT_TENANT_ID) -> SquadTask | None:
         with self.db.connect() as conn:
@@ -467,6 +526,18 @@ class SquadTaskService:
         task = self.get(task_id, tenant_id=tenant_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")
+        # Structured done_when gate — T1.3 Part 2 (task #270).
+        # Empty list is vacuously True, preserving pre-migration behaviour.
+        # Refuse BEFORE any state mutation or bus emission.
+        if not all_done(task.done_when):
+            pending = [
+                (c.id if isinstance(c, DoneCheck) else c.get("id"))
+                for c in task.done_when
+                if not (c.done if isinstance(c, DoneCheck) else bool(c.get("done")))
+            ]
+            raise NotAllDoneError(
+                f"done_when not satisfied for task {task.id}: pending={pending}"
+            )
         timestamp = now_iso()
         task.result = result
         task.status = TaskStatus.DONE

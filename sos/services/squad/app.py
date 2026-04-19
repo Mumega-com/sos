@@ -34,6 +34,7 @@ from sos.services.squad.auth import AuthContext, create_api_key as _create_api_k
 from sos.services.squad.auth import _lookup_token as _squad_lookup_token
 from sos.services.squad.service import SquadDB
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
+from sos.services.squad.tasks import NotAllDoneError
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 
@@ -539,6 +540,12 @@ async def complete_task(
             task = tasks.complete(task_id, payload.result, tenant_id=auth.tenant_scope)
         except KeyError:
             raise HTTPException(status_code=404, detail="task_not_found")
+        except NotAllDoneError as exc:
+            # done_when gate refused — client needs to tick the remaining
+            # checks before retrying. 400 (bad request) not 409 (state
+            # conflict): the task is in a valid state; the submission is
+            # the thing that's short.
+            raise HTTPException(status_code=400, detail=str(exc))
         return _json(task)
 
     body = {"task_id": task_id, "payload": payload.model_dump()}
