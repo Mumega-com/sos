@@ -5,13 +5,14 @@ Runs on port 8090. Auth via sos.services.auth — single source of truth.
 
 Entry point: python3 -m sos.services.dashboard  (see __main__.py)
 """
+
 from __future__ import annotations
 
 import logging
 
 from fastapi import FastAPI
 
-from .routes import brain, health, login, customer, sos_operator, marketplace, traces
+from .routes import brain, bus, health, login, customer, sos_operator, marketplace, traces
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 logger = logging.getLogger("dashboard")
@@ -31,4 +32,5 @@ app.include_router(sos_operator.router)
 app.include_router(marketplace.router)
 app.include_router(brain.router)
 app.include_router(traces.router)
+app.include_router(bus.router)
 app.include_router(health.router)

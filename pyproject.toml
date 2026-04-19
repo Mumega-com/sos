@@ -267,6 +267,11 @@ ignore_imports = [
   # sos.services.registry.read_all_cards because RegistryClient has no
   # list_cards helper yet. Removed once the client grows it (tracked).
   "sos.services.dashboard.operator_api -> sos.services.registry",
+  # v0.9.1 W4 — dashboard DLQ read route imports the shared DLQ schema
+  # + read helpers from sos.services.bus.dlq so writer (retry worker)
+  # and reader (dashboard) never drift on field names. The bus-shared-
+  # infra theme above covers this pattern.
+  "sos.services.dashboard.routes.bus -> sos.services.bus.dlq",
 ]
 
 # R7 — "port contracts are consumed, not re-implemented" — lands in

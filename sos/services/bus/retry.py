@@ -17,10 +17,10 @@ consumer-side changes needed for W3. (W5 will migrate the journeys
 consumer to XACK-based at-least-once; this worker is what makes that
 safe.)
 
-DLQ handling in this wave is minimal: write an entry to
-``sos:stream:dlq:{original_stream}`` with ``original_id``, ``group``,
-``retry_count``, and the raw payload. W4 extends the schema and adds
-the dashboard read route.
+DLQ entries land on ``sos:stream:dlq:{original_stream}`` using the
+shared schema in :mod:`sos.services.bus.dlq` — same field names the
+dashboard read route and any ops scripts rely on, so writer and
+reader can never drift.
 
 Ordering note: we ``XADD`` before ``XACK`` on retry. A duplicate is
 recoverable (idempotent consumer); a lost message isn't.
@@ -29,9 +29,10 @@ recoverable (idempotent consumer); a lost message isn't.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING, Mapping, Optional
+
+from sos.services.bus.dlq import build_dlq_fields, dlq_stream_for
 
 if TYPE_CHECKING:
     from sos.services.bus.redis_bus import RedisBusService
@@ -183,18 +184,17 @@ class RetryWorker:
         )
 
     async def _to_dlq(self, stream: str, group: str, message_id: str, deliveries: int) -> None:
-        """Write DLQ entry + XACK. Schema finalized in W4."""
+        """Write DLQ entry + XACK. Schema owned by :mod:`sos.services.bus.dlq`."""
         raw = await self.bus.client.xrange(stream, min=message_id, max=message_id, count=1)
         payload = dict(raw[0][1]) if raw else {}
-        dlq_stream = f"sos:stream:dlq:{stream}"
-        dlq_entry = {
-            "original_stream": stream,
-            "original_id": message_id,
-            "group": group,
-            "retry_count": str(deliveries),
-            "payload": json.dumps(payload),
-        }
-        await self.bus.client.xadd(dlq_stream, dlq_entry, maxlen=10000)
+        dlq_entry = build_dlq_fields(
+            original_stream=stream,
+            original_id=message_id,
+            group=group,
+            retry_count=deliveries,
+            payload=payload,
+        )
+        await self.bus.client.xadd(dlq_stream_for(stream), dlq_entry, maxlen=10000)
         await self.bus.client.xack(stream, group, message_id)
         logger.warning(
             "DLQ stream=%s group=%s id=%s deliveries=%d",
