@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "description": "Resolved caller identity. Returned by AuthPort.",
+  "properties": {
+    "email": {
+      "title": "Email",
+      "type": "string"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "enum": [
+            "owner",
+            "admin",
+            "manager",
+            "member",
+            "viewer"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Role"
+    },
+    "tenant_slug": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Tenant the caller belongs to \u2014 None for platform-level users.",
+      "title": "Tenant Slug"
+    }
+  },
+  "required": [
+    "email"
+  ],
+  "title": "AuthUser",
+  "type": "object"
+}

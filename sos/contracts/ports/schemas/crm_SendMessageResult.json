@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "delivered": {
+      "title": "Delivered",
+      "type": "boolean"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    }
+  },
+  "required": [
+    "message_id",
+    "delivered"
+  ],
+  "title": "SendMessageResult",
+  "type": "object"
+}

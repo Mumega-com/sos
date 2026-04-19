@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "Current balance snapshot for a tenant.",
+  "properties": {
+    "balance": {
+      "title": "Balance",
+      "type": "integer"
+    },
+    "currency": {
+      "default": "USD",
+      "title": "Currency",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "balance"
+  ],
+  "title": "Balance",
+  "type": "object"
+}

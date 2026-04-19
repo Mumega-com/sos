@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # sos pair-agent — client for the SaaS service's /sos/pairing protocol.
 #
-# Lives alongside the service it speaks to (sos/cli/ — same layer as
-# tenant-setup.sh). Not an ops one-off.
+# Lives alongside the service it speaks to (sos/cli/ — user-facing
+# pairing flow). Ops provisioning lives in scripts/tenant-setup.sh.
 #
 # Usage:
 #   sos/cli/pair-agent.sh <agent-name> --skills a,b,c [--role agent] \

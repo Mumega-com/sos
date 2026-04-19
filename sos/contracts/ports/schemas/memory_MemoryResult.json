@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "description": "One recall/search hit. Mirrors Inkwell's MemoryResult.",
+  "properties": {
+    "content": {
+      "title": "Content",
+      "type": "string"
+    },
+    "created_at": {
+      "description": "ISO-8601 timestamp",
+      "title": "Created At",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Metadata"
+    },
+    "score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Similarity / relevance score when available.",
+      "title": "Score"
+    }
+  },
+  "required": [
+    "id",
+    "content",
+    "created_at"
+  ],
+  "title": "MemoryResult",
+  "type": "object"
+}

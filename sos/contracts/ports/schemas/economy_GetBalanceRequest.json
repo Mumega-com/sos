@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": {
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id"
+  ],
+  "title": "GetBalanceRequest",
+  "type": "object"
+}

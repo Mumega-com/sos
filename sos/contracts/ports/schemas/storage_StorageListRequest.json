@@ -1,0 +1,19 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "prefix": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prefix"
+    }
+  },
+  "title": "StorageListRequest",
+  "type": "object"
+}

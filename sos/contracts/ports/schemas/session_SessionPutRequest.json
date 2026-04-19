@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "minLength": 1,
+      "title": "Key",
+      "type": "string"
+    },
+    "ttl_seconds": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Expire after N seconds \u2014 None = no TTL.",
+      "title": "Ttl Seconds"
+    },
+    "value": {
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "value"
+  ],
+  "title": "SessionPutRequest",
+  "type": "object"
+}

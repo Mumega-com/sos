@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "params": {
+      "anyOf": [
+        {
+          "items": {},
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Params"
+    },
+    "sql": {
+      "minLength": 1,
+      "title": "Sql",
+      "type": "string"
+    }
+  },
+  "required": [
+    "sql"
+  ],
+  "title": "BatchStatement",
+  "type": "object"
+}

@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Project scope \u2014 required in v0.9.1.",
+      "title": "Project"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "BroadcastRequest",
+  "type": "object"
+}

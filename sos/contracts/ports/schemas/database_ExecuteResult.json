@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "What we report after a write \u2014 `changes` is rows-affected.\nMirrors Inkwell's `{ changes: number }`.",
+  "properties": {
+    "changes": {
+      "default": 0,
+      "title": "Changes",
+      "type": "integer"
+    },
+    "last_insert_id": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Insert Id"
+    }
+  },
+  "title": "ExecuteResult",
+  "type": "object"
+}

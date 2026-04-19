@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "A single INSERT / UPDATE / DELETE.",
+  "properties": {
+    "params": {
+      "anyOf": [
+        {
+          "items": {},
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Params"
+    },
+    "sql": {
+      "minLength": 1,
+      "title": "Sql",
+      "type": "string"
+    }
+  },
+  "required": [
+    "sql"
+  ],
+  "title": "ExecuteRequest",
+  "type": "object"
+}

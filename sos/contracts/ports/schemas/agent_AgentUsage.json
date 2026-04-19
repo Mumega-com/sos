@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "One usage row \u2014 mirrors Inkwell's AgentUsage.",
+  "properties": {
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "cost_cents": {
+      "default": 0,
+      "title": "Cost Cents",
+      "type": "integer"
+    },
+    "date": {
+      "description": "YYYY-MM-DD bucket.",
+      "title": "Date",
+      "type": "string"
+    },
+    "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "default": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "session_hours": {
+      "default": 0.0,
+      "title": "Session Hours",
+      "type": "number"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "agent_id",
+    "date"
+  ],
+  "title": "AgentUsage",
+  "type": "object"
+}

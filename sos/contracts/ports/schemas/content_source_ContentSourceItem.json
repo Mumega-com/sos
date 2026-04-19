@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "description": "One piece of pulled content \u2014 directly mirrors Inkwell's shape.",
+  "properties": {
+    "content": {
+      "description": "Raw markdown or MDX.",
+      "title": "Content",
+      "type": "string"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Source-specific metadata (file path, notion page id, ...).",
+      "title": "Metadata"
+    },
+    "slug": {
+      "description": "URL-safe identifier derived from the source.",
+      "title": "Slug",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "updated_at": {
+      "description": "ISO-8601 last-modified in the source.",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "slug",
+    "title",
+    "content",
+    "updated_at"
+  ],
+  "title": "ContentSourceItem",
+  "type": "object"
+}

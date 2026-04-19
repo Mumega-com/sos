@@ -2,6 +2,72 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.9.0] — 2026-04-19 — Shared port registry + microkernel hardening
+
+### Thesis
+Phase 1 of the Mumega Mothership plan: the 14 canonical SOS ports now
+have a single source of truth — Pydantic contracts in
+`sos.contracts.ports.*` — and both Python (SOS) and TypeScript
+(Inkwell) consume them from the same schemas. This closes the drift
+surface between sovereign runtime and product surface, and sets the
+microkernel boundary: product-specific code (Kay Hermes, ToRivers
+tenant, Mumega.com, agency lead-gen) lives outside `sos/`.
+
+### Added — port registry (Phase 1)
+- `sos/contracts/ports/` — 14 canonical ports: agent, auth, bus,
+  content, content_source, crm, database, economy, graph, media,
+  memory, search, session, storage. Each port is a Pydantic v2 module
+  exposing request/response models + a `Protocol` describing the
+  async method surface.
+- `sos/contracts/ports/media.py` — 14th port (12 models + 9-method
+  MediaPort Protocol): upload, get, describe, transcribe, transform,
+  search, list, delete, generate_image. Tenant binding semantics
+  documented; `generate_image` uses snake_case on the Python side and
+  is rendered as `generateImage` in TS.
+- `scripts/export_port_schemas.py` — exports each Pydantic model as a
+  JSON Schema file under `sos/contracts/ports/schemas/`. `--check`
+  mode exits non-zero if the checked-in schemas drift from the source.
+- `scripts/gen_ts_types.sh` — consumes the JSON Schemas via
+  `json-schema-to-typescript` to produce a TS barrel for Inkwell.
+- `Makefile` — `make contracts` / `make contracts-check` wrappers so
+  CI and humans hit the same commands.
+- `tests/contracts/test_port_schemas_export.py` — snapshot test that
+  regenerating the schemas produces no diff (CI guard).
+
+### Added — microkernel hardening (this session)
+- `.gitignore` grew: per-machine agent-CLI state (`.cursor/`,
+  `.claude/`, `.opencode.json`, …), `sos/bus/tokens.json.backup*`,
+  generated graph artifacts (`docs/task-graph.*`). Stops these from
+  drifting into commits.
+- `scripts/tenant-setup.sh` — moved out of `sos/cli/` (where it
+  masqueraded as user-facing pairing) into top-level `scripts/`
+  (where ops-provisioning belongs). `sos/cli/pair-agent.sh` comment
+  updated; `sos.services.billing.provision.TENANT_SETUP_SCRIPT` path
+  fixed to match.
+- `.github/workflows/ci.yml` — dropped dead imports (outreach,
+  langgraph, crewai adapters no longer exist) and fixed a pre-existing
+  `SOSBaseAdapter` typo (the real class is `AgentAdapter`). CI smoke
+  is now green against the microkernel.
+- pyproject.toml — R7 "ports are consumed, not re-implemented"
+  contract placeholder added with a plan pointer; lands live in
+  v0.9.1 (Phase 2).
+- Product/tenant code extracted to `/tmp/sos-extracts/` for later
+  porting into its proper repos: `agents/social.py` → mumega.com,
+  `agents/dandan/` → agency, `services/content/daily_blog.py` →
+  mumega-marketing, `services/outreach/` → outreach-engine,
+  `skills/video-pipeline/` → TROP seed. Dead-code drops:
+  `adapters/crewai`, `adapters/langgraph`, `adapters/discord/` (dir
+  was shadowing the tracked `discord.py`), `kernel/examples/`,
+  `agents/codex-mac-setup.md`.
+
+### Docs
+- `docs/plans/2026-04-19-mumega-mothership.md` — the plan that scopes
+  Phases 1 through 8 (v0.9.0 → v1.0.0).
+
+### Verify
+- `pytest tests/contracts/` → 457 passed.
+- `lint-imports` → 4/4 KEPT (R1, R2, R5, R6). R7 pending Phase 2.
+
 ## [0.8.2] — 2026-04-19 — Extract TROP from SOS
 
 ### Thesis

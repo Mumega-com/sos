@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "GraphEdge": {
+      "additionalProperties": false,
+      "description": "Directly mirrors Inkwell's GraphEdge.",
+      "properties": {
+        "source": {
+          "description": "Source node slug.",
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target node slug.",
+          "title": "Target",
+          "type": "string"
+        },
+        "tenant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tenant"
+        },
+        "type": {
+          "enum": [
+            "wikilink",
+            "tag",
+            "series",
+            "backlink",
+            "cross-tenant"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "type"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    },
+    "GraphNode": {
+      "additionalProperties": false,
+      "description": "Directly mirrors Inkwell's GraphNode.",
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Author"
+        },
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Date"
+        },
+        "slug": {
+          "minLength": 1,
+          "title": "Slug",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "tenant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which tenant owns this node. None = platform-level.",
+          "title": "Tenant"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "description": "'blog' | 'topic' | 'concept' | 'lab' | ...",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "visibility": {
+          "default": "private",
+          "enum": [
+            "public",
+            "private"
+          ],
+          "title": "Visibility",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "title",
+        "type"
+      ],
+      "title": "GraphNode",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Bundle of nodes + edges returned from neighbor queries.",
+  "properties": {
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      },
+      "title": "Edges",
+      "type": "array"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      },
+      "title": "Nodes",
+      "type": "array"
+    }
+  },
+  "title": "GraphData",
+  "type": "object"
+}

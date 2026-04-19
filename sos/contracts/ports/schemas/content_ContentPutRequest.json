@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "html": {
+      "title": "Html",
+      "type": "string"
+    },
+    "path": {
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "ttl_seconds": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "None = cache indefinitely.",
+      "title": "Ttl Seconds"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "path",
+    "html"
+  ],
+  "title": "ContentPutRequest",
+  "type": "object"
+}

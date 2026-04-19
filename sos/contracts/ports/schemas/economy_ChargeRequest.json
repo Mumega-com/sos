@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "exclusiveMinimum": 0,
+      "title": "Amount",
+      "type": "integer"
+    },
+    "reason": {
+      "maxLength": 280,
+      "title": "Reason",
+      "type": "string"
+    },
+    "tenant_id": {
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "amount",
+    "reason"
+  ],
+  "title": "ChargeRequest",
+  "type": "object"
+}

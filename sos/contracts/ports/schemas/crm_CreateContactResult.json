@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "description": "Mirrors Inkwell's `createContact \u2192 string` \u2014 the new CRM contact ID.",
+  "properties": {
+    "contact_id": {
+      "title": "Contact Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "contact_id"
+  ],
+  "title": "CreateContactResult",
+  "type": "object"
+}

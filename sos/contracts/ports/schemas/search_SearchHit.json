@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "One ranked result.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Metadata"
+    },
+    "score": {
+      "minimum": 0.0,
+      "title": "Score",
+      "type": "number"
+    }
+  },
+  "required": [
+    "id",
+    "score"
+  ],
+  "title": "SearchHit",
+  "type": "object"
+}

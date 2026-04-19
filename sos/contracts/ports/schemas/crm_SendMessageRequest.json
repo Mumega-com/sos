@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "MessageContent": {
+      "additionalProperties": false,
+      "description": "Outbound message payload.",
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "channel": {
+          "description": "'email' | 'sms' | 'whatsapp' | 'telegram' | adapter-specific.",
+          "title": "Channel",
+          "type": "string"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "channel",
+        "body"
+      ],
+      "title": "MessageContent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contact_id": {
+      "title": "Contact Id",
+      "type": "string"
+    },
+    "message": {
+      "$ref": "#/$defs/MessageContent"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "contact_id",
+    "message"
+  ],
+  "title": "SendMessageRequest",
+  "type": "object"
+}

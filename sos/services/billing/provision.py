@@ -18,7 +18,7 @@ import httpx
 
 log = logging.getLogger("sos.billing.provision")
 
-TENANT_SETUP_SCRIPT = Path.home() / "SOS" / "sos" / "cli" / "tenant-setup.sh"
+TENANT_SETUP_SCRIPT = Path.home() / "SOS" / "scripts" / "tenant-setup.sh"
 
 # Cloudflare minter config (from env)
 CF_MINTER_TOKEN = os.environ.get("CF_MINTER_TOKEN", "")

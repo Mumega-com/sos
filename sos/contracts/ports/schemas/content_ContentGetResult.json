@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "description": "Rendered HTML + cache metadata.",
+  "properties": {
+    "cached_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ISO-8601 when the entry was written.",
+      "title": "Cached At"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ISO-8601 when the entry expires.",
+      "title": "Expires At"
+    },
+    "html": {
+      "title": "Html",
+      "type": "string"
+    }
+  },
+  "required": [
+    "html"
+  ],
+  "title": "ContentGetResult",
+  "type": "object"
+}

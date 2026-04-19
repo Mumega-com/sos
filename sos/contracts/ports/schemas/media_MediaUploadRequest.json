@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "contentType": {
+      "title": "Contenttype",
+      "type": "string"
+    },
+    "file": {
+      "description": "Raw file bytes \u2014 adapter pushes to R2",
+      "format": "binary",
+      "title": "File",
+      "type": "string"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "tenant": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant"
+    }
+  },
+  "required": [
+    "file",
+    "filename",
+    "contentType"
+  ],
+  "title": "MediaUploadRequest",
+  "type": "object"
+}

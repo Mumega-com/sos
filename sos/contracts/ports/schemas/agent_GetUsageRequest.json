@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "window": {
+      "default": "today",
+      "enum": [
+        "today",
+        "month",
+        "all"
+      ],
+      "title": "Window",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "agent_id"
+  ],
+  "title": "GetUsageRequest",
+  "type": "object"
+}

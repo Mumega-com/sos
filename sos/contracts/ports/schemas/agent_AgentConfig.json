@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "McpServerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "McpServerRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Managed-agent configuration \u2014 mirrors Inkwell's AgentConfig.",
+  "properties": {
+    "agent_id": {
+      "description": "Tenant-scoped agent identifier (slug).",
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "anthropic_agent_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Provider-side id once provisioned.",
+      "title": "Anthropic Agent Id"
+    },
+    "budget_per_day": {
+      "description": "Max daily spend in cents.",
+      "minimum": 0,
+      "title": "Budget Per Day",
+      "type": "integer"
+    },
+    "budget_per_month": {
+      "description": "Max monthly spend in cents.",
+      "minimum": 0,
+      "title": "Budget Per Month",
+      "type": "integer"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "mcp_servers": {
+      "items": {
+        "$ref": "#/$defs/McpServerRef"
+      },
+      "title": "Mcp Servers",
+      "type": "array"
+    },
+    "model": {
+      "enum": [
+        "haiku",
+        "sonnet",
+        "opus"
+      ],
+      "title": "Model",
+      "type": "string"
+    },
+    "status": {
+      "default": "provisioning",
+      "enum": [
+        "active",
+        "paused",
+        "provisioning",
+        "error"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "system_prompt": {
+      "title": "System Prompt",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "tools": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "agent_id",
+    "model",
+    "system_prompt",
+    "budget_per_day",
+    "budget_per_month",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "AgentConfig",
+  "type": "object"
+}

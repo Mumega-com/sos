@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "After ingest, resolve wikilinks to public nodes in OTHER tenants and\nmaterialize cross-tenant edges. Mirrors Inkwell's resolveCrossTenantEdges.",
+  "properties": {
+    "source_slug": {
+      "description": "Node whose wikilinks we're resolving.",
+      "title": "Source Slug",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Owning tenant of the source node.",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "wikilinks": {
+      "description": "Raw wikilink targets extracted from the source content.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Wikilinks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "source_slug",
+    "wikilinks"
+  ],
+  "title": "ResolveCrossTenantRequest",
+  "type": "object"
+}

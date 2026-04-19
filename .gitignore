@@ -22,9 +22,16 @@ build/
 *.log
 logs/
 
-# IDEs
+# IDEs / agent CLIs (per-machine state, never commit)
 .vscode/
 .idea/
+.cursor/
+.cursorrules
+.windsurfrules
+.claude/
+.mcp.json
+.opencode.json
+.mkt-lead-claude.md
 *.swp
 *.swo
 
@@ -64,8 +71,13 @@ souls/
 
 # Secrets & local config
 sos/bus/tokens.json
+sos/bus/tokens.json.backup
+sos/bus/tokens.json.backup-*
 workers/*/wrangler.toml
 .mumega/
 # Added by code-review-graph
 .code-review-graph/
-sos/bus/tokens.json
+
+# Graph/task artifacts (regenerated from code-review-graph MCP)
+docs/task-graph.json
+docs/task-graph.mermaid

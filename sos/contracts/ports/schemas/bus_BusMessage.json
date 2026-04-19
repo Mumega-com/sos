@@ -1,0 +1,66 @@
+{
+  "additionalProperties": false,
+  "description": "One message as it travels through the inter-agent bus.\n\nMirrors Inkwell's BusMessage. The richer typed SOS bus envelopes live in\nsos.contracts.messages (AnnounceMessage, SendMessage, TaskCreatedMessage,\n...). This is the port-level shape plugins and external agents see.",
+  "properties": {
+    "from": {
+      "description": "Sender agent slug",
+      "title": "From",
+      "type": "string"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional message-type hint",
+      "title": "Kind"
+    },
+    "project": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Project scope \u2014 required in v0.9.1 once bus scoping ships.",
+      "title": "Project"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Recipient \u2014 None for broadcasts",
+      "title": "To"
+    },
+    "ts": {
+      "description": "ISO-8601 timestamp",
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "text",
+    "ts"
+  ],
+  "title": "BusMessage",
+  "type": "object"
+}

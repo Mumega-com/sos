@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "description": "Returned from remember() \u2014 the stored engram's ID.",
+  "properties": {
+    "memory_id": {
+      "title": "Memory Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "memory_id"
+  ],
+  "title": "RememberResult",
+  "type": "object"
+}

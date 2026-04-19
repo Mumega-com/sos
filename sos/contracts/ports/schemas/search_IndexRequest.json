@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "SearchDoc": {
+      "additionalProperties": false,
+      "description": "Input document for indexing.",
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metadata"
+        }
+      },
+      "required": [
+        "id",
+        "content"
+      ],
+      "title": "SearchDoc",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "doc": {
+      "$ref": "#/$defs/SearchDoc"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "doc"
+  ],
+  "title": "IndexRequest",
+  "type": "object"
+}

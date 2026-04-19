@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "MediaChapter": {
+      "additionalProperties": false,
+      "description": "Auto-generated chapter marker inside a video/audio transcript.",
+      "properties": {
+        "time": {
+          "description": "Seconds from start of asset",
+          "title": "Time",
+          "type": "number"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "title"
+      ],
+      "title": "MediaChapter",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Transcription + chapter output for a video/audio asset.",
+  "properties": {
+    "chapters": {
+      "items": {
+        "$ref": "#/$defs/MediaChapter"
+      },
+      "title": "Chapters",
+      "type": "array"
+    },
+    "transcript": {
+      "title": "Transcript",
+      "type": "string"
+    }
+  },
+  "required": [
+    "transcript",
+    "chapters"
+  ],
+  "title": "MediaTranscribeResult",
+  "type": "object"
+}
