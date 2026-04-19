@@ -84,7 +84,9 @@ from sos.contracts.ports.auth import (
     Role,
 )
 from sos.contracts.ports.bus import (
+    AckStatus,
     BroadcastRequest,
+    BusAck,
     BusMessage,
     BusPort,
     BusSubscriber,
@@ -240,6 +242,8 @@ __all__ = [
     "SendRequest",
     "BroadcastRequest",
     "InboxRequest",
+    "BusAck",
+    "AckStatus",
     "UnsubscribeHandle",
     "BusSubscriber",
     # --- economy.py ---

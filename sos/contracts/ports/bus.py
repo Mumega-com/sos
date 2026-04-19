@@ -24,7 +24,7 @@ context and stamps it on every outgoing envelope.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
+from typing import Awaitable, Callable, Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,6 +78,34 @@ class InboxRequest(BaseModel):
     limit: Optional[int] = Field(default=None, ge=1, le=1000)
 
 
+AckStatus = Literal["ok", "nack", "dlq"]
+
+
+class BusAck(BaseModel):
+    """Result of acknowledging a consumed bus message.
+
+    Ack is the verb the consumer uses to tell the bus "I've finished
+    with this message, release it from the pending-entries list". We
+    surface three status values because the semantics diverge:
+
+    * ``ok`` — normal completion. XACK removes the entry from PEL.
+    * ``nack`` — soft failure. XACK still fires (otherwise the message
+      stays pending forever and blocks retry), but the consumer signals
+      that the message should be re-queued for another attempt. Retry
+      policy is the delivery layer's business (see W3); this field only
+      records intent.
+    * ``dlq`` — terminal failure. Message has exceeded retry budget and
+      is being routed to the dead-letter stream for audit. Consumers
+      rarely emit this directly — the retry worker does (see W4).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    message_id: str = Field(description="Stream entry ID returned by XADD (e.g. '1712345678-0').")
+    acked_at: str = Field(description="ISO-8601 timestamp when the ack was issued.")
+    status: AckStatus = Field(description="Disposition: ok | nack | dlq.")
+
+
 # Subscriber callback signature — receives one BusMessage at a time.
 BusSubscriber = Callable[[BusMessage], Awaitable[None]]
 
@@ -112,12 +140,26 @@ class BusPort(Protocol):
         """Recent messages addressed to the caller (or all for admins)."""
         ...
 
+    async def ack(self, message_id: str, status: AckStatus = "ok") -> BusAck:
+        """Acknowledge a consumed message by its stream ID.
+
+        The adapter is already scoped to a tenant/project at construction
+        time (tenant-ambient port) and knows which consumer group its
+        subscribe loop joined, so only ``message_id`` + disposition
+        cross the port. Implementations MUST XACK the underlying stream
+        for ``ok`` and ``dlq``; ``nack`` also XACKs but signals the
+        delivery-layer retry worker to re-enqueue.
+        """
+        ...
+
 
 __all__ = [
     "BusMessage",
     "SendRequest",
     "BroadcastRequest",
     "InboxRequest",
+    "BusAck",
+    "AckStatus",
     "UnsubscribeHandle",
     "BusSubscriber",
     "BusPort",
