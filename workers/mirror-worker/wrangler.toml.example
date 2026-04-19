@@ -1,0 +1,27 @@
+name = "sos-mirror"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+[[routes]]
+pattern = "api.example.com/mirror/*"
+zone_id = "YOUR_CLOUDFLARE_ZONE_ID"
+
+# Vectorize for embeddings (replaces Gemini API — no quota limits)
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "sos-engrams"
+
+# D1 for metadata (fast edge queries)
+[[d1_databases]]
+binding = "DB"
+database_name = "sos-mirror"
+database_id = "YOUR_D1_DATABASE_ID"
+
+# KV for token auth (fast lookup)
+[kv_namespaces]
+binding = "MIRROR_TOKENS"
+id = "YOUR_KV_NAMESPACE_ID"
+
+[vars]
+SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"

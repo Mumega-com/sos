@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mumega"
-version = "0.7.3"
+version = "0.8.1"
 description = "Sovereign Operating System for AI Agents - Multi-model, autonomous, edge-native"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -232,7 +232,6 @@ modules = [
   "sos.services.journeys",
   "sos.services.memory",
   "sos.services.operations",
-  "sos.services.outreach",
   "sos.services.registry",
   "sos.services.saas",
   "sos.services.squad",
@@ -264,4 +263,8 @@ ignore_imports = [
   "sos.services.registry.** -> sos.services.bus.**",
   "sos.services.operations.** -> sos.services.bus.**",
   "sos.services.journeys.** -> sos.services.bus.**",
+  # v0.8.1 S5 — dashboard operator API reads AgentCards directly via
+  # sos.services.registry.read_all_cards because RegistryClient has no
+  # list_cards helper yet. Removed once the client grows it (tracked).
+  "sos.services.dashboard.operator_api -> sos.services.registry",
 ]

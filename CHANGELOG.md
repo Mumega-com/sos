@@ -2,6 +2,42 @@
 
 All notable changes to SOS (Sovereign Operating System) will be documented here.
 
+## [0.8.1] — 2026-04-19 — TROP-ready
+
+### Thesis
+SOS as the hub/junction for a real online-business tenant. Closes the
+ToRivers marketplace loop on the v0.8.0 objectives primitive; ships
+the minimum auto-improve substrate (RAG-only, no fine-tune); gives
+operators per-tenant visibility + agent kill-switch.
+
+### Added
+- **S1** `sos/adapters/torivers/bridge.py` migrated to `AsyncObjectivesClient` — marketplace workflows now post objectives with $MIND bounties, poll to completion, return artifact.
+- **S2** First-class TROP tenant — 4 standing agent cards (`trop-social|content|outreach|analytics`), daily pulse scaffolding, capability-match runbook.
+- **S3** `Objective.outcome_score: float | None` (range 0.0-1.0). Ack route accepts score in body. Audit events carry it. Payout gate unchanged — binary for v0.8.1.
+- **S4** `sos/kernel/demo_bank.py` (fetch_winners, build_few_shot_prompt) + `sos/agents/curator.py` (standing agent claims `kind:harvest-winners`, writes top-decile to memory for RAG). Opt-in via `build_few_shot_prompt` at agent claim time.
+- **S5** `sos/services/dashboard/` on port 6069 — per-tenant summary/agents JSON + admin-only kill switch. `sos/kernel/kill_switch.py` fail-soft read helper. CF dashboard UI lives in Mumega (documented hand-off).
+- **S6** `sos/services/operations/organism.py` — finished daily-heartbeat loop. Three scheduled pulses per project (morning/noon/evening) with per-window 25h dedupe. Postmortem objective auto-posted per paid root. Systemd runbook at `docs/runbooks/sos-organism.service.md`.
+
+### Changed
+- `sos.services.dashboard` added to R1 import-linter module list. One R1 ignore added: `sos.services.dashboard.operator_api -> sos.services.registry` (RegistryClient has no `list_cards` yet; replace when it lands).
+- `objective.schema.json` regenerated to include `outcome_score` property.
+
+### Mumega hand-offs (documented, not built)
+- Customer UI at `app.mumega.com/dashboard/{project}` consuming the SOS dashboard API.
+- Signup UI POSTing to `/saas/tenants`.
+- SSE proxy for `/dashboard/stream` (future — v0.8.1 exposes polling only).
+
+### TROP hand-offs (documented, not built)
+- ToRivers customer-facing site calling `POST /adapters/torivers/execute`.
+- Wallet debit on bridge `status: completed`.
+- Analytics agent POSTing `/objectives/{id}/ack` with `outcome_score`.
+
+### Non-goals (deferred)
+- v0.8.2 — decay sweeper (stalled claims), subscription-by-subtree push.
+- v0.8.3 — fine-tune orchestrator (curator is RAG only in v0.8.1).
+- Bedrock provider adapter (explicitly dropped per 2026-04-19 user direction).
+- Mumega dashboard UI, ToRivers customer site (other repos).
+
 ## [0.7.3] - 2026-04-18 — AgentCard self-register + heartbeat helper
 
 **Release theme: "Close the v0.7.2 loop so the endpoint actually returns data."**

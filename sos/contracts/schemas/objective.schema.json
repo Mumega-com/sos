@@ -1,0 +1,172 @@
+{
+  "additionalProperties": false,
+  "description": "A single node in the living objective tree.",
+  "properties": {
+    "acks": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Acks",
+      "type": "array"
+    },
+    "bounty_mind": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Bounty Mind",
+      "type": "integer"
+    },
+    "capabilities_required": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Capabilities Required",
+      "type": "array"
+    },
+    "completion_artifact_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completion Artifact Url"
+    },
+    "completion_notes": {
+      "default": "",
+      "title": "Completion Notes",
+      "type": "string"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "created_by": {
+      "title": "Created By",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "holder_agent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Holder Agent"
+    },
+    "holder_heartbeat_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Holder Heartbeat At"
+    },
+    "id": {
+      "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9][a-z0-9\\-]{1,62}[a-z0-9])$",
+      "title": "Id",
+      "type": "string"
+    },
+    "outcome_score": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome Score"
+    },
+    "parent_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Id"
+    },
+    "project": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project"
+    },
+    "state": {
+      "default": "open",
+      "enum": [
+        "open",
+        "claimed",
+        "shipped",
+        "paid",
+        "blocked"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "subscribers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Subscribers",
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "tenant_id": {
+      "default": "default",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "created_by",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "Objective",
+  "type": "object"
+}
