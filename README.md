@@ -239,4 +239,9 @@ MIT. See [LICENSE](LICENSE).
 
 ---
 
+Built by [Mumega Labs](https://mumega.com) — the company that runs companies with AI agents.
+
+- **Mumega** — [mumega.com](https://mumega.com) — managed AI operations platform powered by SOS
+- **Inkwell** — [github.com/Mumega-com/inkwell](https://github.com/Mumega-com/inkwell) — open source SaaS framework that connects to SOS for memory, bus, and economy
+
 Built by [Mumega](https://mumega.com/labs/sos).
