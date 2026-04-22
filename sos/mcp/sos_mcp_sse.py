@@ -613,6 +613,32 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "squad_remember",
+            "description": "Store a memory scoped to a specific squad",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "squad_id": {"type": "string", "description": "Squad identifier"},
+                    "text": {"type": "string", "description": "Memory text to store"},
+                    "agent_id": {"type": "string", "description": "Agent storing the memory (optional)", "default": ""},
+                },
+                "required": ["squad_id", "text"],
+            },
+        },
+        {
+            "name": "squad_recall",
+            "description": "Semantic search across memories scoped to a specific squad",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "squad_id": {"type": "string", "description": "Squad identifier"},
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "default": 10},
+                },
+                "required": ["squad_id", "query"],
+            },
+        },
+        {
             "name": "search_code",
             "description": "Semantic search across synced code nodes (functions, classes, methods). Returns file paths and line numbers for matching code.",
             "inputSchema": {
@@ -1025,7 +1051,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
-    WRITE_TOOLS = {"send", "broadcast", "remember", "task_create", "task_update", "request"}
+    WRITE_TOOLS = {"send", "broadcast", "remember", "squad_remember", "task_create", "task_update", "request"}
     # Tools classified as read-only — kept as a documented contract, even
     # though flow below only branches on SYSTEM_ONLY_TOOLS/WRITE_TOOLS.
     READ_TOOLS = {  # noqa: F841
@@ -1280,6 +1306,47 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             for i, e in enumerate(results, 1):
                 text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
                 lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(text)[:200]}")
+            return _text("\n".join(lines))
+
+        # --- squad_remember ---
+        elif name == "squad_remember":
+            squad_id = args["squad_id"]
+            text = args["text"]
+            agent_id = args.get("agent_id") or "squad"
+            context_id = f"squad:{squad_id}:{int(time.time())}"
+            project = f"squad:{squad_id}"
+            await loop.run_in_executor(
+                None,
+                mirror_post,
+                "/store",
+                {
+                    "agent": agent_id,
+                    "context_id": context_id,
+                    "text": text,
+                    "project": project,
+                },
+            )
+            return _text(json.dumps({"stored": True, "squad_id": squad_id}))
+
+        # --- squad_recall ---
+        elif name == "squad_recall":
+            squad_id = args["squad_id"]
+            results = await loop.run_in_executor(
+                None,
+                mirror_post,
+                "/search",
+                {
+                    "query": args["query"],
+                    "top_k": args.get("limit", 10),
+                    "project": f"squad:{squad_id}",
+                },
+            )
+            if not results:
+                return _text("No matching squad memories.")
+            lines = []
+            for i, e in enumerate(results, 1):
+                mem_text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
+                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(mem_text)[:200]}")
             return _text("\n".join(lines))
 
         # --- search_code ---

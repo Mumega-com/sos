@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -7,6 +8,8 @@ import sqlite3
 import uuid as _uuid
 from dataclasses import asdict
 from typing import Any
+
+import httpx
 
 from sos.contracts.done_check import DoneCheck, all_done
 from sos.contracts.messages import TaskCompletedMessage, TaskCompletedPayload
@@ -336,6 +339,31 @@ def estimate_task_budget(priority: str, fuel_grade: str | None = None) -> dict:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
+
+
+async def _write_squad_memory_for_task(task: SquadTask, squad_id: str) -> None:
+    """Fire-and-forget: persist task completion as a squad memory in Mirror."""
+    try:
+        result_summary = ""
+        if task.result:
+            result_summary = str(task.result)[:200]
+        text = f"Task '{task.title}' completed by {task.assignee or 'squad'}."
+        if result_summary:
+            text += f" Result: {result_summary}"
+        mirror_url = os.environ.get("MIRROR_URL", "http://localhost:8844")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{mirror_url}/store",
+                json={
+                    "agent": task.assignee or "system",
+                    "context_id": f"task:{task.id}:done",
+                    "text": text,
+                    "project": f"squad:{squad_id}",
+                    "series": f"squad:{squad_id}",
+                },
+            )
+    except Exception:
+        pass  # fire-and-forget, never fail the main flow
 
 
 class SquadTaskService:
@@ -725,6 +753,13 @@ class SquadTaskService:
             log.info(f"Economy: squad={squad_id} agent={agent_name} billable={billable_cents}c internal={internal_cost_cents}c margin={margin_cents}c")
         except Exception as exc:
             log.debug(f"Economy update skipped: {exc}")
+
+        # Squad shared memory — fire-and-forget, never blocks the main flow
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_write_squad_memory_for_task(task, task.squad_id))
+        except RuntimeError:
+            pass  # No running event loop (sync context) — skip silently
 
         return task
 

@@ -5,6 +5,8 @@ import time
 from dataclasses import asdict
 from typing import Any, Optional
 
+import httpx
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -734,6 +736,68 @@ async def list_pipeline_runs(
     auth: AuthContext = Depends(require_capability("pipeline", "read")),
 ) -> list[dict[str, Any]]:
     return _json(pipelines.list_runs(squad_id, limit=limit, tenant_id=auth.tenant_scope))
+
+
+_MIRROR_URL: str = os.environ.get("MIRROR_URL", "http://localhost:8844")
+
+
+class SquadMemoryIn(BaseModel):
+    text: str
+    agent_id: str = ""
+
+
+@app.post("/squads/{squad_id}/memory")
+async def store_squad_memory(
+    squad_id: str,
+    payload: SquadMemoryIn,
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> dict[str, Any]:
+    squad = squads.get(squad_id, tenant_id=auth.tenant_scope)
+    if not squad:
+        raise HTTPException(status_code=404, detail="squad_not_found")
+    project = f"squad:{squad_id}"
+    context_id = f"squad:{squad_id}:{int(time.time())}"
+    agent = payload.agent_id or "system"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        await client.post(
+            f"{_MIRROR_URL}/store",
+            json={
+                "agent": agent,
+                "context_id": context_id,
+                "text": payload.text,
+                "project": project,
+                "series": project,
+            },
+        )
+    return {"stored": True, "squad_id": squad_id}
+
+
+@app.get("/squads/{squad_id}/memory")
+async def search_squad_memory(
+    squad_id: str,
+    q: str = "",
+    limit: int = 20,
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> dict[str, Any]:
+    squad = squads.get(squad_id, tenant_id=auth.tenant_scope)
+    if not squad:
+        raise HTTPException(status_code=404, detail="squad_not_found")
+    project = f"squad:{squad_id}"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        if q:
+            resp = await client.post(
+                f"{_MIRROR_URL}/search",
+                json={"query": q, "top_k": limit, "project": project},
+            )
+            memories = resp.json() if resp.is_success else []
+        else:
+            resp = await client.get(
+                f"{_MIRROR_URL}/recent/{project}",
+                params={"limit": limit},
+            )
+            data = resp.json() if resp.is_success else {}
+            memories = data.get("engrams", [])
+    return {"memories": memories, "squad_id": squad_id}
 
 
 if __name__ == "__main__":
