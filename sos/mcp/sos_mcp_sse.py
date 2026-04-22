@@ -50,6 +50,23 @@ from sos.mcp.customer_tools import (
 )
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 
+# ---------------------------------------------------------------------------
+# Mirror kernel — direct import (no HTTP to :8844)
+# PYTHONPATH=/home/mumega is set in sos-mcp-sse.service so this import works.
+# psycopg2 is sync — all calls must be wrapped in run_in_executor.
+# ---------------------------------------------------------------------------
+import sys as _sys
+import concurrent.futures as _futures
+
+_sys.path.insert(0, "/home/mumega")
+from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
+from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
+
+_mirror_db = _get_mirror_db()  # singleton connection pool
+_mirror_executor = _futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="mirror-db"
+)
+
 # Squad system token now resolves from env — same pattern as agents/join
 # after v0.4.6 P1-05. Default mirrors sos.services.squad.auth.SYSTEM_TOKEN
 # so existing deployments keep working without env changes.
@@ -1289,23 +1306,36 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
         # --- recall ---
         elif name == "recall":
-            results = await loop.run_in_executor(
-                None,
-                mirror_post,
-                "/search",
-                {
-                    "query": args["query"],
-                    "top_k": args.get("limit", 5),
-                    "agent_filter": agent_scope,
-                    "project": project_scope,
-                },
+            # Phase 2: read from Mirror kernel directly — no HTTP to :8844
+            query_text = args["query"]
+            limit = int(args.get("limit", 5))
+
+            embedding = await loop.run_in_executor(
+                _mirror_executor,
+                lambda: [float(x) for x in _get_mirror_embedding(query_text)],
             )
-            if not results:
+            rows = await loop.run_in_executor(
+                _mirror_executor,
+                lambda: _mirror_db.search_engrams(
+                    embedding=embedding,
+                    threshold=0.5,
+                    limit=limit,
+                    project=project_scope,
+                    # workspace_id omitted: mirror_match_engrams_v2 does not
+                    # expose that column in its result set, so passing it
+                    # would cause a ProgrammingError.
+                ),
+            )
+            if not rows:
                 return _text("No matching memories.")
             lines = []
-            for i, e in enumerate(results, 1):
-                text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
-                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(text)[:200]}")
+            for i, e in enumerate(rows, 1):
+                # mirror_match_engrams_v2 returns: context_id, series, raw_data, ts, similarity
+                # Text lives in raw_data JSONB or falls back to context_id.
+                raw = e.get("raw_data") or {}
+                text = raw.get("text", "") or str(e.get("context_id", "?"))
+                ts = str(e.get("ts", "?"))[:10]
+                lines.append(f"{i}. [{ts}] {str(text)[:200]}")
             return _text("\n".join(lines))
 
         # --- squad_remember ---
