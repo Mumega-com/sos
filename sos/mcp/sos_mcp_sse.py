@@ -1328,9 +1328,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     threshold=0.5,
                     limit=limit,
                     project=project_scope,
-                    # workspace_id omitted: mirror_match_engrams_v2 does not
-                    # expose that column in its result set, so passing it
-                    # would cause a ProgrammingError.
+                    workspace_id=project_scope,  # enforces tenant isolation
                 ),
             )
             if not rows:
