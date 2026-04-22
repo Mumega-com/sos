@@ -87,8 +87,11 @@ def _write_settings(agent: str, home_dir: Path, raw_token: str) -> tuple[Path, P
             mcp_existing = {}
     servers = mcp_existing.setdefault("mcpServers", {})
     servers["sos"] = {
-        "type": "sse",
-        "url": f"http://localhost:6070/sse/{raw_token}",
+        "type": "http",
+        "url": "http://localhost:6070/mcp",
+        "headers": {
+            "Authorization": f"Bearer {raw_token}",
+        },
     }
     mcp_path.write_text(json.dumps(mcp_existing, indent=2))
 
@@ -155,7 +158,7 @@ def provision(agent: str, home_dir: Path, reuse_token: str | None = None) -> Non
     print(f"  Home:       {home_dir}")
     print(f"  MCP config: {mcp_path}")
     print(f"  Settings:   {settings_path}")
-    print(f"  MCP URL:    http://localhost:6070/sse/{raw}")
+    print(f"  MCP URL:    http://localhost:6070/mcp (Bearer {raw[:16]}…)")
     print(f"  Token hash: {h[:16]}… (stored in {TOKENS_FILE.relative_to(SOS_ROOT)})")
     print()
     print("NEXT STEPS")
