@@ -1114,6 +1114,37 @@ async def _signup_impl(req: SignupRequest) -> dict:
 
     asyncio.create_task(_sync_to_edge())
 
+    # 4c. Bootstrap portal auth_identity + portal_account (best-effort, fire-and-forget)
+    async def _bootstrap_portal() -> None:
+        portal_url = os.environ.get("MUMEGA_PORTAL_URL", "https://portal.mumega.com")
+        mumega_token = os.environ.get("MUMEGA_TOKEN", "")
+        if not mumega_token:
+            log.warning("MUMEGA_TOKEN not set — skipping portal bootstrap for tenant %s", slug)
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{portal_url}/api/portal/auth/bootstrap",
+                    json={
+                        "customerSlug": slug,
+                        "email": req.email,
+                        "channel": "email",
+                        "fullName": req.name,
+                    },
+                    headers={"Authorization": f"Bearer {mumega_token}"},
+                )
+                if resp.status_code in (200, 201):
+                    log.info("Portal bootstrap OK for tenant %s", slug)
+                else:
+                    log.warning(
+                        "Portal bootstrap returned %s for tenant %s: %s",
+                        resp.status_code, slug, resp.text[:200],
+                    )
+        except Exception as exc:
+            log.warning("Portal bootstrap failed for tenant %s (non-blocking): %s", slug, exc)
+
+    asyncio.create_task(_bootstrap_portal())
+
     # 5. Trigger initial site build via queue (fire-and-forget)
     try:
         build_queue.enqueue(slug, trigger="signup", priority=5)

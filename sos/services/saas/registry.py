@@ -217,6 +217,9 @@ class TenantRegistry:
         d = dict(row)
         if d.get("inkwell_config") and isinstance(d["inkwell_config"], str):
             d["inkwell_config"] = json.loads(d["inkwell_config"])
+        # Strip DB columns not in the Tenant model (e.g. notification_prefs added by migration)
+        known_fields = set(Tenant.model_fields.keys())
+        d = {k: v for k, v in d.items() if k in known_fields}
         return Tenant(**d)
 
     def _generate_config(self, req: TenantCreate) -> dict:

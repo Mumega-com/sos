@@ -268,6 +268,36 @@ class PipelineRun(Base):
     )
 
 
+class LeagueSeason(Base):
+    __tablename__ = "league_seasons"
+
+    id = Column(Text, primary_key=True)
+    name = Column(Text, nullable=False)
+    start_date = Column(Text, nullable=False)
+    end_date = Column(Text, nullable=False)
+    status = Column(Text, server_default=text("'active'"))
+    tenant_id = Column(Text)
+    created_at = Column(Text, server_default=text("(datetime('now'))"))
+
+
+class LeagueScore(Base):
+    __tablename__ = "league_scores"
+
+    id = Column(Text, primary_key=True)
+    season_id = Column(Text, nullable=False)
+    squad_id = Column(Text, nullable=False)
+    score = Column(REAL, server_default=text("0"))
+    rank = Column(Integer, server_default=text("0"))
+    tier = Column(Text, server_default=text("'nomad'"))
+    snapshot_at = Column(Text, server_default=text("(datetime('now'))"))
+    tenant_id = Column(Text)
+
+    __table_args__ = (
+        Index("idx_league_scores_season_rank", "season_id", "rank"),
+        Index("idx_league_scores_squad_season", "squad_id", "season_id"),
+    )
+
+
 __all__ = [
     "Base",
     "Squad",
@@ -281,4 +311,6 @@ __all__ = [
     "SquadGoal",
     "PipelineSpec",
     "PipelineRun",
+    "LeagueSeason",
+    "LeagueScore",
 ]

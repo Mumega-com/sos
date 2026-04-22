@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import os
 import time
 from dataclasses import asdict
@@ -34,9 +36,10 @@ from sos.contracts.squad import (
 from fastapi import Header
 from sos.services.squad.auth import AuthContext, create_api_key as _create_api_key, require_capability
 from sos.services.squad.auth import _lookup_token as _squad_lookup_token
-from sos.services.squad.service import SquadDB
+from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
 from sos.services.squad.tasks import NotAllDoneError
+from sos.services.squad.kpis import KPISnapshot, calculate_kpis
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
 
@@ -52,6 +55,7 @@ tasks = SquadTaskService()
 skills = SquadSkillService()
 state = SquadStateService(mirror_sync=False)
 pipelines = PipelineService()
+league = LeagueService()
 
 
 def _json(value: Any) -> Any:
@@ -548,6 +552,10 @@ async def complete_task(
             # conflict): the task is in a valid state; the submission is
             # the thing that's short.
             raise HTTPException(status_code=400, detail=str(exc))
+        # Check streak_30d and task-count badges after each completion
+        if task.squad_id:
+            from sos.services.squad.service import AchievementService
+            AchievementService().check_and_award(task.squad_id)
         return _json(task)
 
     body = {"task_id": task_id, "payload": payload.model_dump()}
@@ -759,7 +767,7 @@ async def store_squad_memory(
     context_id = f"squad:{squad_id}:{int(time.time())}"
     agent = payload.agent_id or "system"
     async with httpx.AsyncClient(timeout=5.0) as client:
-        await client.post(
+        resp = await client.post(
             f"{_MIRROR_URL}/store",
             json={
                 "agent": agent,
@@ -769,6 +777,24 @@ async def store_squad_memory(
                 "series": project,
             },
         )
+    if resp.is_success:
+        # Increment the per-squad memory counter so first_memory badge can trigger
+        db = SquadDB()
+        try:
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO squad_memory_counts (squad_id, count)
+                    VALUES (?, 1)
+                    ON CONFLICT (squad_id) DO UPDATE SET count = count + 1
+                    """,
+                    (squad_id,),
+                )
+        except Exception as _mem_exc:
+            log.warning("squad_memory_counts upsert failed", squad_id=squad_id, error=str(_mem_exc))
+        # Check and award achievements (never blocks the response)
+        from sos.services.squad.service import AchievementService
+        AchievementService(db).check_and_award(squad_id)
     return {"stored": True, "squad_id": squad_id}
 
 
@@ -798,6 +824,258 @@ async def search_squad_memory(
             data = resp.json() if resp.is_success else {}
             memories = data.get("engrams", [])
     return {"memories": memories, "squad_id": squad_id}
+
+
+# ── KPI routes ────────────────────────────────────────────────────────────────
+
+@app.get("/squads/{squad_id}/kpis")
+async def get_squad_kpis(
+    squad_id: str,
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> dict[str, Any]:
+    """Return a live KPISnapshot for the squad over the last 7 days."""
+    squad = squads.get(squad_id, tenant_id=auth.tenant_scope)
+    if not squad:
+        raise HTTPException(status_code=404, detail="squad_not_found")
+    snapshot = await calculate_kpis(squad_id)
+    return _json(dataclasses.asdict(snapshot))
+
+
+@app.get("/squads/{squad_id}/kpis/history")
+async def get_squad_kpis_history(
+    squad_id: str,
+    days: int = 30,
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> list[dict[str, Any]]:
+    """Return daily KPI snapshots from the diagnostics_snapshots table (newest first).
+
+    Returns an empty list when the table does not exist yet.
+    """
+    squad = squads.get(squad_id, tenant_id=auth.tenant_scope)
+    if not squad:
+        raise HTTPException(status_code=404, detail="squad_not_found")
+    from sos.services.squad.service import SquadDB as _SquadDB
+    import json as _json_mod
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    db = _SquadDB()
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json, recorded_at
+                FROM diagnostics_snapshots
+                WHERE squad_id = ? AND recorded_at >= ?
+                ORDER BY recorded_at DESC
+                """,
+                (squad_id, cutoff),
+            ).fetchall()
+        return [_json_mod.loads(r["payload_json"]) for r in rows]
+    except Exception:
+        # Table does not exist yet — return empty list rather than 500
+        return []
+
+
+# ── Achievement routes ───────────────────────────────────────────
+
+@app.get("/squads/{squad_id}/achievements")
+async def get_squad_achievements(
+    squad_id: str,
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> dict[str, Any]:
+    from sos.services.squad.service import AchievementService
+    squad = squads.get(squad_id, tenant_id=auth.tenant_scope)
+    if not squad:
+        raise HTTPException(status_code=404, detail="squad_not_found")
+    service = AchievementService()
+    achievements = service.get_achievements(squad_id)
+    return {
+        "achievements": [
+            {
+                "id": a.id,
+                "badge": a.badge,
+                "name": a.name,
+                "description": a.description,
+                "earned_at": a.earned_at,
+            }
+            for a in achievements
+        ]
+    }
+
+
+# ── League routes ─────────────────────────────────────────────────────────────
+
+_MUMEGA_ADMIN_TOKEN: str = os.environ.get("MUMEGA_ADMIN_TOKEN", "")
+
+
+def _require_admin_token(x_admin_token: Optional[str] = Header(default=None)) -> None:
+    """Dependency: require X-Admin-Token == MUMEGA_ADMIN_TOKEN."""
+    if not _MUMEGA_ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="admin_token_not_configured")
+    if x_admin_token != _MUMEGA_ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="admin_token_required")
+
+
+class LeagueSeasonIn(BaseModel):
+    name: str
+    start_date: str
+    end_date: str
+    tenant_id: Optional[str] = None
+
+
+@app.get("/league")
+async def get_league(
+    x_tenant_id: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return the current active season and its full league table.
+
+    Pass ``X-Tenant-ID`` header to scope the league to a specific tenant.
+    Omit the header for the global (no-tenant) league.
+    """
+    season = league.get_current_season(tenant_id=x_tenant_id)
+    if season is None:
+        season = league.ensure_active_season(tenant_id=x_tenant_id)
+    table = league.get_league_table(season["id"])
+    return {"season": season, "table": table}
+
+
+@app.get("/league/seasons")
+async def list_league_seasons(
+    x_tenant_id: Optional[str] = Header(default=None),
+) -> list[dict[str, Any]]:
+    """List all seasons for the given tenant scope, newest first.
+
+    Pass ``X-Tenant-ID`` header to scope to a specific tenant.
+    Omit for the global (no-tenant) seasons.
+    """
+    return league.list_seasons(tenant_id=x_tenant_id)
+
+
+@app.post("/league/seasons")
+async def create_league_season(
+    payload: LeagueSeasonIn,
+    x_tenant_id: Optional[str] = Header(default=None),
+    _admin: None = Depends(_require_admin_token),
+) -> dict[str, Any]:
+    """Create a new league season. Admin only (X-Admin-Token header).
+
+    ``tenant_id`` from the request body takes precedence; falls back to
+    the ``X-Tenant-ID`` header if body field is omitted.
+    """
+    effective_tenant_id = payload.tenant_id if payload.tenant_id is not None else x_tenant_id
+    return league.create_season(
+        name=payload.name,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        tenant_id=effective_tenant_id,
+    )
+
+
+@app.post("/league/snapshot")
+async def trigger_league_snapshot(
+    x_tenant_id: Optional[str] = Header(default=None),
+    _admin: None = Depends(_require_admin_token),
+) -> dict[str, Any]:
+    """Snapshot KPIs and recalculate tiers for the current active season. Admin only.
+
+    Pass ``X-Tenant-ID`` header to snapshot a specific tenant's season.
+    Omit for the global season.
+    """
+    season = league.get_current_season(tenant_id=x_tenant_id)
+    if season is None:
+        raise HTTPException(status_code=404, detail="no_active_season")
+    scores = await league.snapshot_league_scores(season["id"])
+    return {"season_id": season["id"], "snapshotted": len(scores), "scores": scores}
+
+
+# ── Daily KPI snapshot cron ───────────────────────────────────────────────────
+
+async def _daily_kpi_snapshot() -> None:
+    """Runs once per day: compute KPIs for all active squads and push to Inkwell."""
+    from sos.contracts.squad import SquadStatus as _SquadStatus
+
+    active_squads = squads.list(status=_SquadStatus.ACTIVE, tenant_id=None)
+    inkwell_url = os.environ.get("SITE_URL", "")
+    token = os.environ.get("MUMEGA_TOKEN", "")
+
+    for squad in active_squads:
+        try:
+            snapshot = await calculate_kpis(squad.id)
+            if inkwell_url and token:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"{inkwell_url}/api/dashboard/squads/{squad.id}/kpis/snapshot",
+                        json=dataclasses.asdict(snapshot),
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+        except Exception:
+            pass  # never fail the cron loop
+
+
+async def _kpi_cron_loop() -> None:
+    """Background task: sleep until 00:05 UTC, run snapshot, repeat daily."""
+    import math
+    from datetime import datetime, timezone
+
+    while True:
+        now = datetime.now(timezone.utc)
+        # Next 00:05 UTC
+        target = now.replace(hour=0, minute=5, second=0, microsecond=0)
+        if target <= now:
+            target = target.replace(day=target.day + 1)
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        await _daily_kpi_snapshot()
+
+
+async def _league_weekly_snapshot_loop() -> None:
+    """Background task: every Monday at 01:00 UTC, snapshot league scores."""
+    from datetime import datetime, timezone
+
+    while True:
+        now = datetime.now(timezone.utc)
+        # Next Monday 01:00 UTC
+        days_until_monday = (7 - now.weekday()) % 7  # 0 if today is Monday
+        target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+        if days_until_monday > 0:
+            target = target.replace(day=target.day + days_until_monday)
+        elif target <= now:
+            # It's Monday but we've already passed 01:00 — skip to next Monday
+            target = target.replace(day=target.day + 7)
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        try:
+            season = league.get_current_season()
+            if season is not None:
+                await league.snapshot_league_scores(season["id"])
+        except Exception:
+            pass  # never fail the cron loop
+
+
+async def _league_daily_season_loop() -> None:
+    """Background task: every day at 00:01 UTC, ensure an active season exists."""
+    from datetime import datetime, timezone
+
+    while True:
+        now = datetime.now(timezone.utc)
+        # Next 00:01 UTC
+        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+        if target <= now:
+            target = target.replace(day=target.day + 1)
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        try:
+            league.ensure_active_season()
+        except Exception:
+            pass  # never fail the cron loop
+
+
+@app.on_event("startup")
+async def _start_kpi_cron() -> None:
+    asyncio.create_task(_kpi_cron_loop())
+    asyncio.create_task(_league_weekly_snapshot_loop())
+    asyncio.create_task(_league_daily_season_loop())
 
 
 if __name__ == "__main__":

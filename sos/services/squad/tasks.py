@@ -761,6 +761,13 @@ class SquadTaskService:
         except RuntimeError:
             pass  # No running event loop (sync context) — skip silently
 
+        # Achievement check — fire-and-forget, never blocks task completion
+        try:
+            from sos.services.squad.service import AchievementService as _AchievementService
+            _AchievementService(db=self.db).check_and_award(task.squad_id)
+        except Exception:
+            pass
+
         return task
 
     def fail(
