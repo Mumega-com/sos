@@ -50,9 +50,17 @@ def _load_tokens() -> list[dict]:
 
 def _resolve_token(raw_token: str) -> dict | None:
     """Returns token record or None if invalid."""
+    import hmac
+    raw_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     tokens = _load_tokens()
     for t in tokens:
-        if t.get("token") == raw_token and t.get("active", True):
+        if not t.get("active", True):
+            continue
+        stored_hash = t.get("token_hash") or t.get("hash", "")
+        if stored_hash and hmac.compare_digest(stored_hash, raw_hash):
+            return t
+        plaintext = t.get("token", "")
+        if plaintext and hmac.compare_digest(plaintext, raw_token):
             return t
     return None
 

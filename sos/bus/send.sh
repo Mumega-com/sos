@@ -15,8 +15,8 @@ REDIS="redis-cli -a ${REDIS_PASS} --no-auth-warning"
 
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MSG_ID=$(uuidgen 2>/dev/null || python3 -c "import uuid;print(uuid.uuid4())")
-CHANNEL="sos:channel:private:agent:${TO}"
-STREAM="sos:stream:${CHANNEL}"
+STREAM="sos:stream:global:agent:${TO}"
+CHANNEL="sos:channel:agent:${TO}"
 
 # Write to stream (persistent)
 $REDIS XADD "${STREAM}" '*' \
