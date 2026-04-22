@@ -62,7 +62,12 @@ _sys.path.insert(0, "/home/mumega")
 from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
 from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
 
-_mirror_db = _get_mirror_db()  # singleton connection pool
+try:
+    _mirror_db = _get_mirror_db()  # singleton connection pool
+except Exception as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("Mirror DB unavailable at startup: %s — recall will return empty", _e)
+    _mirror_db = None
 _mirror_executor = _futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="mirror-db"
 )
@@ -1307,6 +1312,8 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- recall ---
         elif name == "recall":
             # Phase 2: read from Mirror kernel directly — no HTTP to :8844
+            if _mirror_db is None:
+                return _text("Mirror DB unavailable — recall disabled")
             query_text = args["query"]
             limit = int(args.get("limit", 5))
 
