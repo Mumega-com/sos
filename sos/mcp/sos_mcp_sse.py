@@ -1091,16 +1091,21 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         elif name == "send":
             to = _require_same_tenant_agent(auth, args.get("to"))
             text = args["text"]
-            # Phase 2 / W1: scope required on every publish. System tokens
-            # (no tenant) can't use `send` — they lack the project grouping
-            # the v0.9.1 contract requires. If a system token needs to
-            # deliver cross-tenant, it must issue a scoped sub-token first.
-            if not project_scope or not auth.tenant_id:
+            # System tokens (internal agents connecting via MCP env token) route
+            # to the global agent stream with synthetic scope so enforce_scope
+            # passes. Tenant tokens still require project scope per v0.9.1.
+            if auth.is_system:
+                effective_project = project_scope  # None unless PROJECT env set
+                effective_tenant = "sos"
+            elif not project_scope or not auth.tenant_id:
                 return _text(
                     "error: SOS-4005 send requires tenant+project scope; "
                     "system tokens must use a scoped sub-token"
                 )
-            stream = _agent_stream(to, project_scope)
+            else:
+                effective_project = project_scope
+                effective_tenant = auth.tenant_id
+            stream = _agent_stream(to, effective_project)
             # v0.4.0-beta.1: v1 "send" message with structured payload. Builds via
             # Pydantic model so all schema invariants (source pattern, target pattern,
             # ISO timestamp, UUID message_id, payload.text max length, content_type
@@ -1117,8 +1122,8 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                 log.error(f"SendMessage construction failed: {ve}")
                 return _text(f"error: SOS-4001 {ve}")
             msg = sendmsg.to_redis_fields()
-            msg["tenant_id"] = auth.tenant_id
-            msg["project"] = project_scope
+            msg["tenant_id"] = effective_tenant
+            msg["project"] = effective_project or "sos"
             # Pydantic already validated on construction above — no second enforce()
             # pass because the Redis-field shape (payload as JSON string) is not
             # re-parseable by Pydantic without from_redis_fields() (which would be
@@ -1128,7 +1133,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             # raises on regression.
             enforce_scope(msg)
             mid = await r.xadd(stream, msg)
-            await r.publish(_agent_channel(to, project_scope), json.dumps(msg))
+            await r.publish(_agent_channel(to, effective_project), json.dumps(msg))
             await r.publish(f"sos:wake:{to}", json.dumps(msg))
             # mirror_post("/store", ...) removed — mirror_bus_consumer subscribes
             # to sos:stream:* and writes engrams asynchronously off the stream.
@@ -1343,8 +1348,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             params = f"?limit={args.get('limit', 20)}"
             if args.get("status"):
                 params += f"&status={args['status']}"
-            assignee = _require_same_tenant_agent(auth, args.get("assignee"))
+            assignee = args.get("assignee")
             if assignee:
+                assignee = _require_same_tenant_agent(auth, assignee)
                 params += f"&agent={assignee}"
             if project_scope:
                 params += f"&project={project_scope}"
