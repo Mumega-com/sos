@@ -9,7 +9,7 @@ description = "Sovereign Operating System for AI Agents - Multi-model, autonomou
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [{ name = "Mumega Collective", email = "hello@mumega.com" }]
+authors = [{ name = "Mumega Labs", email = "hello@mumega.com" }]
 keywords = ["ai", "agents", "llm", "autonomous", "sovereign", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
