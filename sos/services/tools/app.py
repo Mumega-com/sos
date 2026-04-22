@@ -5,22 +5,39 @@ Provides tool registry, MCP server management, plugin management,
 and tool execution endpoints.
 """
 
+import json
 import os
 import subprocess
 import sys
-import json
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field, asdict
+import time
+from typing import Any, Dict, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from sos import __version__
+from sos.observability.logging import clear_context, get_logger, set_agent_context
+from sos.observability.metrics import MetricsRegistry, render_prometheus
+from sos.observability.tracing import SPAN_ID_HEADER, TRACE_ID_HEADER, TraceContext
 from sos.services.tools.core import ToolsCore
-from sos.contracts.tools import ToolCategory, ToolDefinition, ToolStatus
-from sos.observability.logging import get_logger
+from sos.services.tools.governance import enforce_mcp_register, enforce_tool_execute
 
 log = get_logger("tools_app")
+SERVICE_NAME = "tools"
+_START_TIME = time.time()
+
+metrics = MetricsRegistry()
+REQUEST_COUNT = metrics.counter(
+    name="sos_requests_total",
+    description="Total requests",
+    label_names=("service", "status"),
+)
+REQUEST_DURATION = metrics.histogram(
+    name="sos_request_duration_seconds",
+    description="Request duration",
+    label_names=("service",),
+)
 
 app = FastAPI(title="SOS Tools Service", version=__version__)
 tools = ToolsCore()
@@ -36,6 +53,31 @@ _PLUGINS: Dict[str, Dict[str, Any]] = {}
 _PLUGIN_TOOLS: Dict[str, Dict[str, Any]] = {}
 _PLUGIN_SIGNATURE_VERIFIED: Dict[str, bool] = {}
 _PLUGIN_POLICY_RESULTS: Dict[str, Dict[str, Any]] = {}
+
+
+@app.middleware("http")
+async def _observability_middleware(request: Request, call_next):
+    ctx = TraceContext.from_headers(dict(request.headers))
+    ctx.activate()
+
+    if agent_id := request.headers.get("X-SOS-Agent-ID"):
+        set_agent_context(agent_id)
+
+    status_label = "success"
+    with REQUEST_DURATION.labels(service=SERVICE_NAME).time():
+        try:
+            response = await call_next(request)
+            status_label = "success" if response.status_code < 400 else "error"
+        except Exception as e:
+            status_label = "error"
+            log.error("Unhandled exception", error=str(e), path=str(request.url.path))
+            response = JSONResponse(status_code=500, content={"detail": "internal_error"})
+
+    REQUEST_COUNT.labels(service=SERVICE_NAME, status=status_label).inc()
+    response.headers[TRACE_ID_HEADER] = ctx.trace_id
+    response.headers[SPAN_ID_HEADER] = ctx.span_id
+    clear_context()
+    return response
 
 # ============================================================
 # Request/Response Models
@@ -73,7 +115,21 @@ class PluginInstallRequest(BaseModel):
 @app.get("/health")
 async def health():
     """Health check."""
-    return {"status": "ok", "version": __version__}
+    return {
+        "status": "ok",
+        "version": __version__,
+        "service": SERVICE_NAME,
+        "uptime_seconds": time.time() - _START_TIME,
+    }
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    """Prometheus metrics endpoint."""
+    return PlainTextResponse(
+        render_prometheus(metrics),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 @app.get("/list")
@@ -83,8 +139,9 @@ async def list_tools_legacy():
 
 
 @app.post("/execute")
-async def execute_tool(req: ToolRequest):
+async def execute_tool(req: ToolRequest, request: Request):
     """Execute a tool by name."""
+    await enforce_tool_execute(request, req.tool_name)
     try:
         result = await tools.execute(req.tool_name, req.arguments)
         return {"status": "success", "output": result}
@@ -164,12 +221,21 @@ async def get_tool(tool_name: str):
 
 
 @app.post("/tools/{tool_name}/execute")
-async def execute_specific_tool(tool_name: str, req: ExecuteRequest):
+async def execute_specific_tool(tool_name: str, req: ExecuteRequest, request: Request):
     """Execute a specific tool."""
+    await enforce_tool_execute(request, tool_name)
     # Check if plugin execution is enabled
     if tool_name.startswith("plugin."):
-        tools_enabled = os.getenv("SOS_TOOLS_EXECUTION_ENABLED", "").lower() in ("1", "true", "yes")
-        plugins_enabled = os.getenv("SOS_PLUGINS_EXECUTION_ENABLED", "").lower() in ("1", "true", "yes")
+        tools_enabled = os.getenv("SOS_TOOLS_EXECUTION_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        plugins_enabled = os.getenv("SOS_PLUGINS_EXECUTION_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
 
         if not (tools_enabled and plugins_enabled):
             raise HTTPException(status_code=501, detail="plugin_execution_not_enabled")
@@ -180,7 +246,11 @@ async def execute_specific_tool(tool_name: str, req: ExecuteRequest):
     # Execute normal tool
     try:
         result = await tools.execute(tool_name, req.arguments)
+        if isinstance(result, str) and result.startswith("Search Error: No module named"):
+            raise HTTPException(status_code=501, detail="tool_execution_not_implemented")
         return {"success": True, "output": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -197,8 +267,9 @@ async def list_mcp_servers():
 
 
 @app.post("/mcp/servers")
-async def register_mcp_server(req: MCPServerRegister):
+async def register_mcp_server(req: MCPServerRegister, request: Request):
     """Register an MCP server."""
+    await enforce_mcp_register(request, req.name)
     server = {
         "name": req.name,
         "url": req.url,
@@ -212,8 +283,9 @@ async def register_mcp_server(req: MCPServerRegister):
 
 
 @app.delete("/mcp/servers/{server_name}")
-async def unregister_mcp_server(server_name: str):
+async def unregister_mcp_server(server_name: str, request: Request):
     """Unregister an MCP server."""
+    await enforce_mcp_register(request, server_name)
     if server_name not in _MCP_SERVERS:
         raise HTTPException(status_code=404, detail="server_not_found")
 
@@ -291,7 +363,7 @@ async def install_plugin(req: PluginInstallRequest):
     try:
         # Resolve CID to path
         try:
-            artifact = registry.get(req.cid)
+            registry.get(req.cid)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="artifact_not_found")
 

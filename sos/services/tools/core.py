@@ -1,12 +1,13 @@
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
+import hashlib
 import importlib
 import inspect
 import json
-import sys
-from pathlib import Path
-from datetime import datetime, timezone
 import os
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from sos.kernel import Config
 from sos.observability.logging import get_logger
@@ -402,7 +403,10 @@ class ToolsCore:
                 "tool": tool_name,
                 "ok": ok,
                 "error": error,
-                "args": args,
+                "args_hash": hashlib.sha256(
+                    json.dumps(args, sort_keys=True, default=str).encode()
+                ).hexdigest()[:16],
+                "args_preview": json.dumps(args, default=str)[:120],
             }
             with open(audit_dir / "tools.jsonl", "a") as f:
                 f.write(json.dumps(record) + "\n")
