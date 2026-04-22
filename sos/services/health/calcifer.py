@@ -78,7 +78,7 @@ CLAIMED_STALE_HOURS = int(os.environ.get("CALCIFER_CLAIMED_STALE_HOURS", "1"))
 OPENCLAW_UNRESPONSIVE_MINUTES = int(os.environ.get("CALCIFER_OPENCLAW_UNRESPONSIVE_MINUTES", "60"))
 DISCORD_ALERT_SCRIPT = str(Path.home() / "scripts" / "discord-reply.sh")
 SYSTEMD_RESTART_UNITS = {
-    "mirror": "mirror-api.service",
+    "mirror": "mirror.service",
     "squad": "sos-squad.service",
     "openclaw": "openclaw-gateway.service",
 }
