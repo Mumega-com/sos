@@ -1,147 +1,210 @@
-import os
-import time
+"""MemoryCore — SOS memory backed by Mirror kernel directly. No HTTP client.
+
+Async interface is preserved for compatibility with existing callers in app.py.
+Sync Mirror DB calls are offloaded to a thread pool so the FastAPI event loop
+is never blocked.
+"""
+from __future__ import annotations
+
+import sys
 import asyncio
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from dotenv import load_dotenv
+import concurrent.futures
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
-from sos.kernel import Config
-from sos.observability.logging import get_logger
+# Mirror kernel is at /home/mumega — add to path if not already present
+if '/home/mumega' not in sys.path:
+    sys.path.insert(0, '/home/mumega')
+
+from mirror.kernel.db import get_db
+from mirror.kernel.embeddings import get_embedding
+
 from sos.services.memory.monitor import CoherenceMonitor
-from sos.clients.mirror import MirrorClient
 
-log = get_logger("memory_core")
+log = logging.getLogger("memory_core")
+
+# Shared thread pool for blocking Mirror DB calls
+_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="memory-core",
+)
+
 
 @dataclass
 class MemoryItem:
     id: str
     content: str
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = field(default_factory=dict)
     score: float = 0.0
+
 
 class MemoryCore:
     """
     The Hippocampus of the Sovereign OS.
-    Acts as a Proxy to the Unified Mirror API (Local PGVector).
+    Backed by the Mirror kernel directly — no HTTP, same connection pool.
+    Exposes async methods (offloaded to thread pool) to stay compatible with
+    FastAPI callers in app.py.
     """
-    def __init__(self, config: Optional[Config] = None):
-        self.config = config or Config.load()
-        self.monitor = CoherenceMonitor()
-        
-        # Load environment from SOS root
-        env_path = Path(__file__).parents[3] / ".env"
-        log.info(f"Loading .env from {env_path} (exists: {env_path.exists()})")
-        load_dotenv(dotenv_path=env_path)
-        
-        # Initialize Mirror Client
-        mirror_url = os.getenv("MIRROR_URL", "http://localhost:8844")
-        agent_name = os.getenv("SOS_AGENT_NAME", "sos")
-        self.mirror = MirrorClient(base_url=mirror_url, agent_id=agent_name)
-        
-        log.info(f"Memory Core Unified via Mirror API at {mirror_url}")
 
-    async def add(self, content: str, metadata: Dict[str, Any] = None) -> str:
-        """
-        Add a memory engram to the unified Mirror.
-        """
-        item_id = f"sos_{int(time.time()*1000)}"
-        log.info(f"Encoding memory to Mirror: {content[:50]}...")
-        
+    def __init__(self, agent_name: str = "sos"):
+        self.agent = agent_name
+        self.monitor = CoherenceMonitor()
+
+        try:
+            # get_db() returns a LocalDB (or SupabaseDB) instance.
+            # Call it once and hold a reference — avoids spawning extra pools.
+            self._db = get_db()
+            log.info("MemoryCore: Mirror kernel loaded (direct, no HTTP) for agent=%s", agent_name)
+        except Exception as exc:
+            log.warning(
+                "MemoryCore: Mirror DB unavailable: %s — memory degraded", exc
+            )
+            self._db = None
+
+    # ── sync internals (run in thread pool) ────────────────────────────────
+
+    def _sync_add(self, content: str, metadata: dict) -> str:
+        if self._db is None:
+            return ""
+        from datetime import datetime, timezone
+        context_id = metadata.get(
+            "context_id",
+            f"{self.agent}:{hash(content) & 0xFFFFFFFF}",
+        )
+        embedding = [float(x) for x in get_embedding(content)]
+        workspace = metadata.get("project", "sos")
+        self._db.upsert_engram({
+            "context_id": context_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "series": f"{self.agent.title()} - SOS",
+            "workspace_id": workspace,
+            "project": workspace,
+            "epistemic_truths": metadata.get("tags", []),
+            "core_concepts": metadata.get("tags", []),
+            "affective_vibe": metadata.get("vibe", "Neutral"),
+            "energy_level": "Balanced",
+            "next_attractor": "",
+            "raw_data": {"agent": self.agent, "text": content, **metadata},
+            "embedding": embedding,
+        })
+        return context_id
+
+    def _sync_search(
+        self, query: str, limit: int, project: Optional[str]
+    ) -> List[MemoryItem]:
+        if self._db is None:
+            return []
+        workspace_id = project or "sos"
+        embedding = [float(x) for x in get_embedding(query)]
+        rows = self._db.search_engrams(embedding, 0.5, limit, workspace_id, workspace_id)
+        results = []
+        for r in rows:
+            raw = r.get("raw_data") or {}
+            text = raw.get("text", "") if isinstance(raw, dict) else ""
+            if not text:
+                text = str(r.get("context_id", ""))
+            results.append(MemoryItem(
+                id=str(r.get("context_id", "")),
+                content=text,
+                metadata=raw if isinstance(raw, dict) else {},
+                score=float(r.get("similarity", 0.0)),
+            ))
+        return results
+
+    def _sync_search_code(
+        self, query: str, limit: int, repo: Optional[str]
+    ) -> List[MemoryItem]:
+        if self._db is None:
+            return []
+        embedding = [float(x) for x in get_embedding(query)]
+        rows = self._db.search_code_nodes(embedding, 0.5, limit, repo, None)
+        return [
+            MemoryItem(
+                id=str(r.get("id", "")),
+                content=r.get("text", "") or r.get("signature", ""),
+                metadata=dict(r),
+                score=float(r.get("similarity", 0.0)),
+            )
+            for r in rows
+        ]
+
+    # ── async interface (compatible with existing callers) ──────────────────
+
+    async def add(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Add a memory engram. Returns the context_id."""
         metadata = metadata or {}
-        
-        # 0. Measure Coherence (Alpha Drift) 
+
+        # Coherence check (non-blocking — uses the same search path)
         try:
             results = await self.search(content, limit=1)
             best_score = results[0].score if results else 0.5
             state = self.monitor.update(best_score)
-            log.info(f"🧠 ARF State Update | Score: {best_score:.4f} | Alpha: {state.alpha_norm:.4f} | Regime: {state.regime}")
-        except Exception as e:
-            log.warn(f"Coherence check failed (Mirror search error): {e}")
-            best_score = 0.5
+            log.info(
+                "ARF State | score=%.4f alpha=%.4f regime=%s",
+                best_score, state.alpha_norm, state.regime,
+            )
+        except Exception as exc:
+            log.warning("Coherence check failed: %s", exc)
 
-        # 1. Store in Mirror
-        try:
-            payload = {
-                "agent": self.mirror.agent_id,
-                "context_id": item_id,
-                "series": "sos-internal",
-                "text": content,
-                "project": metadata.get("project", "sos"),
-                "epistemic_truths": metadata.get("tags", []),
-                "core_concepts": metadata.get("tags", []),
-                "affective_vibe": metadata.get("vibe", "neutral"),
-                "metadata": metadata
-            }
-            
-            resp = await self.mirror._request("POST", "/store", json=payload)
-            if resp.status_code != 200:
-                log.error(f"Failed to store memory in Mirror: {resp.text}")
-        except Exception as e:
-            log.error(f"Mirror store failed: {e}")
-            
-        return item_id
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, lambda: self._sync_add(content, metadata))
 
-    async def search(self, query: str, limit: int = 5) -> List[MemoryItem]:
-        """
-        Semantic search for memories via Mirror.
-        """
-        log.info(f"Searching Unified Mirror for: {query}")
-        
-        results = []
-        try:
-            payload = {
-                "query": query,
-                "top_k": limit
-            }
-            resp = await self.mirror._request("POST", "/search", json=payload)
-            if resp.status_code == 200:
-                raw_data = resp.json()
-                # Handle both raw list and dict with results key
-                engrams = raw_data if isinstance(raw_data, list) else raw_data.get("results", [])
-                
-                for r in engrams:
-                    results.append(MemoryItem(
-                        id=r.get("context_id", r.get("id", "")),
-                        content=r.get("text", r.get("content", "")),
-                        metadata=r.get("metadata", {}),
-                        score=r.get("similarity", 0.0)
-                    ))
-        except Exception as e:
-            log.error(f"Mirror search failed: {e}")
-                
-        return results
+    async def search(
+        self, query: str, limit: int = 5, project: Optional[str] = None
+    ) -> List[MemoryItem]:
+        """Semantic search for memories."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor, lambda: self._sync_search(query, limit, project)
+        )
 
-    async def search_code(self, query: str, limit: int = 5, repo: str = None) -> List[Dict]:
-        """
-        Semantic Code Graph Search via Mirror Proxy.
-        """
-        log.info(f"Searching Code Graph for: {query} (repo: {repo})")
-        return await self.mirror.search_code(query, limit, repo)
+    async def search_code(
+        self, query: str, limit: int = 5, repo: Optional[str] = None
+    ) -> List[MemoryItem]:
+        """Semantic search over the code graph."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor, lambda: self._sync_search_code(query, limit, repo)
+        )
 
     async def get_arf_state(self) -> Dict[str, Any]:
-        """
-        Fetch the current ARF (Alpha Drift) state.
-        """
+        """Return the current ARF (Alpha Drift / coherence) state."""
         state = self.monitor.get_state()
         return {
             "alpha_drift": state.alpha_norm,
             "regime": state.regime,
             "coherence_raw": state.coherence,
-            "timestamp": state.timestamp
+            "timestamp": state.timestamp,
         }
 
     async def health(self) -> Dict[str, Any]:
-        # Mirror API uses / for health
-        try:
-            resp = await self.mirror._request("GET", "/")
-            mirror_ok = resp.status_code == 200
-        except Exception:
-            mirror_ok = False
-            
+        """Return health status of the MemoryCore."""
+        db_ok = self._db is not None
+        # Quick connectivity check — count engrams (cheap, no embedding)
+        if db_ok:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(_executor, lambda: self._db.count_engrams())
+            except Exception as exc:
+                log.warning("MemoryCore health check DB ping failed: %s", exc)
+                db_ok = False
+
         return {
-            "status": "ok" if mirror_ok else "degraded",
-            "backend": "mirror_proxy",
-            "mirror_connected": mirror_ok,
-            "monitor": self.monitor.get_state().regime
+            "status": "ok" if db_ok else "degraded",
+            "backend": "mirror_kernel_direct",
+            "mirror_connected": db_ok,
+            "monitor": self.monitor.get_state().regime,
         }
+
+    # ── sync aliases (for non-async callers, e.g. direct scripts) ──────────
+
+    def remember(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """Sync alias for add()."""
+        return self._sync_add(content, metadata or {})
+
+    def recall(
+        self, query: str, limit: int = 5, project: Optional[str] = None
+    ) -> List[MemoryItem]:
+        """Sync alias for search()."""
+        return self._sync_search(query, limit, project)
