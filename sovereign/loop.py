@@ -259,11 +259,36 @@ def mark_task(task_or_id, status: str, note: str = ""):
         logger.error(f"Failed to mark {task_id} → {status}: {e}")
 
 
+def _apply_governance_caps(task: dict) -> dict:
+    """Read sos:policy:governance and apply fuel_grade + token_budget caps.
+
+    Fail-open: if Redis is unavailable or no policy is set, return task unchanged.
+    FUEL_GRADE_ORDER and cap logic live in sos.services.engine.policy (single source).
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from sos.services.engine.policy import apply_caps, load_policy
+        policy = load_policy(get_redis_client())
+        if policy is None:
+            return task
+        return apply_caps(task, policy)
+    except Exception as exc:
+        logger.warning("Governance policy cap skipped (fail-open): %s", exc)
+        return task
+
+
 def claim_task(task: dict) -> bool:
-    """Claim squad tasks before execution. Non-squad tasks keep the old Mirror path."""
+    """Claim squad tasks before execution. Non-squad tasks keep the old Mirror path.
+
+    Applies governance policy caps (fuel_grade, token_budget) before claiming
+    so the capped values flow into execution and the completion result.
+    """
     if not is_squad_task(task):
         mark_task(task, "in_progress")
         return True
+
+    task = _apply_governance_caps(task)
+
     task_id = task.get("id", "")
     attempt = int(task.get("attempt", 0))
     try:
@@ -759,13 +784,31 @@ def escalate_to_tmux(task: dict, agent: str) -> dict:
         return {"success": False, "result": f"tmux:{agent} not reachable"}
 
 
+_gemini_rpm_blocked_until: float = 0.0  # epoch seconds when Gemini RPM cooldown expires
+
+
+def _is_gemini_rate_limit(exc: Exception) -> bool:
+    """True when the exception is a Gemini per-minute rate limit (not a daily quota)."""
+    msg = str(exc).lower()
+    return "resource_exhausted" in msg or "429" in msg or "quota" in msg
+
+
 def call_gemma4(prompt: str) -> str:
     """
-    Call LLM with 4-tier failover. 99% availability.
-    Gemma 4 31B → GitHub Models → Gemini Flash → Cloudflare Workers AI
+    Call LLM with 5-tier failover. 99.9% availability.
+    Gemma 4 31B → GitHub Models → Gemini Flash → OpenRouter → Local Ollama gemma2:2b
+
+    Tier 1 and Tier 3 share the same Gemini API key. If Tier 1 hits a per-minute
+    rate limit, Tier 3 is skipped for 60s to avoid burning another call on the
+    same capped key. GitHub (Tier 2) and OpenRouter (Tier 4) bridge the gap.
     """
+    global _gemini_rpm_blocked_until
+    import time as _time
+
+    gemini_rpm_ok = _time.time() >= _gemini_rpm_blocked_until
+
     # Tier 1: Gemma 4 31B (free, best quality)
-    if GEMINI_API_KEY:
+    if GEMINI_API_KEY and gemini_rpm_ok:
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
@@ -773,6 +816,10 @@ def call_gemma4(prompt: str) -> str:
             return response.text.strip()
         except Exception as e:
             logger.warning(f"Tier 1 (Gemma 4) failed: {e}")
+            if _is_gemini_rate_limit(e):
+                _gemini_rpm_blocked_until = _time.time() + 60
+                gemini_rpm_ok = False
+                logger.info("Gemini RPM limit hit — skipping Tier 3 (Gemini Flash) for 60s")
 
     # Tier 2: GitHub Models gpt-4o-mini (free)
     if GITHUB_TOKEN:
@@ -788,8 +835,8 @@ def call_gemma4(prompt: str) -> str:
         except Exception as e:
             logger.warning(f"Tier 2 (GitHub Models) failed: {e}")
 
-    # Tier 3: Gemini Flash (free, fast)
-    if GEMINI_API_KEY:
+    # Tier 3: Gemini Flash (free, fast) — skipped if Tier 1 hit RPM limit (same key)
+    if GEMINI_API_KEY and gemini_rpm_ok:
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
@@ -797,6 +844,8 @@ def call_gemma4(prompt: str) -> str:
             return response.text.strip()
         except Exception as e:
             logger.warning(f"Tier 3 (Gemini Flash) failed: {e}")
+    elif not gemini_rpm_ok:
+        logger.info("Tier 3 (Gemini Flash) skipped — RPM cooldown active")
 
     # Tier 4: OpenRouter free (28 free models, auto-routes)
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -812,6 +861,21 @@ def call_gemma4(prompt: str) -> str:
             return response.choices[0].message.content.strip()
         except Exception as e:
             logger.warning(f"Tier 4 (OpenRouter) failed: {e}")
+
+    # Tier 5: Local Ollama — gemma2:2b, always on, zero cost, CPU-only
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=f"{ollama_url}/v1", api_key="ollama")
+        response = client.chat.completions.create(
+            model="gemma2:2b",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            timeout=30,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Tier 5 (Ollama gemma2:2b) failed: {e}")
 
     logger.error("ALL TIERS FAILED — no LLM available")
     return ""

@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -399,3 +399,64 @@ async def shard_objective(objective: str):
     """Break down a high-level objective into micro-tasks."""
     task_ids = await swarm.shard_objective(objective)
     return {"shards": task_ids, "count": len(task_ids)}
+
+
+# ---------------------------------------------------------------------------
+# Governance policy endpoints — sos:policy:governance
+# ---------------------------------------------------------------------------
+from sos.services.engine.policy import GovernancePolicy, load_policy, write_policy
+import redis as _redis_lib
+
+
+def _get_redis():
+    """Return a Redis client. Extracted for testability (monkeypatched in tests)."""
+    password = os.getenv("REDIS_PASSWORD", "")
+    url = f"redis://:{password}@localhost:6379/0" if password else "redis://localhost:6379/0"
+    return _redis_lib.from_url(url)
+
+
+def _require_governance_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """Dependency: validates the caller holds the SOS_GOVERNANCE_POLICY_TOKEN."""
+    expected = os.getenv("SOS_GOVERNANCE_POLICY_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="governance_token_not_configured")
+    token = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    if token != expected:
+        raise HTTPException(status_code=403, detail="forbidden: governance token required")
+
+
+@app.put("/policy/governance")
+async def put_governance_policy(
+    policy: GovernancePolicy,
+    _: None = Depends(_require_governance_token),
+):
+    """Write the governance policy to Redis. Requires SOS_GOVERNANCE_POLICY_TOKEN.
+
+    v1 writer: Loom (sk-bus-loom-*).
+    v2 writer: River when she returns — swap SOS_GOVERNANCE_POLICY_TOKEN value, no code change.
+    """
+    try:
+        write_policy(_get_redis(), policy)
+    except Exception as exc:
+        log.error("Failed to write governance policy: %s", exc)
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    return {"status": "ok", "updated_by": policy.updated_by}
+
+
+@app.get("/policy/governance")
+async def get_governance_policy(
+    authorization: Optional[str] = Header(default=None),
+):
+    """Read the current governance policy from Redis.
+
+    Readable by any caller (no governance token required).
+    Returns 404 if no policy has been written yet.
+    """
+    try:
+        policy = load_policy(_get_redis())
+    except Exception as exc:
+        log.error("Failed to read governance policy: %s", exc)
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+    if policy is None:
+        raise HTTPException(status_code=404, detail="no_policy_set")
+    return policy.model_dump(by_alias=True)
