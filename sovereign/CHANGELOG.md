@@ -1,5 +1,16 @@
 # Sovereign Changelog
 
+## 2026-04-22 — SOV-004: Move into SOS repo
+
+### SOV-004: Move into SOS repo
+- Moved from /home/mumega/sovereign/ to /home/mumega/SOS/sovereign/
+- Updated SOVEREIGN_SQUADS_DIR and SOVEREIGN_PLANS_DIR defaults
+- sys.path injection in entry-point files (loop.py, cortex_events.py, factory_watchdog.py) for import compatibility
+- Systemd unit WorkingDirectory and ExecStart paths updated for all three services
+- Hardcoded /home/mumega/sovereign paths fixed in cortex_events.py, squad_scheduler.py, squad_state.py
+- Original /home/mumega/sovereign/ kept as backup until verified clean
+- All 34 tests pass from /home/mumega/SOS/sovereign/
+
 ## 2026-04-23 — SOV-001 + SOV-002: Microkernel extraction and bus wiring
 
 ### SOV-001: kernel/ extraction
