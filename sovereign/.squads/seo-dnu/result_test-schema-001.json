@@ -1,0 +1,36 @@
+{
+  "skill": "schema_checker",
+  "success": true,
+  "summary": "Schema: 0 found, 9 missing",
+  "output": {
+    "url": "https://dentalnearyou.ca",
+    "status": 200,
+    "schemas_found": 0,
+    "types_found": [],
+    "schema_reports": [],
+    "missing_recommended_types": [
+      "Dentist",
+      "MedicalBusiness",
+      "LocalBusiness",
+      "Organization",
+      "WebSite",
+      "BreadcrumbList",
+      "FAQPage",
+      "Review",
+      "AggregateRating"
+    ],
+    "suggestions": [
+      "Add Dentist or MedicalBusiness schema \u2014 critical for local SEO and rich results",
+      "Add LocalBusiness schema with NAP (name, address, phone)",
+      "Add WebSite schema with SearchAction for sitelinks search box",
+      "Add FAQPage schema to target FAQ rich results in search",
+      "Add AggregateRating schema to display star ratings in SERPs"
+    ],
+    "issues": [
+      "No JSON-LD schema markup found on page"
+    ],
+    "issue_count": 1
+  },
+  "elapsed_s": 0.6,
+  "timestamp": "2026-04-05T17:26:02Z"
+}
