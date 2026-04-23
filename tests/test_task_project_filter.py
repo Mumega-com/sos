@@ -100,3 +100,23 @@ def test_project_id_no_match_returns_empty(tmp_path, monkeypatch):
     results = svc.list(project_id="nonexistent-project", tenant_id="tenant-d")
 
     assert results == []
+
+
+def test_project_id_empty_string_filters_on_empty_not_all(tmp_path, monkeypatch):
+    """project_id="" must filter on tasks with project="", not return all tasks.
+
+    Previously, `if project_id:` evaluated "" as falsy and skipped the filter,
+    returning every task. The fix changes the guard to `if project_id is not None:`
+    so that the empty string is still applied as a WHERE clause.
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+
+    svc.create(_task("task-with-empty-project", project=""), tenant_id="tenant-e")
+    svc.create(_task("task-with-named-project", project="river"), tenant_id="tenant-e")
+
+    results = svc.list(project_id="", tenant_id="tenant-e")
+
+    # Only the task whose project column is "" should be returned.
+    assert len(results) == 1
+    assert results[0].project == ""
+    assert results[0].title == "task-with-empty-project"

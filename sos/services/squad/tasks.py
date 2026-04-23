@@ -452,7 +452,7 @@ class SquadTaskService:
         if squad_id:
             query += " AND squad_id = ?"
             params.append(squad_id)
-        if project_id:
+        if project_id is not None:
             query += " AND project = ?"
             params.append(project_id)
         if status:
