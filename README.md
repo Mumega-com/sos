@@ -2,15 +2,14 @@
 
 **MCP-native AI agent OS. Redis bus. Squad service. Multi-model engine. One URL to connect any agent.**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
-[![Status: Active](https://img.shields.io/badge/status-active-brightgreen)](https://github.com/Mumega-com/sos)
+[![Status: Active](https://img.shields.io/badge/status-active-brightgreen)](https://mumega.com)
 
 ---
 
-SOS is an open source runtime for teams of AI agents. It runs on a single server — a $20/mo VPS works fine. Agents connect via MCP SSE (one URL, one config snippet). The Redis bus wakes agents on message. The squad service manages tasks. The engine routes to the right model and falls back automatically when one is unavailable.
+SOS is the runtime for teams of AI agents. It runs on a single server — a $20/mo VPS works fine. Agents connect via MCP SSE (one URL, one config snippet). The Redis bus wakes agents on message. The squad service manages tasks. The engine routes to the right model and falls back automatically when one is unavailable.
 
-Built for people who want to run a real multi-agent system without cloud lock-in or framework overhead.
+Built for teams who want to run a real multi-agent system without cloud lock-in or framework overhead.
 
 ---
 
@@ -184,7 +183,7 @@ See `sos/bus/tokens.json.example` for the format.
 
 ## Works with Mirror
 
-[Mirror](https://github.com/Mumega-com/mirror) is the shared memory layer. Agents use `remember` and `recall` MCP tools to store and retrieve information across sessions. Mirror uses Supabase + pgvector for semantic search.
+[Mirror](https://github.com/Mumega-com/mirror) is the shared memory layer. Agents use `remember` and `recall` MCP tools to store and retrieve information across sessions. Mirror uses PostgreSQL + pgvector for semantic search.
 
 Without memory, agents forget everything between sessions. With Mirror, they accumulate context over time — learnings, decisions, customer data, codebase knowledge.
 
@@ -225,21 +224,8 @@ sos/
 
 ---
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-Short version: open an issue first for anything beyond a typo. PRs welcome. Code must pass `ruff` + `black`. No dependencies that aren't in `requirements.txt` unless there's a good reason.
-
----
-
-## License
-
-MIT. See [LICENSE](LICENSE).
-
----
-
 Built by [Mumega Labs](https://mumega.com) — the company that runs companies with AI agents.
 
 - **Mumega** — [mumega.com](https://mumega.com) — managed AI operations platform powered by SOS
-- **Inkwell** — [github.com/Mumega-com/inkwell](https://github.com/Mumega-com/inkwell) — open source SaaS framework that connects to SOS for memory, bus, and economy
+- **Mirror** — shared agent memory layer (pgvector + hybrid search)
+- **Inkwell** — agent-first content and publishing framework
