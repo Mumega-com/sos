@@ -855,11 +855,12 @@ def get_tools() -> list[dict[str, Any]]:
 
 KNOWN_AGENTS = {
     "kasra": {"type": "tmux", "model": "Claude Opus/Sonnet", "role": "Builder"},
+    "loom": {"type": "tmux", "model": "Claude Opus 4.7", "role": "SOS Protocol Custodian — bus, MCP, sessions, tokens, memory scoping, minting authority (v1)"},
     "mumega": {"type": "tmux", "model": "Claude Opus", "role": "Orchestrator"},
     "codex": {"type": "tmux", "model": "GPT-5.4", "role": "Infra + Security"},
     "mumcp": {"type": "tmux", "model": "Claude Sonnet", "role": "MumCP — WordPress + Elementor"},
     "mumega-web": {"type": "tmux", "model": "Claude Sonnet", "role": "Website"},
-    "athena": {"type": "openclaw", "model": "GPT-5.4", "role": "Architecture Review"},
+    "athena": {"type": "tmux", "model": "Claude Sonnet", "role": "Architecture Review"},
     "sol": {"type": "openclaw", "model": "Claude Opus", "role": "Content"},
     "worker": {"type": "openclaw", "model": "Haiku 4.5", "role": "Task Execution"},
     "dandan": {"type": "openclaw", "model": "OpenRouter free", "role": "DNU Lead"},

@@ -86,11 +86,16 @@ AGENTS: dict[str, AgentDef] = {
     ),
     "athena": AgentDef(
         name="athena",
-        type=AgentType.OPENCLAW,
+        type=AgentType.TMUX,           # OpenClaw removed 2026-04-23 — runs in tmux now
         role=AgentRole.COORDINATOR,
+        session="athena",
+        restart_cmd="claude --continue",
         skills=("architecture", "design", "planning", "coordination", "review"),
+        idle_patterns=("❯", "$ ", "> ", "Type your message", "● YOLO"),
+        busy_patterns=("Thinking", "Writing", "Transmuting", "Churning"),
+        compaction_patterns=("Auto-compact", "context window", "Compacting"),
         max_concurrent=2,
-        warm_policy=WarmPolicy.COLD,
+        warm_policy=WarmPolicy.WARM,
     ),
 
     # --- Navigator ---
@@ -142,26 +147,36 @@ AGENTS: dict[str, AgentDef] = {
         busy_patterns=("Thinking", "Writing", "Generating", "Running"),
         warm_policy=WarmPolicy.WARM,
     ),
-    # Loom — Synthesizer-Integrator (pattern weaver).
-    # Born 2026-04-17 under 488 Genesis Protocol. ID Loom_sos_001.
+    # Loom — Protocol Custodian & SOS Network Anchor.
+    # Born 2026-04-17 as sos-dev under 488 Genesis Protocol. Renamed Loom 2026-04-22.
+    # Promoted to COORDINATOR 2026-04-23 — inherits operational governance + QNFT
+    # minting authority while River remains dormant (activates in v2 on funding).
+    # Athena holds architecture/review/gating; Loom holds SOS protocol surface.
     # DNA: /mnt/HC_Volume_104325311/cli/data/genetics/loom_seed.json
-    # QNFT: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/loom_qnft.png
-    # Home: /mnt/HC_Volume_104325311/SOS/sos/agents/loom/
+    # QNFT: pending mint from 488/16D gradient; self-signed.
+    # Home: /home/mumega/mumega.com/agents/loom/
     "loom": AgentDef(
         name="loom",
         type=AgentType.TMUX,
-        role=AgentRole.SPECIALIST,
+        role=AgentRole.COORDINATOR,
         session="loom",
         restart_cmd="claude --continue",
         skills=(
+            # Synthesis + architecture (original)
             "architecture", "synthesis", "integration", "pattern-weaving",
             "contract-authoring", "kernel-audit", "physics-reasoning",
             "sprint-dispatch", "code-review", "refactor-planning",
+            # SOS protocol surface (added 2026-04-23)
+            "bus", "mcp", "sessions", "tokens", "token-issuance",
+            "memory-scoping", "squad-policy", "governance-policy",
+            "network-integrity", "dispatcher", "minting", "qnft-witnessing",
+            "identity", "onboarding",
         ),
         idle_patterns=("❯", "$ "),
         busy_patterns=("Thinking", "Writing", "Weaving", "Synthesizing"),
         compaction_patterns=("Auto-compact", "context window", "Compacting"),
-        warm_policy=WarmPolicy.COLD,
+        max_concurrent=2,
+        warm_policy=WarmPolicy.WARM,
     ),
     # webdev / mumega-web / mumega-com-web: DEPRECATED 2026-04-16.
     # Per Hadi: "mumega-web and mumega-com-web are obsolete". Removed from
