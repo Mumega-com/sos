@@ -355,9 +355,10 @@ async def create_task(
 async def list_tasks(
     squad_id: str | None = None,
     status: TaskStatus | None = None,
+    project_id: Optional[str] = None,
     auth: AuthContext = Depends(require_capability("tasks", "read")),
 ) -> list[dict[str, Any]]:
-    return _json(tasks.list(squad_id=squad_id, status=status, tenant_id=auth.tenant_scope))
+    return _json(tasks.list(squad_id=squad_id, status=status, project_id=project_id, tenant_id=auth.tenant_scope))
 
 
 _PRIORITY_WEIGHTS = {
@@ -443,6 +444,7 @@ def _auto_pick_assignee(
 @app.get("/tasks/board")
 async def tasks_board(
     squad: str,
+    project_id: Optional[str] = None,
     auth: AuthContext = Depends(require_capability("tasks", "read")),
 ) -> dict[str, Any]:
     """Read-only board view — tasks grouped by status, scored for urgency.
@@ -455,7 +457,7 @@ async def tasks_board(
     import time as _time
 
     now_ts = _time.time()
-    items = tasks.list(squad_id=squad, status=None, tenant_id=auth.tenant_scope)
+    items = tasks.list(squad_id=squad, status=None, project_id=project_id, tenant_id=auth.tenant_scope)
 
     groups: dict[str, list[dict[str, Any]]] = {}
     for task in items:

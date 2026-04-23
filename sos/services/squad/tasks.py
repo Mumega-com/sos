@@ -441,6 +441,7 @@ class SquadTaskService:
         self,
         squad_id: str | None = None,
         status: TaskStatus | None = None,
+        project_id: str | None = None,
         tenant_id: str | None = DEFAULT_TENANT_ID,
     ) -> list[SquadTask]:
         query = "SELECT * FROM squad_tasks WHERE 1=1"
@@ -451,6 +452,9 @@ class SquadTaskService:
         if squad_id:
             query += " AND squad_id = ?"
             params.append(squad_id)
+        if project_id is not None:
+            query += " AND project = ?"
+            params.append(project_id)
         if status:
             query += " AND status = ?"
             params.append(status.value)
