@@ -38,7 +38,7 @@ from sos.services.squad.auth import AuthContext, create_api_key as _create_api_k
 from sos.services.squad.auth import _lookup_token as _squad_lookup_token
 from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
-from sos.services.squad.tasks import NotAllDoneError
+from sos.services.squad.tasks import InsufficientFundsError, NotAllDoneError
 from sos.services.squad.kpis import KPISnapshot, calculate_kpis
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
@@ -496,6 +496,8 @@ async def claim_task(
         claim = tasks.claim(task_id, payload.assignee, payload.attempt, tenant_id=auth.tenant_scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="task_not_found")
+    except InsufficientFundsError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return _json(claim)

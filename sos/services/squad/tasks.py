@@ -30,6 +30,22 @@ class NotAllDoneError(ValueError):
     """
 
 
+class InsufficientFundsError(ValueError):
+    """Raised when a squad wallet cannot cover a task's estimated cost at claim time.
+
+    Mapped to HTTP 402 Payment Required in the app layer.
+    Squads with no wallet row are treated as unlimited and never raise this.
+    """
+
+    def __init__(self, task_id: str, balance_cents: int, estimated_cost_cents: int) -> None:
+        self.task_id = task_id
+        self.balance_cents = balance_cents
+        self.estimated_cost_cents = estimated_cost_cents
+        super().__init__(
+            f"Task {task_id} costs {estimated_cost_cents}¢ but squad wallet has only {balance_cents}¢"
+        )
+
+
 # --- Bus envelope helpers -----------------------------------------------------
 # Squad emits v1 TaskCompletedMessage on the global squad stream so that health
 # (conductance) and journeys (milestones) consumers can react without squad
@@ -522,6 +538,20 @@ class SquadTaskService:
                 raise ValueError(f"Claim attempt mismatch for {task_id}: expected {task.attempt}, got {attempt}")
             if task.status not in {TaskStatus.BACKLOG, TaskStatus.QUEUED}:
                 raise ValueError(f"Task {task_id} is not claimable from status {task.status.value}")
+            # Budget gate: reject claim if squad wallet cannot cover estimated cost.
+            # Missing wallet row = squad predates wallet feature → treat as unlimited.
+            estimated_cents = task.inputs.get("estimated_cost_cents", 0)
+            if estimated_cents > 0:
+                wallet_row = conn.execute(
+                    "SELECT balance_cents FROM squad_wallets WHERE squad_id = ? AND tenant_id = ?",
+                    (task.squad_id, tenant_id or DEFAULT_TENANT_ID),
+                ).fetchone()
+                if wallet_row is not None and wallet_row["balance_cents"] < estimated_cents:
+                    raise InsufficientFundsError(
+                        task_id=task_id,
+                        balance_cents=wallet_row["balance_cents"],
+                        estimated_cost_cents=estimated_cents,
+                    )
             new_attempt = task.attempt + 1
             updated = conn.execute(
                 """
