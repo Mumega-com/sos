@@ -364,6 +364,9 @@ class _TokenCacheWithHotReload:
                 # Prefer stored token_hash; fall back to hashing raw token for
                 # entries that haven't been migrated yet.
                 stored_hash = item.get("token_hash", "")
+                # Normalize: strip "sha256:" prefix so lookup keys are always plain hex
+                if stored_hash.startswith("sha256:"):
+                    stored_hash = stored_hash[len("sha256:"):]
                 raw_token = item.get("token", "")
                 if stored_hash:
                     hash_key = stored_hash
@@ -1192,14 +1195,36 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         elif name == "inbox":
             agent = _require_same_tenant_agent(auth, args.get("agent"))
             limit = args.get("limit", 10)
-            stream = _agent_stream(agent, project_scope)
-            entries = await r.xrevrange(stream, count=limit)
-            if not entries and auth.is_system and not project_scope:
-                entries = await r.xrevrange(_legacy_stream(agent), count=limit)
-            if not entries:
+            # Always read BOTH project-scoped and global streams and merge.
+            # Root cause: senders with different project scopes land in different
+            # streams. A project-scoped token (e.g. Loom/project:sos) would miss
+            # messages sent by global-scoped agents (e.g. Kasra/no-project).
+            # Fix: collect from project stream + global stream, deduplicate by
+            # message ID, sort descending by Redis stream ID (which is ms timestamp),
+            # return top `limit` entries.
+            seen_ids: set = set()
+            all_entries: list = []
+            streams_to_check = []
+            if project_scope:
+                streams_to_check.append(_agent_stream(agent, project_scope))
+            streams_to_check.append(_agent_stream(agent, None))  # global always
+            streams_to_check.append(_legacy_stream(agent))       # legacy fallback
+            for s in streams_to_check:
+                try:
+                    batch = await r.xrevrange(s, count=limit)
+                    for mid, data in batch:
+                        if mid not in seen_ids:
+                            seen_ids.add(mid)
+                            all_entries.append((mid, data))
+                except Exception:
+                    pass
+            # Sort descending by stream ID (lexicographic on Redis IDs = chronological)
+            all_entries.sort(key=lambda x: x[0], reverse=True)
+            all_entries = all_entries[:limit]
+            if not all_entries:
                 return _text(f"No messages for {agent}.")
             lines = []
-            for mid, data in entries:
+            for mid, data in all_entries:
                 parsed = bus_envelope.parse(data)
                 lines.append(
                     f"[{data.get('timestamp', '?')}] {parsed['source'] or '?'}: {parsed['text']}"

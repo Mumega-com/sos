@@ -276,10 +276,11 @@ def run_check():
         if agent_status["status"] in ("stuck", "quota"):
             restart_agent(agent_name)
 
-    # Overall status
-    if available_count == 0:
+    # Overall status — alert only on state change to avoid spam
+    prev_available = state.get("available_sources", len(sources))
+    if available_count == 0 and prev_available > 0:
         alert_hadi("**🔴 CRITICAL: ALL MODEL SOURCES DOWN. Token flow stopped.**")
-    elif available_count < len(sources) // 2:
+    elif available_count < len(sources) // 2 and prev_available >= len(sources) // 2:
         alert_hadi(f"**🟡 WARNING: Only {available_count}/{len(sources)} sources available.**")
 
     # Log summary
@@ -301,14 +302,14 @@ def run_check():
 
 
 def daemon():
-    """Run every 5 minutes."""
-    logger.info("Factory Watchdog starting — checking every 5 minutes")
+    """Run every 30 minutes."""
+    logger.info("Factory Watchdog starting — checking every 30 minutes")
     while True:
         try:
             run_check()
         except Exception as e:
             logger.error(f"Watchdog cycle failed: {e}")
-        time.sleep(300)  # 5 minutes
+        time.sleep(1800)  # 30 minutes
 
 
 if __name__ == "__main__":

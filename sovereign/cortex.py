@@ -153,19 +153,9 @@ def _http_health(name: str, url: str) -> ServiceHealth:
 
 
 def _openclaw_health() -> ServiceHealth:
-    try:
-        result = subprocess.run(
-            ["pgrep", "-af", "openclaw.*(gateway|daemon|node)"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            return ServiceHealth(name="openclaw", status="up", detail=lines[0][:160], latency_ms=0)
-        return ServiceHealth(name="openclaw", status="down", detail="no_openclaw_process", latency_ms=0)
-    except Exception as exc:
-        return ServiceHealth(name="openclaw", status="down", detail=str(exc)[:160], latency_ms=0)
+    # OpenClaw removed 2026-04-23 — agents now run via tmux + Claude Code directly.
+    # Return "removed" so the brain does not generate restart tasks for this service.
+    return ServiceHealth(name="openclaw", status="removed", detail="intentionally_removed", latency_ms=0)
 
 
 def _load_json(path: Path) -> dict[str, Any]:

@@ -40,7 +40,7 @@ REDIS_URL = _redis_settings.resolved_url
 # "openclaw" = publish to {agent}:wake pubsub channel
 # "both" = try tmux first, also openclaw
 AGENT_ROUTING = {
-    "athena":   "openclaw",
+    "athena":   "tmux",
     "kasra":    "tmux",
     "gemini":   "tmux",
     "river":    "tmux",  # legacy alias — routes to gemini session
@@ -60,6 +60,9 @@ AGENT_ROUTING = {
     "prefrontal": "tmux",  # Customer agent — separate Linux user
     "trop":     "tmux",    # TROP growth loop agent — Sonnet
     "sos-medic": "tmux",   # SOS connectivity on-call responder (home: sos/agents/sos-medic/)
+    "loom":     "tmux",    # SOS bus + task wiring (home: mumega.com/agents/loom/)
+    "hermes":   "tmux",    # Ops + architecture review (home: mumega.com/agents/hermes/)
+    "kaveh":    "tmux",    # First customer knight — GAF/SR&ED
 }
 
 # Tmux session name override (if different from agent name)
@@ -225,8 +228,9 @@ def wake_tmux(agent: str, message: str) -> bool:
         )
         # Small delay then submit — ensures text is in the input buffer first
         # Gemini CLI TUI requires C-m (carriage return) not Enter (newline)
+        # 0.5s gives Claude Code time to finish rendering before Enter fires
         import time
-        time.sleep(0.2)
+        time.sleep(0.5)
         submit_key = "C-m" if agent in ("river", "gemini") else "Enter"
         subprocess.run(
             ["tmux"] + sock_args + ["send-keys", "-t", session, submit_key],

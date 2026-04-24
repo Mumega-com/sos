@@ -68,7 +68,7 @@ FUEL_COST_PER_1M: dict[FuelGrade, float] = {
 
 # Primary models per grade (first = preferred)
 FUEL_MODELS: dict[FuelGrade, list[str]] = {
-    "diesel": ["gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.0-flash-exp", "gpt-4o-mini"],
+    "diesel": ["gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.0-flash-exp", "gpt-4o-mini", "gemma2:2b"],
     "regular": ["grok-4-1-fast-reasoning", "deepseek-chat"],
     "premium": ["gpt-4o", "gemini-2.5-pro"],
     "aviation": ["claude-opus-4-6", "claude-sonnet-4-6"],

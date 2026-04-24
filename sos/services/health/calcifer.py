@@ -80,7 +80,7 @@ DISCORD_ALERT_SCRIPT = str(Path.home() / "scripts" / "discord-reply.sh")
 SYSTEMD_RESTART_UNITS = {
     "mirror": "mirror.service",
     "squad": "sos-squad.service",
-    "openclaw": "openclaw-gateway.service",
+    # openclaw-gateway removed: needs `openclaw setup` by Hadi — auto-restart does nothing
 }
 
 # ── Self-Healing ───────────────────────────────────────────────────────────
@@ -138,13 +138,34 @@ def _emit_health_event(event_type: str, service_name: str) -> None:
         pass  # events module optional
 
 
-def _escalate_to_athena(service_name: str) -> None:
-    """Send escalation message to Athena via Redis bus."""
+def _get_escalation_target() -> str:
+    """Find the current gatekeeper/coordinator to escalate to.
+
+    Prefers WARM coordinators (always-on). Falls back to any coordinator.
+    Returns agent name, defaulting to 'athena' if registry is empty.
+    """
+    try:
+        from sos.kernel.agent_registry import get_coordinator_agents, WarmPolicy
+        coordinators = get_coordinator_agents()
+        # Prefer warm coordinators (always-on)
+        warm = [name for name, agent in coordinators.items() if agent.warm_policy == WarmPolicy.WARM]
+        if warm:
+            return warm[0]
+        if coordinators:
+            return next(iter(coordinators))
+    except Exception:
+        pass
+    return "athena"  # hard fallback
+
+
+def _escalate_to_coordinator(service_name: str) -> None:
+    """Send escalation message to the current coordinator via Redis bus."""
     r = get_redis()
     if not r:
         return
+    target = _get_escalation_target()
     try:
-        r.publish("sos:wake:athena", json.dumps({
+        r.publish(f"sos:wake:{target}", json.dumps({
             "type": "self_heal_failed",
             "source": "calcifer",
             "text": f"Service {service_name} failed to recover after restart. Manual intervention needed.",
@@ -152,7 +173,11 @@ def _escalate_to_athena(service_name: str) -> None:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }))
     except Exception as e:
-        logger.warning(f"Escalation to athena failed: {e}")
+        logger.warning(f"Escalation to {target} failed: {e}")
+
+
+# Legacy alias — kept for any external callers
+_escalate_to_athena = _escalate_to_coordinator
 
 
 def _verify_service_health(service_name: str) -> bool:
@@ -214,7 +239,7 @@ def self_heal(service_name: str) -> dict:
             f"Self-heal rate limit hit for {service_name} "
             f"({len(_heal_attempts[service_name])} attempts in last hour) — skipping"
         )
-        _escalate_to_athena(service_name)
+        _escalate_to_coordinator(service_name)
         _emit_health_event("degraded", service_name)
         result["action"] = "escalated"
         return result
@@ -225,7 +250,7 @@ def self_heal(service_name: str) -> dict:
     if not restarted:
         logger.error(f"Self-heal restart command failed for {service_name}")
         _heal_attempts[service_name].append((time.time(), False))
-        _escalate_to_athena(service_name)
+        _escalate_to_coordinator(service_name)
         _emit_health_event("degraded", service_name)
         result["action"] = "escalated"
         return result
@@ -244,7 +269,7 @@ def self_heal(service_name: str) -> dict:
         result["success"] = True
     else:
         logger.error(f"Self-heal failed for {service_name} — still unhealthy after restart")
-        _escalate_to_athena(service_name)
+        _escalate_to_coordinator(service_name)
         _emit_health_event("degraded", service_name)
         result["action"] = "escalated"
 
@@ -272,7 +297,10 @@ FALLBACK_AGENTS = {
         "max_concurrent": 1,
     },
     "athena": {
-        "type": "openclaw",
+        "type": "tmux",
+        "tmux_session": "athena",
+        "idle_patterns": ["❯", "$ ", "> ", "Type your message", "● YOLO"],
+        "busy_patterns": ["Thinking", "Writing", "Transmuting", "Churning"],
         "skills": ["architecture", "design", "planning", "coordination", "review"],
         "max_concurrent": 2,
     },
@@ -1008,7 +1036,8 @@ def check_stale_tasks() -> list[dict]:
         )
         r = get_redis()
         if r:
-            r.publish("sos:wake:athena", json.dumps({
+            target = _get_escalation_target()
+            r.publish(f"sos:wake:{target}", json.dumps({
                 "type": "stale_tasks",
                 "source": "calcifer",
                 "text": f"{len(stale)} stale tasks detected",

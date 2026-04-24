@@ -129,6 +129,22 @@ COMPUTE_SOURCES = {
     },
 
     # ═══════════════════════════════════════════
+    # TIER LOCAL: ON-DEVICE INFERENCE (zero cost, always on)
+    # ═══════════════════════════════════════════
+
+    "ollama_local": {
+        "tier": "local",
+        "provider": "Ollama (local inference, AMD EPYC CPU)",
+        "monthly_cost": 0.00,
+        "models": [
+            {"id": "gemma2:2b", "context": "8K", "strength": "fair", "use": "routing, classification, scoring, last-resort fallback"},
+        ],
+        "rate_limit": "unlimited (CPU-bound, ~3 tok/s)",
+        "access": "OpenAI-compatible SDK at http://localhost:11434/v1, api_key='ollama'. Env: OLLAMA_URL",
+        "notes": "Tier 5 in call_gemma4() failover. CPU-only, no GPU. Good for low-stakes tasks when all cloud tiers are down. Always available.",
+    },
+
+    # ═══════════════════════════════════════════
     # TIER 2: CLOUDFLARE WORKERS AI ($5/mo plan)
     # ═══════════════════════════════════════════
 
