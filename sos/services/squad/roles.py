@@ -125,6 +125,12 @@ class RoleService:
 
         Rule: caller's max rank must be >= target role's rank.
         System identity (caller_id starting with 'system:') bypasses the check.
+
+        The system bypass is intentional scoped-privilege for the bootstrap path —
+        not a backdoor. Without it, seeding the first principal would require an
+        existing principal to assign them (infinite regress). The system token is
+        never issued to end-users; it's the SOS_SYSTEM_TOKEN env var held by the
+        service runtime.
         """
         if caller_id.startswith("system:") or caller_id == "system":
             return
