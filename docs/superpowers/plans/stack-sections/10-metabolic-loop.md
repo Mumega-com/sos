@@ -167,16 +167,15 @@ On Mirror's engram table, add:
 ALTER TABLE engrams ADD COLUMN access_count INT DEFAULT 0;
 ALTER TABLE engrams ADD COLUMN last_accessed_at TIMESTAMPTZ;
 ALTER TABLE engrams ADD COLUMN corroboration_count INT DEFAULT 1;
-ALTER TABLE engrams ADD COLUMN weight NUMERIC GENERATED ALWAYS AS (
-  ln(1 + access_count) * ln(1 + corroboration_count) *
-  exp(-extract(epoch from (now() - last_accessed_at)) / 2592000)  -- 30-day half-life
-) STORED;
+ALTER TABLE engrams ADD COLUMN weight NUMERIC DEFAULT 1.0;
 ```
 
 - **`access_count`**: incremented on every retrieval.
 - **`corroboration_count`**: incremented when a new engram states the same fact (classifier detects match).
-- **`weight`**: computed. Drives retrieval order (weighted hybrid: similarity × weight).
+- **`weight`**: real column, updated by Dreamer nightly. Drives retrieval order (weighted hybrid: similarity × weight). Formula: `ln(1 + access_count) * ln(1 + corroboration_count) * exp(-days_since_accessed / 30)`.
 - **`last_accessed_at`**: updated on access, powers recency decay.
+
+> **Implementation note (Athena gate 2026-04-24):** `GENERATED ALWAYS AS ... STORED` was removed. PostgreSQL STORED columns recompute only on row-write — `now()` is frozen at write time, so a stored expression would silently return a stale weight for rows that haven't been touched since creation. Weight must be a real column updated by the Dreamer nightly run (or on-access via a lightweight trigger). Dreamer already has `update_engram_quality()` — the weight update slots in there.
 
 Weight is **monotone-decreasing in time** if not re-accessed or re-corroborated. A fact accessed once and never confirmed will fade.
 
