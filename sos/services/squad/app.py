@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import time
 from dataclasses import asdict
@@ -1085,6 +1086,7 @@ async def _start_kpi_cron() -> None:
 # ---------------------------------------------------------------------------
 # Project Sessions & Members API
 # ---------------------------------------------------------------------------
+from sos.services.squad.service import DEFAULT_TENANT_ID, now_iso
 from sos.services.squad.sessions import (
     ProjectSessionService,
     SessionAlreadyClosedError,
@@ -1292,6 +1294,67 @@ async def remove_project_member(
         return {"status": "removed", "agent_id": agent_id}
     except MemberNotFoundError:
         raise HTTPException(status_code=404, detail="member_not_found")
+
+
+# ---------------------------------------------------------------------------
+# Project Resources API
+# ---------------------------------------------------------------------------
+
+class AddResourceRequest(BaseModel):
+    resource_type: str           # 'repo', 'domain', 'analytics', etc.
+    url: Optional[str] = None
+    local_path: Optional[str] = None
+    meta: dict = {}
+
+
+@app.post("/projects/{project_id}/resources")
+async def add_project_resource(
+    project_id: str,
+    req: AddResourceRequest,
+    token_rec: dict = Depends(_require_project_role("member")),
+):
+    """Register a resource (repo, domain, etc.) with the project."""
+    from uuid import uuid4
+    resource_id = str(uuid4())
+    added_at = now_iso()
+    with SquadDB().connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO project_resources
+                (id, project_id, tenant_id, resource_type, url, local_path, meta_json, added_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                resource_id, project_id, DEFAULT_TENANT_ID,
+                req.resource_type, req.url, req.local_path,
+                json.dumps(req.meta), added_at,
+            ),
+        )
+    return {"id": resource_id, "project_id": project_id, "added_at": added_at}
+
+
+@app.get("/projects/{project_id}/resources")
+async def list_project_resources(
+    project_id: str,
+    token_rec: dict = Depends(_require_project_role("observer")),
+):
+    """List all resources registered to a project."""
+    with SquadDB().connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, resource_type, url, local_path, meta_json, added_at
+            FROM project_resources
+            WHERE project_id = ? AND tenant_id = ?
+            ORDER BY added_at DESC
+            """,
+            (project_id, DEFAULT_TENANT_ID),
+        ).fetchall()
+    return {
+        "resources": [
+            {**dict(r), "meta": json.loads(r["meta_json"])}
+            for r in rows
+        ]
+    }
 
 
 if __name__ == "__main__":
