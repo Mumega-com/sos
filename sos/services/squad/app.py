@@ -1115,7 +1115,6 @@ def _require_project_role(min_role: str, project_id_param: str = "project_id"):
     bearer = HTTPBearer(auto_error=False)
 
     async def _dep(
-        request,
         project_id: str,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
     ) -> dict:
