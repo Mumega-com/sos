@@ -1,0 +1,1 @@
+/home/mumega/mumega.com/agents/loom/customers/gaf/07-compliance-fix-spec.md
