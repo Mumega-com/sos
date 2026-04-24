@@ -1562,6 +1562,718 @@ async def ghl_lead_webhook(
     return {"status": "created", "intake_id": intake["id"], "customer_slug": intake["customer_slug"]}
 
 
+# =============================================================================
+# Section 1A — Role Registry (roles, permissions, assignments)
+# =============================================================================
+
+from sos.services.squad.roles import RoleService, RoleNotFoundError, RoleDuplicateError
+
+_role_svc = RoleService()
+
+
+class _RoleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class _PermissionBody(BaseModel):
+    permission: str
+
+
+class _AssignBody(BaseModel):
+    assignee_id: str
+    assignee_type: str = "agent"
+    assigned_by: str
+
+
+@app.post("/projects/{project_id}/roles")
+async def create_project_role(
+    project_id: str,
+    body: _RoleCreate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Create a named role for a project. Owner-level auth."""
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    try:
+        return _role_svc.create_role(
+            project_id, body.name,
+            tenant_id=auth.tenant_scope or "default",
+            description=body.description,
+        )
+    except RoleDuplicateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/projects/{project_id}/roles")
+async def list_project_roles(
+    project_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    roles = _role_svc.list_roles(project_id, tenant_id=auth.tenant_scope or "default")
+    return {"roles": roles}
+
+
+@app.post("/roles/{role_id}/permissions")
+async def add_role_permission(
+    role_id: str,
+    body: _PermissionBody,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    try:
+        return _role_svc.add_permission(role_id, body.permission)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
+
+
+@app.delete("/roles/{role_id}/permissions/{permission}")
+async def remove_role_permission(
+    role_id: str,
+    permission: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    _role_svc.remove_permission(role_id, permission)
+    return {"deleted": True}
+
+
+@app.post("/roles/{role_id}/assignments")
+async def assign_role(
+    role_id: str,
+    body: _AssignBody,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    try:
+        return _role_svc.assign_role(
+            role_id, body.assignee_id,
+            assignee_type=body.assignee_type,
+            assigned_by=body.assigned_by,
+        )
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
+
+
+@app.delete("/roles/{role_id}/assignments/{assignee_id}")
+async def revoke_role_assignment(
+    role_id: str,
+    assignee_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    _role_svc.revoke_assignment(role_id, assignee_id)
+    return {"revoked": True}
+
+
+@app.get("/roles/{role_id}/assignments")
+async def list_role_assignments(
+    role_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    assignments = _role_svc.list_assignments(role_id)
+    return {"assignments": assignments}
+
+
+@app.get("/agents/{agent_id}/roles")
+async def get_agent_roles(
+    agent_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    roles = _role_svc.get_agent_roles(agent_id)
+    return {"agent_id": agent_id, "roles": roles}
+
+
+@app.get("/me/roles")
+async def get_my_roles(
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    roles = _role_svc.get_token_roles(auth.tenant_id or "")
+    return {"tenant_id": auth.tenant_id, "roles": roles}
+
+
+# =============================================================================
+# Section 3 — Structured Records (contacts, partners, opportunities, referrals)
+# =============================================================================
+
+from sos.services.squad.records import (
+    ContactsService, PartnersService, OpportunitiesService, ReferralsService,
+    RecordNotFoundError, RecordConflictError,
+)
+
+_contacts_svc = ContactsService()
+_partners_svc = PartnersService()
+_opps_svc = OpportunitiesService()
+_refs_svc = ReferralsService()
+
+
+def _parse_bearer(authorization: Optional[str]) -> str:
+    if not authorization:
+        return ""
+    return authorization.replace("Bearer ", "").replace("bearer ", "").strip()
+
+
+def _raise_401() -> None:
+    raise HTTPException(status_code=401, detail="invalid_token")
+
+
+def _workspace(auth: Any) -> str:
+    return auth.tenant_scope or "default"
+
+
+def _actor(auth: Any) -> str:
+    return auth.identity.id if auth.identity else "system"
+
+
+# ── Contacts ──────────────────────────────────────────────────────────────
+
+
+class _ContactCreate(BaseModel):
+    first_name: str
+    last_name: str
+    external_id: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    title: Optional[str] = None
+    org_id: Optional[str] = None
+    visibility_tier: str = "firm_internal"
+    engagement_status: str = "prospect"
+    source: Optional[str] = None
+    next_action: Optional[str] = None
+    notes_ref: Optional[str] = None
+    notes: Optional[str] = None
+    owner_id: str = "system"
+
+
+class _ContactUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    title: Optional[str] = None
+    org_id: Optional[str] = None
+    visibility_tier: Optional[str] = None
+    engagement_status: Optional[str] = None
+    source: Optional[str] = None
+    next_action: Optional[str] = None
+    notes_ref: Optional[str] = None
+    notes: Optional[str] = None
+    owner_id: Optional[str] = None
+
+
+class _TouchBody(BaseModel):
+    note: Optional[str] = None
+
+
+@app.post("/contacts")
+async def create_contact(
+    body: _ContactCreate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _contacts_svc.create(
+            _workspace(auth), body.first_name, body.last_name,
+            **{k: v for k, v in body.model_dump().items() if k not in ("first_name", "last_name")},
+            actor=_actor(auth),
+        )
+    except RecordConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/contacts")
+async def list_contacts(
+    owner_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    status: Optional[str] = None,
+    archived: bool = False,
+    tier: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    contacts = _contacts_svc.list(
+        _workspace(auth), owner_id=owner_id, org_id=org_id,
+        status=status, include_archived=archived, tier=tier,
+    )
+    return {"contacts": contacts}
+
+
+@app.get("/contacts/by-email/{email}")
+async def get_contact_by_email(
+    email: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    contact = _contacts_svc.get_by_email(_workspace(auth), email)
+    if not contact:
+        raise HTTPException(status_code=404, detail="not_found")
+    return contact
+
+
+@app.get("/contacts/{contact_id}")
+async def get_contact(
+    contact_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _contacts_svc.get(contact_id, _workspace(auth))
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.patch("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: str,
+    body: _ContactUpdate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _contacts_svc.update(
+            contact_id, _workspace(auth), _actor(auth),
+            **{k: v for k, v in body.model_dump().items() if v is not None},
+        )
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.post("/contacts/{contact_id}/touch")
+async def touch_contact(
+    contact_id: str,
+    body: _TouchBody,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _contacts_svc.touch(contact_id, _workspace(auth), _actor(auth), note=body.note)
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.delete("/contacts/{contact_id}")
+async def delete_contact(
+    contact_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _contacts_svc.soft_delete(contact_id, _workspace(auth), _actor(auth))
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+# ── Partners ──────────────────────────────────────────────────────────────
+
+
+class _PartnerCreate(BaseModel):
+    name: str
+    type: str
+    external_id: Optional[str] = None
+    website_url: Optional[str] = None
+    hq_country: Optional[str] = None
+    primary_contact_id: Optional[str] = None
+    parent_partner_id: Optional[str] = None
+    revenue_split_pct: Optional[float] = None
+    visibility_tier: str = "firm_internal"
+    engagement_status: str = "prospect"
+    notes: Optional[str] = None
+    inkwell_page_slug: Optional[str] = None
+    onboarded_at: Optional[str] = None
+
+
+class _PartnerUpdate(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    website_url: Optional[str] = None
+    hq_country: Optional[str] = None
+    primary_contact_id: Optional[str] = None
+    revenue_split_pct: Optional[float] = None
+    visibility_tier: Optional[str] = None
+    engagement_status: Optional[str] = None
+    notes: Optional[str] = None
+    active: Optional[int] = None
+
+
+@app.post("/partners")
+async def create_partner(
+    body: _PartnerCreate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _partners_svc.create(
+            _workspace(auth), body.name, body.type,
+            **{k: v for k, v in body.model_dump().items() if k not in ("name", "type")},
+            actor=_actor(auth),
+        )
+    except RecordConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/partners")
+async def list_partners(
+    type: Optional[str] = None,
+    active_only: bool = True,
+    status: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    partners = _partners_svc.list(_workspace(auth), type=type, active_only=active_only, status=status)
+    return {"partners": partners}
+
+
+@app.get("/partners/{partner_id}")
+async def get_partner(
+    partner_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _partners_svc.get(partner_id, _workspace(auth))
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.patch("/partners/{partner_id}")
+async def update_partner(
+    partner_id: str,
+    body: _PartnerUpdate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _partners_svc.update(
+            partner_id, _workspace(auth), _actor(auth),
+            **{k: v for k, v in body.model_dump().items() if v is not None},
+        )
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.get("/partners/{partner_id}/contacts")
+async def get_partner_contacts(
+    partner_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    contacts = _partners_svc.get_contacts(partner_id, _workspace(auth))
+    return {"contacts": contacts}
+
+
+@app.get("/partners/{partner_id}/opportunities")
+async def get_partner_opportunities(
+    partner_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    opps = _partners_svc.get_opportunities(partner_id, _workspace(auth))
+    return {"opportunities": opps}
+
+
+# ── Opportunities ─────────────────────────────────────────────────────────
+
+
+class _OppCreate(BaseModel):
+    name: str
+    type: str
+    external_id: Optional[str] = None
+    partner_id: Optional[str] = None
+    primary_contact_id: Optional[str] = None
+    stage: str = "prospect"
+    estimated_value: Optional[float] = None
+    estimated_close_at: Optional[str] = None
+    owner_id: str = "system"
+    notes_ref: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class _OppUpdate(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    partner_id: Optional[str] = None
+    primary_contact_id: Optional[str] = None
+    estimated_value: Optional[float] = None
+    estimated_close_at: Optional[str] = None
+    close_reason: Optional[str] = None
+    owner_id: Optional[str] = None
+    notes_ref: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class _StageTransition(BaseModel):
+    stage: str
+
+
+@app.post("/opportunities")
+async def create_opportunity(
+    body: _OppCreate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _opps_svc.create(
+            _workspace(auth), body.name, body.type,
+            **{k: v for k, v in body.model_dump().items() if k not in ("name", "type")},
+            actor=_actor(auth),
+        )
+    except RecordConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/opportunities")
+async def list_opportunities(
+    stage: Optional[str] = None,
+    partner_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
+    archived: bool = False,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    opps = _opps_svc.list(
+        _workspace(auth), stage=stage, partner_id=partner_id,
+        owner_id=owner_id, include_archived=archived,
+    )
+    return {"opportunities": opps}
+
+
+@app.get("/opportunities/pipeline-summary")
+async def pipeline_summary(
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    return {"pipeline": _opps_svc.pipeline_summary(_workspace(auth))}
+
+
+@app.get("/opportunities/{opp_id}")
+async def get_opportunity(
+    opp_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _opps_svc.get(opp_id, _workspace(auth))
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.patch("/opportunities/{opp_id}/stage")
+async def transition_opportunity_stage(
+    opp_id: str,
+    body: _StageTransition,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _opps_svc.transition_stage(opp_id, _workspace(auth), body.stage, _actor(auth))
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.patch("/opportunities/{opp_id}")
+async def update_opportunity(
+    opp_id: str,
+    body: _OppUpdate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _opps_svc.update(
+            opp_id, _workspace(auth), _actor(auth),
+            **{k: v for k, v in body.model_dump().items() if v is not None},
+        )
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+# ── Referrals ─────────────────────────────────────────────────────────────
+
+
+class _ReferralCreate(BaseModel):
+    source_id: str
+    source_type: str
+    target_id: str
+    target_type: str
+    relationship: str
+    strength: str = "moderate"
+    context: Optional[str] = None
+    referred_at: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class _ReferralUpdate(BaseModel):
+    strength: Optional[str] = None
+    context: Optional[str] = None
+    notes: Optional[str] = None
+    referred_at: Optional[str] = None
+
+
+@app.post("/referrals")
+async def create_referral(
+    body: _ReferralCreate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _refs_svc.create(
+            _workspace(auth), body.source_id, body.source_type,
+            body.target_id, body.target_type, body.relationship,
+            strength=body.strength, context=body.context,
+            referred_at=body.referred_at, notes=body.notes,
+            actor=_actor(auth),
+        )
+    except RecordConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/referrals")
+async def list_referrals(
+    source_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    target_type: Optional[str] = None,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    refs = _refs_svc.list(
+        _workspace(auth), source_id=source_id, source_type=source_type,
+        target_id=target_id, target_type=target_type,
+    )
+    return {"referrals": refs}
+
+
+@app.get("/referrals/network/{entity_id}")
+async def referral_network(
+    entity_id: str,
+    hops: int = 2,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    return _refs_svc.network(entity_id, _workspace(auth), hops=hops)
+
+
+@app.patch("/referrals/{ref_id}")
+async def update_referral(
+    ref_id: str,
+    body: _ReferralUpdate,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        return _refs_svc.update(
+            ref_id, _workspace(auth), _actor(auth),
+            **{k: v for k, v in body.model_dump().items() if v is not None},
+        )
+    except RecordNotFoundError:
+        raise HTTPException(status_code=404, detail="not_found")
+
+
+@app.delete("/referrals/{ref_id}")
+async def delete_referral(
+    ref_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    _refs_svc.delete(ref_id, _workspace(auth), _actor(auth))
+    return {"deleted": True}
+
+
+# ── GHL sync ──────────────────────────────────────────────────────────────
+
+
+@app.post("/integrations/ghl/sync-contact")
+async def ghl_sync_contact(
+    payload: dict[str, Any],
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Upsert contact from GHL lead payload. Keyed by email."""
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    email = payload.get("email") or payload.get("contact", {}).get("email")
+    first_name = payload.get("firstName") or payload.get("contact", {}).get("firstName", "Unknown")
+    last_name = payload.get("lastName") or payload.get("contact", {}).get("lastName", "")
+    ghl_id = payload.get("id") or payload.get("contact", {}).get("id")
+    ws = _workspace(auth)
+    actor = _actor(auth)
+
+    if email:
+        existing = _contacts_svc.get_by_email(ws, email)
+        if existing:
+            return {"status": "existing", "contact_id": existing["id"]}
+
+    try:
+        contact = _contacts_svc.create(
+            ws, first_name, last_name,
+            email=email,
+            external_id=ghl_id,
+            source="ghl",
+            owner_id=actor,
+            actor=actor,
+        )
+        return {"status": "created", "contact_id": contact["id"]}
+    except RecordConflictError:
+        existing = _contacts_svc.get_by_email(ws, email) if email else None
+        return {"status": "conflict", "contact_id": existing["id"] if existing else None}
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("SOS_SQUAD_PORT", "8060"))
