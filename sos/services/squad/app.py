@@ -1356,6 +1356,212 @@ async def list_project_resources(
     }
 
 
+# ---------------------------------------------------------------------------
+# Customer Intake API
+# ---------------------------------------------------------------------------
+
+import hmac as _hmac
+from sos.services.squad.intake import (
+    CustomerIntakeService,
+    IntakeNotFoundError,
+    IntakeStatusError,
+    MintFailedError,
+    validate_initial_roles,
+)
+
+_intake_svc = CustomerIntakeService()
+_GHL_WEBHOOK_SECRET = os.getenv("GHL_WEBHOOK_SECRET", "")
+
+
+class IntakeCreateRequest(BaseModel):
+    customer_name: str
+    customer_slug: str
+    domain: Optional[str] = None
+    repo_url: Optional[str] = None
+    icp: Optional[str] = None
+    okrs_json: str = "[]"
+    cause_draft: Optional[str] = None
+    descriptor_draft: Optional[str] = None
+    initial_roles_json: str = '["advisor","intern"]'
+    source: str = "direct"
+    ghl_contact_id: Optional[str] = None
+
+
+class IntakeUpdateRequest(BaseModel):
+    cause_draft: Optional[str] = None
+    descriptor_draft: Optional[str] = None
+    initial_roles_json: Optional[str] = None
+    domain: Optional[str] = None
+    repo_url: Optional[str] = None
+    icp: Optional[str] = None
+    okrs_json: Optional[str] = None
+
+
+@app.post("/customers/intake")
+async def create_intake(
+    req: IntakeCreateRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Create a customer intake record. System bearer required."""
+    _require_system_bearer(authorization)
+    try:
+        validate_initial_roles(req.initial_roles_json)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": "invalid_initial_roles", "detail": str(exc)})
+    try:
+        intake = _intake_svc.create_intake(
+            customer_name=req.customer_name,
+            customer_slug=req.customer_slug,
+            domain=req.domain,
+            repo_url=req.repo_url,
+            icp=req.icp,
+            okrs_json=req.okrs_json,
+            cause_draft=req.cause_draft,
+            descriptor_draft=req.descriptor_draft,
+            initial_roles_json=req.initial_roles_json,
+            source=req.source,
+            ghl_contact_id=req.ghl_contact_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return intake
+
+
+@app.get("/customers/{intake_id}")
+async def get_intake(
+    intake_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Get a customer intake by ID. System bearer required."""
+    _require_system_bearer(authorization)
+    try:
+        return _intake_svc.get_intake(intake_id)
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+
+
+@app.get("/customers")
+async def list_intakes(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """List customer intakes, optionally filtered by status. System bearer required."""
+    _require_system_bearer(authorization)
+    intakes = _intake_svc.list_intakes(status=status, limit=limit, offset=offset)
+    return {"intakes": intakes, "count": len(intakes)}
+
+
+@app.patch("/customers/{intake_id}")
+async def update_intake(
+    intake_id: str,
+    req: IntakeUpdateRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Update editable fields of a pending intake. System bearer required."""
+    _require_system_bearer(authorization)
+    updates = req.model_dump(exclude_none=True)
+    if "initial_roles_json" in updates:
+        try:
+            validate_initial_roles(updates["initial_roles_json"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail={"error": "invalid_initial_roles", "detail": str(exc)})
+    try:
+        return _intake_svc.update_intake(intake_id, updates)
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+    except IntakeStatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/customers/{intake_id}/approve")
+async def approve_intake(
+    intake_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Approve an intake. System bearer ONLY — project owner tokens are rejected."""
+    _require_system_bearer(authorization)
+    try:
+        return _intake_svc.approve(intake_id, approver_agent_id="system")
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+    except IntakeStatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/customers/{intake_id}/reject")
+async def reject_intake(
+    intake_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Reject an intake. System bearer ONLY."""
+    _require_system_bearer(authorization)
+    try:
+        return _intake_svc.reject(intake_id)
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+    except IntakeStatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/customers/{intake_id}/mint")
+async def mint_intake(
+    intake_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Trigger knight mint for an approved intake. System bearer required."""
+    _require_system_bearer(authorization)
+    try:
+        result = _intake_svc.mint(intake_id)
+        return result
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+    except IntakeStatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MintFailedError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "mint_failed", "detail": str(exc)},
+        )
+
+
+@app.post("/customers/{intake_id}/seed-roles")
+async def seed_roles(
+    intake_id: str,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Retry role seeding for a minted intake. System bearer required."""
+    _require_system_bearer(authorization)
+    try:
+        return _intake_svc.seed_roles(intake_id)
+    except IntakeNotFoundError:
+        raise HTTPException(status_code=404, detail="intake_not_found")
+    except IntakeStatusError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/webhooks/ghl/lead")
+async def ghl_lead_webhook(
+    payload: dict[str, Any],
+    x_ghl_secret: Optional[str] = Header(default=None, alias="X-GHL-Secret"),
+) -> dict[str, Any]:
+    """Receive GHL lead webhook and create a pending intake. Verified by X-GHL-Secret."""
+    if not _GHL_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="ghl_webhook_not_configured")
+    presented = (x_ghl_secret or "").encode()
+    expected = _GHL_WEBHOOK_SECRET.encode()
+    if not _hmac.compare_digest(presented, expected):
+        raise HTTPException(status_code=401, detail="invalid_ghl_secret")
+    try:
+        intake = _intake_svc.create_from_ghl(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"status": "created", "intake_id": intake["id"], "customer_slug": intake["customer_slug"]}
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("SOS_SQUAD_PORT", "8060"))
