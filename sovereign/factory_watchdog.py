@@ -75,20 +75,43 @@ def alert_hadi(message: str):
     logger.warning(message)
 
 
-def check_source(name: str, test_fn) -> dict:
-    """Test a model source. Returns {available, latency_ms, error}."""
+QUOTA_COOLDOWN_SECS = 3600  # Skip quota-exhausted sources for 1 hour
+
+
+def check_source(name: str, test_fn, state: dict | None = None) -> dict:
+    """Test a model source. Returns {available, latency_ms, error}.
+
+    If the source hit quota on a previous check, skip retesting for
+    QUOTA_COOLDOWN_SECS to avoid burning more attempts.
+    """
+    # Check if this source is in quota cooldown
+    if state is not None:
+        quota_until = state.get("quota_cooldown", {}).get(name, 0)
+        if time.time() < quota_until:
+            remaining = int(quota_until - time.time())
+            return {
+                "available": False,
+                "latency_ms": 0,
+                "error": f"QUOTA: cooldown active ({remaining}s remaining — skipped)",
+            }
+
     start = time.time()
     try:
         result = test_fn()
         latency = (time.time() - start) * 1000
         if result:
+            # Clear any prior quota cooldown on success
+            if state is not None:
+                state.setdefault("quota_cooldown", {}).pop(name, None)
             return {"available": True, "latency_ms": round(latency), "error": None}
         return {"available": False, "latency_ms": round(latency), "error": "Empty response"}
     except Exception as e:
         latency = (time.time() - start) * 1000
         error = str(e)
-        # Detect quota exhaustion
+        # Detect quota exhaustion — back off for 1 hour
         if any(kw in error.lower() for kw in ["quota", "rate limit", "429", "resource exhausted", "too many"]):
+            if state is not None:
+                state.setdefault("quota_cooldown", {})[name] = time.time() + QUOTA_COOLDOWN_SECS
             return {"available": False, "latency_ms": round(latency), "error": f"QUOTA: {error[:100]}"}
         return {"available": False, "latency_ms": round(latency), "error": error[:100]}
 
@@ -130,7 +153,7 @@ def test_openrouter() -> bool:
     from openai import OpenAI
     client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
     r = client.chat.completions.create(
-        model="openrouter/free",
+        model="meta-llama/llama-3.2-3b-instruct:free",
         messages=[{"role": "user", "content": "Say OK"}],
         max_tokens=5,
     )
@@ -218,7 +241,7 @@ def run_check():
     status_lines = []
 
     for source_id, (name, test_fn) in sources.items():
-        result = check_source(source_id, test_fn)
+        result = check_source(source_id, test_fn, state)
         state["sources"][source_id] = {**result, "checked_at": now}
 
         icon = "✅" if result["available"] else "❌"
@@ -231,9 +254,16 @@ def run_check():
             fails = state["consecutive_failures"].get(source_id, 0) + 1
             state["consecutive_failures"][source_id] = fails
 
-            # Alert on first failure or every 5th
-            if fails == 1 or fails % 5 == 0:
-                alert_hadi(f"**🚨 {name} DOWN** ({fails}x): {result['error']}")
+            error = result["error"] or ""
+            is_cooldown = error.startswith("QUOTA: cooldown active")
+
+            if is_cooldown:
+                # Expected state — quota already known, cooldown ticking down.
+                # Log locally only; do not spam bus/Discord.
+                logger.warning("%s in quota cooldown (%dx): %s", name, fails, error[:80])
+            elif fails == 1 or fails % 5 == 0:
+                # New failure or persistent real error — alert.
+                alert_hadi(f"**🚨 {name} DOWN** ({fails}x): {error}")
 
     # Check tmux agents
     agent_lines = []
