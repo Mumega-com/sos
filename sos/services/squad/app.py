@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 import httpx
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
@@ -1566,7 +1566,7 @@ async def ghl_lead_webhook(
 # Section 1A — Role Registry (roles, permissions, assignments)
 # =============================================================================
 
-from sos.services.squad.roles import RoleService, RoleNotFoundError, RoleDuplicateError
+from sos.services.squad.roles import RoleService, RoleNotFoundError, RoleDuplicateError, RolePrivilegeError
 
 _role_svc = RoleService()
 
@@ -1648,15 +1648,21 @@ async def assign_role(
     body: _AssignBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    caller_id = auth.identity.id if auth.identity else None
     try:
         return _role_svc.assign_role(
             role_id, body.assignee_id,
             assignee_type=body.assignee_type,
             assigned_by=body.assigned_by,
+            caller_id=caller_id,
         )
     except RoleNotFoundError:
         raise HTTPException(status_code=404, detail="role_not_found")
+    except RolePrivilegeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
 
 @app.delete("/roles/{role_id}/assignments/{assignee_id}")
@@ -2196,7 +2202,7 @@ async def list_referrals(
 @app.get("/referrals/network/{entity_id}")
 async def referral_network(
     entity_id: str,
-    hops: int = 2,
+    hops: int = Query(default=2, ge=1, le=5),
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())

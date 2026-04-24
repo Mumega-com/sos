@@ -15,6 +15,11 @@ class RoleDuplicateError(ValueError):
     pass
 
 
+class RolePrivilegeError(PermissionError):
+    """Raised when a caller tries to assign a role ranked above their own."""
+    pass
+
+
 class RoleService:
     def __init__(self, db: Optional[SquadDB] = None) -> None:
         self.db = db or SquadDB()
@@ -30,6 +35,7 @@ class RoleService:
         *,
         tenant_id: str = "default",
         description: Optional[str] = None,
+        rank: int = 0,
     ) -> dict:
         role_id = str(uuid4())
         created_at = now_iso()
@@ -37,10 +43,10 @@ class RoleService:
             try:
                 conn.execute(
                     """
-                    INSERT INTO roles (id, project_id, tenant_id, name, description, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO roles (id, project_id, tenant_id, name, description, created_at, rank)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (role_id, project_id, tenant_id, name, description, created_at),
+                    (role_id, project_id, tenant_id, name, description, created_at, rank),
                 )
             except Exception as exc:
                 if "UNIQUE" in str(exc):
@@ -97,6 +103,43 @@ class RoleService:
         return [r["permission"] for r in rows]
 
     # ------------------------------------------------------------------
+    # Rank helpers
+    # ------------------------------------------------------------------
+
+    def caller_max_rank(self, caller_id: str) -> int:
+        """Return highest rank held by caller_id across all role_assignments."""
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT MAX(r.rank) AS max_rank
+                FROM role_assignments ra
+                JOIN roles r ON r.id = ra.role_id
+                WHERE ra.assignee_id = ?
+                """,
+                (caller_id,),
+            ).fetchone()
+        return row["max_rank"] if row and row["max_rank"] is not None else 0
+
+    def check_can_assign(self, caller_id: str, target_role_id: str) -> None:
+        """Raise RolePrivilegeError if caller cannot assign target_role_id.
+
+        Rule: caller's max rank must be >= target role's rank.
+        System identity (caller_id starting with 'system:') bypasses the check.
+        """
+        if caller_id.startswith("system:") or caller_id == "system":
+            return
+        target_role = self._get_role_row(target_role_id)
+        target_rank: int = target_role.get("rank", 0)
+        if target_rank == 0:
+            return  # unranked role — no restriction
+        caller_rank = self.caller_max_rank(caller_id)
+        if caller_rank < target_rank:
+            raise RolePrivilegeError(
+                f"role_rank_exceeds_caller: cannot assign role '{target_role['name']}' "
+                f"(rank={target_rank}); caller max rank={caller_rank}"
+            )
+
+    # ------------------------------------------------------------------
     # Assignments
     # ------------------------------------------------------------------
 
@@ -107,7 +150,11 @@ class RoleService:
         *,
         assignee_type: str = "agent",
         assigned_by: str,
+        caller_id: Optional[str] = None,
     ) -> dict:
+        """Assign role_id to assignee_id. If caller_id is provided, rank check is enforced."""
+        if caller_id:
+            self.check_can_assign(caller_id, role_id)
         self._get_role_row(role_id)
         assigned_at = now_iso()
         with self.db.connect() as conn:

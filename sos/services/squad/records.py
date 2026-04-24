@@ -165,7 +165,7 @@ class ContactsService:
         }
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
-            return self._get(contact_id)
+            return self._get(contact_id, workspace_id)
         updates["updated_at"] = now_iso()
         updates["updated_by"] = actor
         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -175,7 +175,7 @@ class ContactsService:
                 f"UPDATE contacts SET {set_clause} WHERE id = ? AND workspace_id = ?",
                 params,
             )
-        row = self._get(contact_id)
+        row = self._get(contact_id, workspace_id)
         _emit("structured_record:contact:updated", contact_id, workspace_id, actor, updates)
         return row
 
@@ -193,7 +193,7 @@ class ContactsService:
                 f"UPDATE contacts SET {set_clause} WHERE id = ? AND workspace_id = ?",
                 params,
             )
-        return self._get(contact_id)
+        return self._get(contact_id, workspace_id)
 
     def soft_delete(self, contact_id: str, workspace_id: str, actor: str) -> dict:
         now = now_iso()
@@ -320,7 +320,7 @@ class PartnersService:
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
-            return self._get(partner_id)
+            return self._get(partner_id, workspace_id)
         updates["updated_at"] = now_iso()
         updates["updated_by"] = actor
         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -330,7 +330,7 @@ class PartnersService:
                 f"UPDATE partners SET {set_clause} WHERE id = ? AND workspace_id = ?",
                 params,
             )
-        row = self._get(partner_id)
+        row = self._get(partner_id, workspace_id)
         _emit("structured_record:partner:updated", partner_id, workspace_id, actor, updates)
         return row
 
@@ -462,7 +462,7 @@ class OpportunitiesService:
                 "INSERT INTO opportunity_stage_log (id, opportunity_id, from_stage, to_stage, transitioned_at, transitioned_by) VALUES (?,?,?,?,?,?)",
                 (log_id, opp_id, from_stage, to_stage, now, actor),
             )
-        row = self._get(opp_id)
+        row = self._get(opp_id, workspace_id)
         _emit("structured_record:opportunity:updated", opp_id, workspace_id, actor, {"from_stage": from_stage, "to_stage": to_stage})
         return row
 
@@ -475,7 +475,7 @@ class OpportunitiesService:
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
-            return self._get(opp_id)
+            return self._get(opp_id, workspace_id)
         updates["updated_at"] = now_iso()
         updates["updated_by"] = actor
         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -485,7 +485,7 @@ class OpportunitiesService:
                 f"UPDATE opportunities SET {set_clause} WHERE id = ? AND workspace_id = ?",
                 params,
             )
-        row = self._get(opp_id)
+        row = self._get(opp_id, workspace_id)
         _emit("structured_record:opportunity:updated", opp_id, workspace_id, actor, updates)
         return row
 
@@ -611,9 +611,15 @@ class ReferralsService:
             frontier = next_frontier
         return {"center": entity_id, "hops": hops, "edges": edges}
 
-    def _get(self, ref_id: str) -> dict:
+    def _get(self, ref_id: str, workspace_id: Optional[str] = None) -> dict:
         with self.db.connect() as conn:
-            row = conn.execute("SELECT * FROM referrals WHERE id = ?", (ref_id,)).fetchone()
+            if workspace_id:
+                row = conn.execute(
+                    "SELECT * FROM referrals WHERE id = ? AND workspace_id = ?",
+                    (ref_id, workspace_id),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM referrals WHERE id = ?", (ref_id,)).fetchone()
         if not row:
             raise RecordNotFoundError(f"Referral {ref_id} not found")
         return dict(row)
@@ -622,7 +628,7 @@ class ReferralsService:
         allowed = {"strength", "context", "notes", "referred_at"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
-            return self._get(ref_id)
+            return self._get(ref_id, workspace_id)
         updates["updated_at"] = now_iso()
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         params = list(updates.values()) + [ref_id, workspace_id]
@@ -631,7 +637,7 @@ class ReferralsService:
                 f"UPDATE referrals SET {set_clause} WHERE id = ? AND workspace_id = ?",
                 params,
             )
-        row = self._get(ref_id)
+        row = self._get(ref_id, workspace_id)
         _emit("structured_record:referral:updated", ref_id, workspace_id, actor, updates)
         return row
 
