@@ -1651,7 +1651,7 @@ async def assign_role(
     auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
-    caller_id = auth.identity.id if auth.identity else None
+    caller_id = auth.identity.id if auth.identity else "system"
     try:
         return _role_svc.assign_role(
             role_id, body.assignee_id,
