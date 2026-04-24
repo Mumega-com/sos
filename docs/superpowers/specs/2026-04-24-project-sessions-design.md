@@ -3,7 +3,7 @@
 **Author:** Kasra  
 **Gate:** Athena  
 **PM:** Loom  
-**Status:** Draft — pending Athena approval before implementation
+**Status:** Draft v2 — addressing Athena block items 1–2, concerns 3–5
 
 ---
 
@@ -77,14 +77,28 @@ Session aggregate token cost = `SELECT SUM(billable_cents) FROM squad_transactio
 
 ## Access Control
 
-**Wire level (fast, stateless):** Bus token carries `project_id` scope — already established by DISP-001. Request-time check: token's project scope must include the target project_id.
+**Wire level (fast, stateless):** Bus tokens carry `project_id` scope and `role` claim — established by DISP-001 + extended for project-member tokens. The token payload includes:
 
-**Role model (human-readable, drives token issuance):** `project_members` table with roles:
+```json
+{
+  "project": "acme-corp",
+  "role": "owner"
+}
+```
+
+**Request-time role check (option a — chosen):** Routes check the `role` claim from the decoded token at request time. The claim field name is `role`. This is lightweight (decoded token is already in scope) and closes the privilege escalation gap — a `member` token cannot call member-management routes.
+
+Route enforcement:
+- `owner` routes: verify `token.role == "owner"`
+- `member` routes: verify `token.role in ("owner", "member")` — owners can do everything members can
+- `observer` routes: verify `token.role in ("owner", "member", "observer")` — readable by all
+
+**Role model (drives token issuance):** `project_members` table with roles:
 - `owner` — full read/write, can add/remove members, receives owner token at mint
 - `member` — read/write tasks and sessions for this project
 - `observer` — read-only (human stakeholder tokens)
 
-Role check happens **at token issuance only**, not at request time. Token carries the encoded scope; project_members is the audit trail and the source for re-issuance.
+Role check happens **at both token issuance AND request time**. Token issuance sets the role claim. Request-time check enforces it. `project_members` is the audit trail and source for re-issuance.
 
 **Squad inheritance is explicitly rejected.** A squad serves multiple projects — inheriting squad membership would leak access across project boundaries.
 
@@ -92,7 +106,7 @@ Role check happens **at token issuance only**, not at request time. Token carrie
 
 ## Session Lifecycle
 
-### Check-in (explicit)
+### Check-in (explicit — authoritative)
 
 `POST /projects/{project_id}/checkin`  
 Body: `{ "agent_id": "kasra", "context": {} }`
@@ -101,6 +115,8 @@ Body: `{ "agent_id": "kasra", "context": {} }`
 - Emits `checkin` event to `project_session_events`.
 - If an open session already exists for this agent+project, returns it (idempotent).
 - Response: `{ "session_id": "...", "opened_at": "..." }`
+
+Sovereign loop calls this before each task claim. This is the **single authoritative** check-in path. `claim_task()` does **not** infer a session — that responsibility belongs to the sovereign loop, which already has the project context and calls `/checkin` explicitly.
 
 ### Heartbeat
 
@@ -117,15 +133,13 @@ Body: `{ "reason": "done" }` (optional)
 - Sets `closed_at`, `close_reason = 'explicit'`.
 - Emits `checkout` event.
 
-### Idle auto-close (inferred fallback)
+### Idle auto-close (two-path approach — both committed)
 
-A background job (or lazy check on next checkin) closes sessions where:
-- No `heartbeat`, `task_claim`, or `task_complete` event in the last 30 minutes.
-- Sets `close_reason = 'idle_timeout'`.
+**Path 1 — Lazy check on checkin:** When `POST /projects/{id}/checkin` is called and an existing open session is found, the service checks if it is idle (no `heartbeat`, `task_claim`, or `task_complete` event in last 30 minutes). If idle, it closes the stale session before opening a new one. This catches the common "agent reconnects after a break" case.
 
-### Inferred check-in
+**Path 2 — Sovereign loop sweep:** At the top of each loop cycle, sovereign calls `close_idle_sessions(project_id, cutoff=now()-30min)` before claiming. This catches abandoned sessions where the agent never reconnects. One call, no new scheduler — reuses the existing loop.
 
-When `claim_task()` runs and the task has a `project` field, if no open session exists for this agent+project, one is opened automatically with `close_reason` left null (will be `idle_timeout` on auto-close).
+Both paths set `close_reason = 'idle_timeout'`. Both are safe to run concurrently (first writer wins on the UPDATE; second is a no-op on an already-closed session).
 
 ---
 
@@ -135,22 +149,69 @@ Human messages arrive via Discord/Telegram bot events (already wired) and are em
 
 **`first_human_response_ms`**: time from `opened_at` to the first `human_msg` event in the session. Written once, on first `human_msg` insert.
 
-**`active_engagement_ms`**: cumulative sum of active windows. An active window is the time between a `human_msg` event and the next `agent_msg` or `task_complete` event, capped at 10 minutes (600,000ms) per window. Computed at checkout or on-demand via SUM query over event pairs.
+**`active_engagement_ms`**: cumulative sum of active windows. An active window is the time between a `human_msg` event and the next `agent_msg` or `task_complete` event, capped at 10 minutes (600,000ms) per window.
+
+**Computation SQL (SQLite — computed at checkout or on-demand):**
+
+```sql
+WITH human_starts AS (
+    -- Every human_msg, with its row number for ordering
+    SELECT ts AS human_ts,
+           ROW_NUMBER() OVER (ORDER BY ts) AS rn
+    FROM project_session_events
+    WHERE session_id = :session_id AND kind = 'human_msg'
+),
+all_events AS (
+    SELECT ts, kind,
+           ROW_NUMBER() OVER (ORDER BY ts) AS rn
+    FROM project_session_events
+    WHERE session_id = :session_id
+),
+paired AS (
+    -- For each human_msg, find the next agent_msg or task_complete
+    SELECT hs.human_ts,
+           MIN(ae.ts) AS close_ts
+    FROM human_starts hs
+    JOIN all_events ae
+        ON ae.rn > hs.rn
+        AND ae.kind IN ('agent_msg', 'task_complete')
+    GROUP BY hs.human_ts
+),
+windows AS (
+    SELECT MIN(
+        CAST((julianday(close_ts) - julianday(human_ts)) * 86400000 AS INTEGER),
+        600000
+    ) AS window_ms
+    FROM paired
+)
+SELECT COALESCE(SUM(window_ms), 0) AS active_engagement_ms
+FROM windows;
+```
+
+**Example:** Session has events at:
+- T+0s: `checkin` (agent)
+- T+60s: `human_msg` (human)
+- T+90s: `agent_msg` (agent)     ← window 1: 30s
+- T+200s: `human_msg` (human)
+- T+900s: `task_complete` (agent) ← window 2: 700s, capped to 600s
+- `active_engagement_ms = 30,000 + 600,000 = 630,000`
 
 ---
 
 ## API Surface
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/projects/{id}/checkin` | member token | Open or resume session |
-| POST | `/sessions/{id}/checkout` | member token | Close session |
-| POST | `/sessions/{id}/heartbeat` | member token | Keep-alive |
-| GET | `/projects/{id}/sessions` | observer token | List sessions (paginated) |
-| GET | `/sessions/{id}` | observer token | Session detail + events |
-| POST | `/projects/{id}/members` | owner token | Add member with role |
-| GET | `/projects/{id}/members` | observer token | List members |
-| DELETE | `/projects/{id}/members/{agent_id}` | owner token | Remove member |
+| Method | Path | Required token role | Description |
+|--------|------|---------------------|-------------|
+| POST | `/projects/{id}/checkin` | member | Open or resume session |
+| POST | `/sessions/{id}/checkout` | member | Close session |
+| POST | `/sessions/{id}/heartbeat` | member | Keep-alive |
+| GET | `/projects/{id}/sessions` | observer | List sessions (paginated) |
+| GET | `/sessions/{id}` | observer | Session detail + events |
+| POST | `/projects/{id}/members` | owner | Add member with role |
+| GET | `/projects/{id}/members` | observer | List members |
+| DELETE | `/projects/{id}/members/{agent_id}` | owner | Remove member |
+
+Role enforcement at request time (as per Access Control section above). `owner` tokens satisfy `member` and `observer` routes. `member` tokens satisfy `observer` routes.
 
 ---
 
@@ -161,23 +222,27 @@ Human messages arrive via Discord/Telegram bot events (already wired) and are em
 - `0009_squad_transactions_session_id.py` — ALTER TABLE squad_transactions ADD COLUMN session_id
 
 **Service layer:**
-- `sos/services/squad/sessions.py` (new) — `ProjectSessionService`: checkin, checkout, heartbeat, idle-close, human_msg event, active_engagement_ms computation
+- `sos/services/squad/sessions.py` (new) — `ProjectSessionService`: checkin, checkout, heartbeat, idle-close (both paths), human_msg event, active_engagement_ms computation (SQL above)
 - `sos/services/squad/members.py` (new) — `ProjectMemberService`: add, remove, list, role check for token issuance
 
 **HTTP layer:**
-- `sos/services/squad/app.py` — add 8 routes above
+- `sos/services/squad/app.py` — add 8 routes above with request-time role check via `token.role` claim
 
 **Sovereign integration:**
-- `sovereign/loop.py` — call `/projects/{id}/checkin` before first task claim in a project; `/sessions/{id}/heartbeat` each cycle; `/sessions/{id}/checkout` when task queue for project is empty
+- `sovereign/loop.py` — call `/projects/{id}/checkin` before first task claim in a project; `/sessions/{id}/heartbeat` each cycle; `/sessions/{id}/checkout` when task queue for project is empty; `close_idle_sessions(project_id)` at top of each cycle
+- **Remove:** any session inference from `claim_task()` — sovereign loop is the authoritative check-in path
 
 **Tests:**
-- `tests/test_project_sessions.py` — 6 tests:
+- `tests/test_project_sessions.py` — 9 tests:
   - checkin creates session
   - checkin is idempotent (second call returns same session)
   - checkout closes session
-  - idle_timeout auto-close (mock time)
-  - inferred checkin on task claim
-  - session_id FK appears on squad_transaction after task complete
+  - idle_timeout auto-close on checkin (lazy path, mock time)
+  - idle_timeout auto-close on loop sweep (sovereign path, mock time)
+  - member add with role, member remove
+  - member token → 403 on owner-only route
+  - project-scoped token → 403 on different project_id
+  - `active_engagement_ms` math (30s window + 700s capped to 600s = 630,000ms)
 
 ---
 
@@ -185,9 +250,9 @@ Human messages arrive via Discord/Telegram bot events (already wired) and are em
 
 1. Migrations 0008 + 0009
 2. `sessions.py` service + `members.py` service
-3. HTTP routes in app.py
-4. Tests
-5. Sovereign wiring (loop.py)
+3. HTTP routes in app.py (with role enforcement)
+4. Tests (all 9)
+5. Sovereign wiring (loop.py — add sweep, add explicit checkin, remove claim_task inference)
 
 Each shipped as one PR, Athena gate before coding.
 
