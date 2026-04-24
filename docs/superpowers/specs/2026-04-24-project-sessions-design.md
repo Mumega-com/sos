@@ -154,28 +154,21 @@ Human messages arrive via Discord/Telegram bot events (already wired) and are em
 **Computation SQL (SQLite — computed at checkout or on-demand):**
 
 ```sql
-WITH human_starts AS (
-    -- Every human_msg, with its row number for ordering
-    SELECT ts AS human_ts,
-           ROW_NUMBER() OVER (ORDER BY ts) AS rn
+WITH human_msgs AS (
+    SELECT ts AS human_ts
     FROM project_session_events
     WHERE session_id = :session_id AND kind = 'human_msg'
 ),
-all_events AS (
-    SELECT ts, kind,
-           ROW_NUMBER() OVER (ORDER BY ts) AS rn
-    FROM project_session_events
-    WHERE session_id = :session_id
-),
 paired AS (
-    -- For each human_msg, find the next agent_msg or task_complete
-    SELECT hs.human_ts,
+    -- For each human_msg, find the next agent_msg or task_complete by timestamp
+    SELECT hm.human_ts,
            MIN(ae.ts) AS close_ts
-    FROM human_starts hs
-    JOIN all_events ae
-        ON ae.rn > hs.rn
+    FROM human_msgs hm
+    JOIN project_session_events ae
+        ON ae.session_id = :session_id
+        AND ae.ts > hm.human_ts
         AND ae.kind IN ('agent_msg', 'task_complete')
-    GROUP BY hs.human_ts
+    GROUP BY hm.human_ts
 ),
 windows AS (
     SELECT MIN(

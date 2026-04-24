@@ -259,6 +259,83 @@ def mark_task(task_or_id, status: str, note: str = ""):
         logger.error(f"Failed to mark {task_id} → {status}: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Project session management (sovereign-loop is the authoritative check-in path)
+# ---------------------------------------------------------------------------
+
+_open_sessions: dict[str, str] = {}  # project_id → session_id
+
+
+def _session_checkin(project_id: str) -> str | None:
+    """Check in to a project session. Returns session_id or None on failure.
+
+    Called before first task claim in a project. Idempotent — Squad Service
+    returns the existing open session if one already exists.
+    """
+    if project_id in _open_sessions:
+        return _open_sessions[project_id]
+    try:
+        resp = requests.post(
+            f"{SQUAD_URL}/projects/{project_id}/checkin",
+            json={"agent_id": "sovereign-loop", "context": {"source": "loop"}},
+            headers=SQUAD_HEADERS,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            sid = resp.json().get("session_id")
+            if sid:
+                _open_sessions[project_id] = sid
+                logger.info(f"[sessions] checked in to project={project_id} session={sid}")
+                return sid
+    except Exception as exc:
+        logger.warning(f"[sessions] checkin failed for project={project_id}: {exc}")
+    return None
+
+
+def _session_heartbeat(project_id: str) -> None:
+    """Send heartbeat for the open session of this project."""
+    sid = _open_sessions.get(project_id)
+    if not sid:
+        return
+    try:
+        requests.post(
+            f"{SQUAD_URL}/sessions/{sid}/heartbeat",
+            headers=SQUAD_HEADERS,
+            timeout=5,
+        )
+    except Exception as exc:
+        logger.debug(f"[sessions] heartbeat failed for session={sid}: {exc}")
+
+
+def _session_checkout(project_id: str) -> None:
+    """Check out of a project session (project queue is now empty)."""
+    sid = _open_sessions.pop(project_id, None)
+    if not sid:
+        return
+    try:
+        requests.post(
+            f"{SQUAD_URL}/sessions/{sid}/checkout",
+            json={"reason": "explicit"},
+            headers=SQUAD_HEADERS,
+            timeout=10,
+        )
+        logger.info(f"[sessions] checked out of project={project_id} session={sid}")
+    except Exception as exc:
+        logger.warning(f"[sessions] checkout failed for session={sid}: {exc}")
+
+
+def _sweep_idle_sessions(project_id: str) -> None:
+    """Trigger idle session cleanup for a project (sovereign loop sweep path)."""
+    try:
+        from sos.services.squad.sessions import ProjectSessionService
+        svc = ProjectSessionService()
+        closed = svc.close_idle_sessions(project_id)
+        if closed:
+            logger.info(f"[sessions] closed {closed} idle session(s) for project={project_id}")
+    except Exception as exc:
+        logger.debug(f"[sessions] idle sweep failed for project={project_id}: {exc}")
+
+
 def _apply_governance_caps(task: dict) -> dict:
     """Read sos:policy:governance and apply fuel_grade + token_budget caps.
 
@@ -288,6 +365,13 @@ def claim_task(task: dict) -> bool:
         return True
 
     task = _apply_governance_caps(task)
+
+    # Sovereign loop is the authoritative check-in path.
+    # Open a session for this project before claiming (idempotent).
+    project_id = task.get("project", "")
+    if project_id:
+        _sweep_idle_sessions(project_id)
+        _session_checkin(project_id)
 
     task_id = task.get("id", "")
     attempt = int(task.get("attempt", 0))
@@ -933,6 +1017,9 @@ def cycle() -> bool:
     tasks = get_pending_tasks()
     if not tasks:
         logger.info("No pending tasks. Idle.")
+        # Check out of any open sessions — project queues are empty
+        for project_id in list(_open_sessions.keys()):
+            _session_checkout(project_id)
         return completed_from_replies > 0
 
     logger.info(f"{len(tasks)} pending tasks")
@@ -940,6 +1027,11 @@ def cycle() -> bool:
     # Pick one
     task = pick_task(tasks)
     logger.info(f"Picked: [{task.get('priority','?')}] {task.get('title','?')[:60]}")
+
+    # Heartbeat for the project session if open
+    project_id = task.get("project", "")
+    if project_id:
+        _session_heartbeat(project_id)
 
     # Execute
     result = execute_task(task)

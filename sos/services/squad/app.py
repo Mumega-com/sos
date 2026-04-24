@@ -1082,6 +1082,218 @@ async def _start_kpi_cron() -> None:
     asyncio.create_task(_league_daily_season_loop())
 
 
+# ---------------------------------------------------------------------------
+# Project Sessions & Members API
+# ---------------------------------------------------------------------------
+from sos.services.squad.sessions import (
+    ProjectSessionService,
+    SessionAlreadyClosedError,
+    SessionNotFoundError,
+)
+from sos.services.squad.members import (
+    InsufficientRoleError,
+    MemberNotFoundError,
+    ProjectMemberService,
+    lookup_sos_token,
+    role_satisfies,
+    DEFAULT_CUSTOMER_ROLE,
+)
+
+_session_svc = ProjectSessionService()
+_member_svc = ProjectMemberService()
+
+
+def _require_project_role(min_role: str, project_id_param: str = "project_id"):
+    """FastAPI dependency: validates SOS bus token + project scope + minimum role.
+
+    min_role: "observer" | "member" | "owner"
+    """
+    from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+    bearer = HTTPBearer(auto_error=False)
+
+    async def _dep(
+        request,
+        project_id: str,
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+    ) -> dict:
+        raw_token = credentials.credentials if credentials else ""
+        if not raw_token:
+            raise HTTPException(status_code=401, detail="missing_authorization")
+
+        token_rec = lookup_sos_token(raw_token)
+        if token_rec is None:
+            raise HTTPException(status_code=401, detail="invalid_token")
+
+        # Project scope check — token must be scoped to this project
+        token_project = token_rec.get("project")
+        if token_project and token_project != project_id:
+            raise HTTPException(status_code=403, detail="token_project_mismatch")
+
+        # Role check
+        token_role = token_rec.get("role", DEFAULT_CUSTOMER_ROLE)
+        if not role_satisfies(token_role, min_role):
+            raise HTTPException(
+                status_code=403,
+                detail=f"insufficient_role: need {min_role}, have {token_role}",
+            )
+        return token_rec
+
+    return _dep
+
+
+class CheckinRequest(BaseModel):
+    agent_id: str
+    context: dict = Field(default_factory=dict)
+
+
+class CheckoutRequest(BaseModel):
+    reason: str = "explicit"
+
+
+class AddMemberRequest(BaseModel):
+    agent_id: str
+    role: str = "member"
+
+
+@app.post("/projects/{project_id}/checkin")
+async def project_checkin(
+    project_id: str,
+    body: CheckinRequest,
+    token_rec: dict = Depends(_require_project_role("member")),
+):
+    """Open or resume a session for this agent+project. Idempotent."""
+    try:
+        result = _session_svc.checkin(
+            project_id=project_id,
+            agent_id=body.agent_id,
+            context=body.context,
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/sessions/{session_id}/checkout")
+async def session_checkout(
+    session_id: str,
+    body: CheckoutRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Close a session explicitly."""
+    raw_token = (authorization or "").removeprefix("Bearer ").strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="missing_authorization")
+    token_rec = lookup_sos_token(raw_token)
+    if token_rec is None:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    token_role = token_rec.get("role", DEFAULT_CUSTOMER_ROLE)
+    if not role_satisfies(token_role, "member"):
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    try:
+        return _session_svc.checkout(session_id, reason=body.reason)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    except SessionAlreadyClosedError:
+        raise HTTPException(status_code=409, detail="session_already_closed")
+
+
+@app.post("/sessions/{session_id}/heartbeat")
+async def session_heartbeat(
+    session_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Keep a session alive."""
+    raw_token = (authorization or "").removeprefix("Bearer ").strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="missing_authorization")
+    token_rec = lookup_sos_token(raw_token)
+    if token_rec is None:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    token_role = token_rec.get("role", DEFAULT_CUSTOMER_ROLE)
+    if not role_satisfies(token_role, "member"):
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    try:
+        _session_svc.heartbeat(session_id)
+        return {"status": "ok"}
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+
+@app.get("/projects/{project_id}/sessions")
+async def list_project_sessions(
+    project_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    token_rec: dict = Depends(_require_project_role("observer")),
+):
+    """List sessions for a project (observer+)."""
+    sessions = _session_svc.list_sessions(project_id, limit=limit, offset=offset)
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Session detail + events. Requires observer+ token scoped to this project."""
+    raw_token = (authorization or "").removeprefix("Bearer ").strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="missing_authorization")
+    token_rec = lookup_sos_token(raw_token)
+    if token_rec is None:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    try:
+        session = _session_svc.get_session(session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    # Project scope check on the fetched session
+    token_project = token_rec.get("project")
+    if token_project and token_project != session["project_id"]:
+        raise HTTPException(status_code=403, detail="token_project_mismatch")
+    token_role = token_rec.get("role", DEFAULT_CUSTOMER_ROLE)
+    if not role_satisfies(token_role, "observer"):
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    return session
+
+
+@app.post("/projects/{project_id}/members")
+async def add_project_member(
+    project_id: str,
+    body: AddMemberRequest,
+    token_rec: dict = Depends(_require_project_role("owner")),
+):
+    """Add or update a member in the project. Requires owner token."""
+    try:
+        return _member_svc.add_member(project_id, body.agent_id, role=body.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/projects/{project_id}/members")
+async def list_project_members(
+    project_id: str,
+    token_rec: dict = Depends(_require_project_role("observer")),
+):
+    """List project members."""
+    return {"members": _member_svc.list_members(project_id)}
+
+
+@app.delete("/projects/{project_id}/members/{agent_id}")
+async def remove_project_member(
+    project_id: str,
+    agent_id: str,
+    token_rec: dict = Depends(_require_project_role("owner")),
+):
+    """Remove a member from the project. Requires owner token."""
+    try:
+        _member_svc.remove_member(project_id, agent_id)
+        return {"status": "removed", "agent_id": agent_id}
+    except MemberNotFoundError:
+        raise HTTPException(status_code=404, detail="member_not_found")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("SOS_SQUAD_PORT", "8060"))
