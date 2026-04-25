@@ -1122,11 +1122,43 @@ async def _league_daily_season_loop() -> None:
             pass  # never fail the cron loop
 
 
+_STALE_CLAIM_REAP_INTERVAL_S: int = int(os.environ.get("STALE_CLAIM_REAP_INTERVAL_S", "30"))
+
+
+async def _stale_claim_reaper_loop() -> None:
+    """Sprint 006 A.3 / G53: orphan-task recovery for dual-instance Squad HA.
+
+    Every STALE_CLAIM_REAP_INTERVAL_S seconds, check for tasks claimed by
+    dead processes and reset them to BACKLOG.  The initial sweep runs once
+    at startup to reclaim any tasks this process held before a kill-9 +
+    systemd auto-restart.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    # Startup sweep: reclaim any tasks held by dead processes (incl. prior PID of this process)
+    try:
+        reset = tasks.reap_stale_claims(tenant_id=None)
+        if reset:
+            _log.info("squad.startup_reap: reset %d stale claimed task(s)", reset)
+    except Exception as exc:
+        _log.warning("squad.startup_reap failed (non-fatal): %s", exc)
+    # Periodic sweep
+    while True:
+        await asyncio.sleep(_STALE_CLAIM_REAP_INTERVAL_S)
+        try:
+            reset = tasks.reap_stale_claims(tenant_id=None)
+            if reset:
+                _log.info("squad.periodic_reap: reset %d stale claimed task(s)", reset)
+        except Exception as exc:
+            _log.warning("squad.periodic_reap failed (non-fatal): %s", exc)
+
+
 @app.on_event("startup")
 async def _start_kpi_cron() -> None:
     asyncio.create_task(_kpi_cron_loop())
     asyncio.create_task(_league_weekly_snapshot_loop())
     asyncio.create_task(_league_daily_season_loop())
+    asyncio.create_task(_stale_claim_reaper_loop())
 
 
 # ---------------------------------------------------------------------------

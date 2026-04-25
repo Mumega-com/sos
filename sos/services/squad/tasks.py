@@ -592,7 +592,8 @@ class SquadTaskService:
             updated = conn.execute(
                 """
                 UPDATE squad_tasks
-                SET assignee = ?, status = ?, claimed_at = ?, updated_at = ?, attempt = ?
+                SET assignee = ?, status = ?, claimed_at = ?, updated_at = ?,
+                    attempt = ?, claim_owner_pid = ?
                 WHERE id = ? AND tenant_id = ? AND attempt = ? AND status IN (?, ?)
                 """,
                 (
@@ -601,6 +602,7 @@ class SquadTaskService:
                     claimed_at,
                     claimed_at,
                     new_attempt,
+                    os.getpid(),
                     task_id,
                     tenant_id if tenant_id is not None else DEFAULT_TENANT_ID,
                     attempt,
@@ -860,3 +862,65 @@ class SquadTaskService:
             )
         self.bus.emit("task.failed", task.squad_id, actor, {"task_id": task.id, "error": error})
         return task
+
+    def reap_stale_claims(self, tenant_id: str | None = None) -> int:
+        """Reset tasks claimed by dead processes back to BACKLOG.
+
+        For each task in status='claimed' with a non-NULL claim_owner_pid,
+        check whether that PID is still alive via os.kill(pid, 0).  If the
+        process is gone, reset the task to BACKLOG so another instance (or
+        the restarted instance) can re-claim it.
+
+        Returns the number of tasks reset.
+
+        Used in dual-instance Squad HA (Sprint 006 A.3 / G53): if a Squad
+        instance is kill-9'd, its claimed tasks are detected here and
+        returned to the work queue within the next reaper cycle (~30s).
+        """
+        log = get_logger(__name__)
+        now = now_iso()
+        reset_count = 0
+        with self.db.connect() as conn:
+            tenant_clause = "AND tenant_id = ?" if tenant_id is not None else ""
+            params: tuple = (TaskStatus.CLAIMED.value,) + ((tenant_id,) if tenant_id else ())
+            rows = conn.execute(
+                f"""SELECT id, squad_id, tenant_id, claim_owner_pid, attempt
+                    FROM squad_tasks
+                    WHERE status = ? AND claim_owner_pid IS NOT NULL
+                    {tenant_clause}""",
+                params,
+            ).fetchall()
+            for row in rows:
+                pid = row["claim_owner_pid"]
+                try:
+                    os.kill(pid, 0)  # signal 0 = existence check, no-op
+                except ProcessLookupError:
+                    pass  # PID dead — reclaim
+                except PermissionError:
+                    continue  # PID alive but owned by different user
+                else:
+                    continue  # PID alive — skip
+                conn.execute(
+                    """UPDATE squad_tasks
+                       SET status = ?, assignee = NULL, claimed_at = NULL,
+                           claim_owner_pid = NULL, updated_at = ?
+                       WHERE id = ? AND claim_owner_pid = ? AND status = ?""",
+                    (
+                        TaskStatus.BACKLOG.value,
+                        now,
+                        row["id"],
+                        pid,
+                        TaskStatus.CLAIMED.value,
+                    ),
+                )
+                reset_count += 1
+                log.info(
+                    f"squad.reap_stale_claims: reset task {row['id']} (claimed by dead pid {pid})"
+                )
+                self.bus.emit(
+                    "task.requeued",
+                    row["squad_id"],
+                    "system",
+                    {"task_id": row["id"], "reason": "dead_claim_owner_pid", "pid": pid},
+                )
+        return reset_count
