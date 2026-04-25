@@ -17,6 +17,10 @@ import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# ADV-G68-001: ONBOARD_INTENT_SECRET must be set; no hardcoded fallback in production.
+# Provide a deterministic test value so sign_intent / verify_intent work in unit tests.
+os.environ.setdefault("ONBOARD_INTENT_SECRET", "test-intent-secret-not-for-production")
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -293,7 +297,9 @@ class TestGithubCallback:
     def test_rejects_oauth_error_param(self, client: TestClient) -> None:
         resp = client.get("/onboard/github/callback?error=access_denied&state=nonce")
         assert resp.status_code == 400
-        assert "access_denied" in resp.json()["detail"]
+        # ADV-G68-013: raw error code must NOT be reflected; mapped to safe message
+        assert "access_denied" not in resp.json()["detail"]
+        assert "denied" in resp.json()["detail"].lower()
 
     def test_rejects_invalid_nonce(self, client: TestClient) -> None:
         with patch(

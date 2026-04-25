@@ -44,6 +44,15 @@ _NONCE_BYTES = 32           # 256-bit nonce → 64-char hex string
 _PROSPECT_TENANT_ID = "prospect"  # staging tenant for pre-contract principals
 _INTENT_HMAC_KEY_ENV = "ONBOARD_INTENT_SECRET"  # HMAC key for signed Discord intent URLs
 
+# ADV-G68-003: allowlist of Stripe-owned URL prefixes for RedirectResponse and DB storage
+_STRIPE_QUOTE_URL_PREFIXES = (
+    "https://quote.stripe.com/",
+    "https://invoice.stripe.com/",
+)
+
+# ADV-G68-010: explicit plan allowlist — prevents test price IDs from leaking to attackers
+_VALID_PLANS = frozenset({"starter", "growth", "pro", "enterprise"})
+
 
 # ---------------------------------------------------------------------------
 # DB helpers (re-uses the same psycopg2 _connect() pattern as principals.py)
@@ -192,7 +201,7 @@ def create_stripe_quote(
         log.warning("STRIPE_SECRET_KEY not set — returning synthetic quote for principal %s", principal_id)
         synthetic_id = f"qt_test_{principal_id[:8]}"
         synthetic_url = f"https://quote.stripe.com/test/{synthetic_id}"
-        return synthetic_id, synthetic_url
+        return synthetic_id, synthetic_url  # prefix is allowed; no _validate_stripe_url needed
 
     try:
         import stripe as stripe_lib
@@ -202,15 +211,18 @@ def create_stripe_quote(
 
     stripe_lib.api_key = stripe_secret
 
+    # ADV-G68-007: reuse existing Stripe Customer across retries to prevent proliferation
+    existing_customer = _get_existing_stripe_customer(principal_id)
+
     # Resolve or create Stripe customer
-    stripe_customer_id = _resolve_stripe_customer(
+    stripe_customer_id = existing_customer or _resolve_stripe_customer(
         stripe_lib=stripe_lib,
         email=email,
         display_name=display_name,
         principal_id=principal_id,
     )
 
-    # Resolve price_id for the requested plan from env vars
+    # Resolve price_id for the requested plan from env vars (ADV-G68-010: raises on unknown plan)
     price_id = _plan_to_price_id(plan)
     if not price_id:
         raise ValueError(f"No STRIPE_PRICE_ID_{plan.upper()} env var set — cannot create quote")
@@ -226,7 +238,10 @@ def create_stripe_quote(
         quote_url = quote.get("hosted_quote_url") or quote.get("pdf")
         if not quote_url:
             raise ValueError("Stripe Quote created but hosted_quote_url not available")
-        log.info("Stripe Quote created: %s url=%s", quote["id"], quote_url)
+        # ADV-G68-003: validate URL is Stripe-owned before storing / redirecting
+        _validate_stripe_url(quote_url)
+        # ADV-G68-012: never log the full bearer URL — log only quote_id
+        log.info("Stripe Quote created: %s (url redacted)", quote["id"])
         return quote["id"], quote_url
     except stripe_lib.error.StripeError as exc:
         log.error("Stripe Quote creation failed for principal %s: %s", principal_id, exc)
@@ -258,10 +273,47 @@ def _resolve_stripe_customer(
     return customer["id"]
 
 
+def _validate_stripe_url(url: str) -> str:
+    """Raise ValueError if url is not a known Stripe-owned domain (ADV-G68-003)."""
+    if not any(url.startswith(prefix) for prefix in _STRIPE_QUOTE_URL_PREFIXES):
+        raise ValueError(f"Stripe returned suspicious quote URL: {url!r}")
+    return url
+
+
 def _plan_to_price_id(plan: str) -> str | None:
-    """Return the Stripe Price ID for a plan name from environment."""
+    """Return the Stripe Price ID for a plan name from environment.
+
+    Raises ValueError for unknown plans (ADV-G68-010 — allowlist prevents test
+    price ID enumeration and free-tier abuse).
+    """
+    if plan not in _VALID_PLANS:
+        raise ValueError(f"unknown plan: {plan!r} — must be one of {sorted(_VALID_PLANS)}")
     env_key = f"STRIPE_PRICE_ID_{plan.upper()}"
     return os.environ.get(env_key)
+
+
+def _get_existing_stripe_customer(principal_id: str) -> str | None:
+    """Return a previously resolved Stripe customer ID for this principal (ADV-G68-007).
+
+    Looks up contracts rows to avoid creating duplicate Stripe Customer objects
+    when the same principal retries onboarding (e.g., after a transient Stripe
+    API error during the first attempt).
+    """
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT stripe_customer_id FROM contracts
+                        WHERE principal_id = %s
+                          AND stripe_customer_id IS NOT NULL
+                        LIMIT 1""",
+                    (principal_id,),
+                )
+                row = cur.fetchone()
+                return row["stripe_customer_id"] if row else None
+    except Exception as exc:
+        log.warning("existing stripe customer lookup failed (non-blocking): %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -292,11 +344,25 @@ def create_contract(
                        (principal_id, stripe_customer_id, stripe_quote_id, stripe_quote_url, status)
                    VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT (stripe_quote_id)
-                   DO UPDATE SET status = EXCLUDED.status  -- idempotent: allow re-send
+                   -- ADV-G68-006: accepted/void contracts are immutable via upsert path;
+                   -- only draft/sent contracts can be re-sent.
+                   DO UPDATE SET status = EXCLUDED.status
+                   WHERE contracts.status NOT IN ('accepted', 'void')
                    RETURNING id""",
                 (principal_id, stripe_customer_id, stripe_quote_id, stripe_quote_url, status),
             )
             row = cur.fetchone()
+            if row is None:
+                # UPDATE was blocked (contract already accepted/void) — fetch existing id
+                cur.execute(
+                    "SELECT id FROM contracts WHERE stripe_quote_id = %s",
+                    (stripe_quote_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        f"contract not found after upsert for quote {stripe_quote_id!r}"
+                    )
         conn.commit()
     contract_id = str(row["id"])
     log.info(
@@ -320,14 +386,27 @@ def create_contract(
 
 
 def sign_intent(intent: dict[str, Any], ttl_seconds: int = 86400) -> str:
-    """Return a compact HMAC-signed intent token for the /onboard/start URL."""
+    """Return a compact HMAC-signed intent token for the /onboard/start URL.
+
+    Raises RuntimeError if ONBOARD_INTENT_SECRET is not set — no hardcoded fallback
+    (ADV-G68-001: a known fallback key lets any read-source attacker forge tokens).
+    """
     import base64
     import json
     import time
 
-    secret = os.environ.get(_INTENT_HMAC_KEY_ENV, "dev-onboard-secret-change-in-prod")
+    # ADV-G68-001: no fallback — require explicit secret in all environments
+    secret = os.environ.get(_INTENT_HMAC_KEY_ENV)
+    if not secret:
+        raise RuntimeError(
+            f"{_INTENT_HMAC_KEY_ENV} must be set — no hardcoded fallback allowed"
+        )
+
     payload = intent.copy()
     payload["exp"] = int(time.time()) + ttl_seconds
+    # ADV-G68-005: jti makes each issued token unique; used to detect concurrent flows
+    # for the same intent (single-use enforcement in /onboard/start).
+    payload.setdefault("jti", secrets.token_hex(8))
 
     payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode()
@@ -342,18 +421,30 @@ def verify_intent(token: str) -> dict[str, Any]:
       - malformed token
       - invalid signature
       - expired token
+
+    Raises RuntimeError if ONBOARD_INTENT_SECRET is not set (ADV-G68-001).
+
+    Format check runs before secret access so malformed tokens fail fast without
+    touching the secret (useful in tests that don't set the env var).
     """
     import base64
     import json
     import time
 
-    secret = os.environ.get(_INTENT_HMAC_KEY_ENV, "dev-onboard-secret-change-in-prod")
-
+    # Parse format first — reject malformed before touching the secret
     parts = token.split(".")
     if len(parts) != 2:
         raise ValueError("malformed intent token")
 
     payload_b64, sig = parts
+
+    # ADV-G68-001: no fallback — require explicit secret in all environments
+    secret = os.environ.get(_INTENT_HMAC_KEY_ENV)
+    if not secret:
+        raise RuntimeError(
+            f"{_INTENT_HMAC_KEY_ENV} must be set — no hardcoded fallback allowed"
+        )
+
     expected_sig = hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected_sig):
         raise ValueError("intent token signature invalid")

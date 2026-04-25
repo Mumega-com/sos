@@ -63,6 +63,18 @@ _GITHUB_EMAILS_URL = "https://api.github.com/user/emails"
 _NONCE_RATE_LIMIT_WINDOW_S = 60
 _NONCE_RATE_LIMIT_MAX = 10
 
+# ADV-G68-013: map GitHub OAuth error codes to safe, non-reflective messages
+_GITHUB_OAUTH_ERRORS: dict[str, str] = {
+    "access_denied": "GitHub authorization was denied. Please try again.",
+    "application_suspended": "This application has been suspended.",
+    "redirect_uri_mismatch": "OAuth configuration error — please contact support.",
+    "incorrect_client_credentials": "OAuth configuration error — please contact support.",
+    "bad_verification_code": "Authorization code expired or already used. Please restart onboarding.",
+}
+
+# ADV-G68-002: trusted proxy headers, checked in order
+_TRUSTED_IP_HEADERS = ("x-real-ip", "x-forwarded-for")
+
 
 # ---------------------------------------------------------------------------
 # Admin auth dependency (re-uses the same pattern as SaaS app.py)
@@ -135,12 +147,22 @@ def onboard_start(intent: str, request: Request) -> RedirectResponse:
     except ValueError as exc:
         raise HTTPException(400, detail=f"invalid intent: {exc}") from exc
 
-    # 2. Rate-limit: reject if too many pending nonces recently (by IP)
-    client_ip = request.client.host if request.client else "unknown"
-    _check_nonce_rate_limit(client_ip)
+    # ADV-G68-005: single-use enforcement — reuse live nonce if one exists for this jti
+    jti = intent_payload.get("jti")
+    existing_nonce = _find_live_nonce_by_jti(jti) if jti else None
 
-    # 3. Create nonce (stored server-side)
-    nonce = create_onboard_nonce({**intent_payload, "_ip": client_ip})
+    if existing_nonce:
+        log.info("onboard_start: reusing live nonce %s... for jti %s", existing_nonce[:8], jti[:8] if jti else "?")
+        nonce = existing_nonce
+    else:
+        # 2. Rate-limit: reject if this IP has created too many nonces in the window
+        # ADV-G68-002: count ALL nonces (consumed + unconsumed) per IP per window so
+        # completed flows still consume rate-limit budget.
+        client_ip = _extract_client_ip(request)
+        _check_nonce_rate_limit(client_ip)
+
+        # 3. Create nonce (stored server-side)
+        nonce = create_onboard_nonce({**intent_payload, "_ip": client_ip})
 
     # 4. Build GitHub OAuth redirect
     github_client_id = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -161,8 +183,55 @@ def onboard_start(intent: str, request: Request) -> RedirectResponse:
     return RedirectResponse(url=github_url, status_code=302)
 
 
+def _extract_client_ip(request: Request) -> str:
+    """Extract the real client IP, respecting trusted proxy headers (ADV-G68-002).
+
+    X-Real-IP / X-Forwarded-For are trusted when present (Nginx / Cloudflare set these).
+    X-Forwarded-For may be a comma-separated list; the leftmost entry is the originating IP.
+    Falls back to the TCP peer address (request.client.host) if no proxy header is set.
+    """
+    for header in _TRUSTED_IP_HEADERS:
+        value = request.headers.get(header, "").strip()
+        if value:
+            # Take the first (leftmost) IP from a potentially comma-separated list
+            return value.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _find_live_nonce_by_jti(jti: str) -> str | None:
+    """Return an existing unconsumed nonce for this intent jti, if one exists (ADV-G68-005).
+
+    Enables single-use intent tokens: reuse the same nonce for concurrent flows
+    triggered by the same intent URL, rather than creating N nonces → N Stripe Quotes.
+    Non-blocking: returns None on DB error so the caller falls through to creating a new nonce.
+    """
+    from sos.contracts.onboarding import _connect as _onboarding_connect
+
+    try:
+        with _onboarding_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT nonce FROM onboard_nonces
+                        WHERE intent->>'jti' = %s
+                          AND consumed_at IS NULL
+                          AND expires_at > now()
+                        LIMIT 1""",
+                    (jti,),
+                )
+                row = cur.fetchone()
+                return row["nonce"] if row else None
+    except Exception as exc:
+        log.warning("jti nonce lookup failed (non-blocking): %s", exc)
+        return None
+
+
 def _check_nonce_rate_limit(client_ip: str) -> None:
-    """Raise HTTP 429 if this IP has too many pending nonces in the window."""
+    """Raise HTTP 429 if this IP has created too many nonces in the window.
+
+    ADV-G68-002: counts ALL nonces created by this IP (consumed + unconsumed) so
+    completed flows still consume rate-limit budget — prevents IP cycling attack
+    where attacker creates 10 nonces per IP, completes all 10, then starts again.
+    """
     from sos.contracts.onboarding import _connect as _onboarding_connect
 
     try:
@@ -171,8 +240,7 @@ def _check_nonce_rate_limit(client_ip: str) -> None:
                 cur.execute(
                     """SELECT COUNT(*) AS cnt FROM onboard_nonces
                         WHERE intent->>'_ip' = %s
-                          AND created_at > now() - interval %s
-                          AND consumed_at IS NULL""",
+                          AND created_at > now() - interval %s""",
                     (client_ip, f"{_NONCE_RATE_LIMIT_WINDOW_S} seconds"),
                 )
                 row = cur.fetchone()
@@ -197,10 +265,11 @@ async def github_callback(
     error: str | None = None,
 ) -> RedirectResponse:
     """Exchange GitHub authorization code; upsert principal; create contract; redirect to quote URL."""
-    # 1. Reject explicit OAuth errors (user denied, app suspended, etc.)
+    # 1. Reject explicit OAuth errors — map to safe messages (ADV-G68-013: no raw reflection)
     if error:
         log.warning("github_callback: OAuth error=%s", error)
-        raise HTTPException(400, detail=f"GitHub OAuth error: {error}")
+        safe_msg = _GITHUB_OAUTH_ERRORS.get(error, "GitHub OAuth error — please try again.")
+        raise HTTPException(400, detail=safe_msg)
 
     if not code or not state:
         raise HTTPException(400, detail="missing code or state parameter")
@@ -317,7 +386,13 @@ async def _exchange_github_code(code: str) -> str:
 
 
 async def _fetch_github_profile(access_token: str) -> dict[str, Any]:
-    """Fetch GitHub user profile (login, name, email)."""
+    """Fetch GitHub user profile (login, name, email).
+
+    ADV-G68-004: profile["email"] is the *unverified* public email field — any GitHub
+    user can set it to an arbitrary address without owning it. We ALWAYS fetch
+    /user/emails and use only the primary+verified entry as the identity key.
+    profile["email"] from /user is intentionally ignored.
+    """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/vnd.github+json",
@@ -331,16 +406,16 @@ async def _fetch_github_profile(access_token: str) -> dict[str, Any]:
 
     profile = user_resp.json()
 
-    # GitHub returns email=null for accounts with private email setting.
-    # Fall back to fetching the primary verified email from /user/emails.
-    if not profile.get("email"):
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            emails_resp = await client.get(_GITHUB_EMAILS_URL, headers=headers)
-        if emails_resp.status_code == 200:
-            for entry in emails_resp.json():
-                if entry.get("primary") and entry.get("verified"):
-                    profile["email"] = entry["email"]
-                    break
+    # Always fetch /user/emails — use only primary+verified entry (ADV-G68-004).
+    # profile["email"] (unverified public field) is discarded even if non-null.
+    profile["email"] = None
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        emails_resp = await client.get(_GITHUB_EMAILS_URL, headers=headers)
+    if emails_resp.status_code == 200:
+        for entry in emails_resp.json():
+            if entry.get("primary") and entry.get("verified"):
+                profile["email"] = entry["email"]
+                break
 
     return profile
 
