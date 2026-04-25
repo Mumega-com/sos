@@ -18,6 +18,8 @@ import pytest
 
 from sos.contracts.quest_vectors import (
     DIMENSION_NAMES,
+    EXTRACTION_QUOTA_DAILY,
+    ExtractionQuotaExceededError,
     _build_prompt,
     _named_dims_to_vector,
     _parse_response,
@@ -173,23 +175,52 @@ class TestUpsertManualValidation:
 # ── Integration: DB-backed ────────────────────────────────────────────────────
 
 
+def _db_connect():
+    import psycopg2, psycopg2.extras
+    return psycopg2.connect(
+        os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL'),
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
+
+
 @db
 class TestUpsertManualDB:
-    def _insert_quest(self) -> str:
-        import psycopg2, psycopg2.extras
-        conn = psycopg2.connect(
-            os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL'),
-            cursor_factory=psycopg2.extras.RealDictCursor,
-        )
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO quests (title, description, tier, created_by)
-                       VALUES ('Test QV Quest', 'desc', 'T2', 'test')
-                       RETURNING id""",
-                )
-                qid = cur.fetchone()['id']
+    def setup_method(self) -> None:
+        self._creator = f'pid-test-qv-{uuid.uuid4().hex[:8]}'
+        self._inserted_qids: list = []
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._creator, f'{self._creator}@test.local'),
+            )
+        conn.commit()
         conn.close()
+
+    def teardown_method(self) -> None:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            if self._inserted_qids:
+                cur.execute('DELETE FROM quest_vectors WHERE quest_id = ANY(%s)', (self._inserted_qids,))
+                cur.execute('DELETE FROM quests WHERE id = ANY(%s)', (self._inserted_qids,))
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._creator,))
+        conn.commit()
+        conn.close()
+
+    def _insert_quest(self) -> str:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('Test QV Quest', 'desc', 'T2', %s)
+                   RETURNING id""",
+                (self._creator,),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        conn.close()
+        self._inserted_qids.append(qid)
         return qid
 
     def test_upsert_and_retrieve(self) -> None:
@@ -247,21 +278,43 @@ class TestExtractMocked:
     Verifies the full DB write path without making real LLM calls.
     """
 
-    def _insert_quest(self) -> str:
-        import psycopg2, psycopg2.extras
-        conn = psycopg2.connect(
-            os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL'),
-            cursor_factory=psycopg2.extras.RealDictCursor,
-        )
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO quests (title, description, tier, created_by)
-                       VALUES ('Mocked Extract Quest', 'desc', 'T1', 'test')
-                       RETURNING id""",
-                )
-                qid = cur.fetchone()['id']
+    def setup_method(self) -> None:
+        self._creator = f'pid-test-ext-{uuid.uuid4().hex[:8]}'
+        self._inserted_qids: list = []
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._creator, f'{self._creator}@test.local'),
+            )
+        conn.commit()
         conn.close()
+
+    def teardown_method(self) -> None:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            if self._inserted_qids:
+                cur.execute('DELETE FROM quest_vectors WHERE quest_id = ANY(%s)', (self._inserted_qids,))
+                cur.execute('DELETE FROM quest_extraction_quota WHERE creator_id = %s', (self._creator,))
+                cur.execute('DELETE FROM quests WHERE id = ANY(%s)', (self._inserted_qids,))
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._creator,))
+        conn.commit()
+        conn.close()
+
+    def _insert_quest(self, description: str = 'desc') -> str:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('Mocked Extract Quest', %s, 'T1', %s)
+                   RETURNING id""",
+                (description, self._creator),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        conn.close()
+        self._inserted_qids.append(qid)
         return qid
 
     def test_extract_writes_to_db(self) -> None:
@@ -316,3 +369,147 @@ class TestExtractMocked:
             instance.execute = AsyncMock(return_value=mock_result)
             with pytest.raises(RuntimeError, match='returned failure'):
                 extract(qid)
+
+
+# ── G29: description bound + extraction quota ─────────────────────────────────
+
+
+class TestBuildPromptTruncation:
+    """TC-G29c: _build_prompt truncates description at 2048 chars."""
+
+    def test_short_description_passes_through(self) -> None:
+        desc = 'Short description.'
+        prompt = _build_prompt('Test Quest', desc)
+        assert desc in prompt
+        assert '\u2026[truncated' not in prompt
+
+    def test_exactly_2048_chars_not_truncated(self) -> None:
+        desc = 'x' * 2048
+        prompt = _build_prompt('Test Quest', desc)
+        assert desc in prompt
+        assert '\u2026[truncated' not in prompt
+
+    def test_2049_chars_truncated_with_marker(self) -> None:
+        desc = 'x' * 2049
+        prompt = _build_prompt('Test Quest', desc)
+        assert 'x' * 2048 in prompt
+        assert '\u2026[truncated, original 2049 chars]' in prompt
+        assert 'x' * 2049 not in prompt
+
+    def test_4096_chars_truncated_to_2048_with_original_length(self) -> None:
+        desc = 'a' * 4096
+        prompt = _build_prompt('Test Quest', desc)
+        assert 'a' * 2048 in prompt
+        assert '\u2026[truncated, original 4096 chars]' in prompt
+
+    def test_empty_description_uses_placeholder(self) -> None:
+        prompt = _build_prompt('Test Quest', '')
+        assert '(no description provided)' in prompt
+
+
+@db
+class TestExtractionQuota:
+    """TC-G29a, TC-G29b, TC-G29d — quota enforcement and DB constraint."""
+
+    def setup_method(self) -> None:
+        self._creator = f'pid-test-quota-{uuid.uuid4().hex[:8]}'
+        self._inserted_qids: list = []
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._creator, f'{self._creator}@test.local'),
+            )
+        conn.commit()
+        conn.close()
+
+    def teardown_method(self) -> None:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            if self._inserted_qids:
+                cur.execute('DELETE FROM quest_vectors WHERE quest_id = ANY(%s)', (self._inserted_qids,))
+                cur.execute('DELETE FROM quests WHERE id = ANY(%s)', (self._inserted_qids,))
+            cur.execute('DELETE FROM quest_extraction_quota WHERE creator_id = %s', (self._creator,))
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._creator,))
+        conn.commit()
+        conn.close()
+
+    def _insert_quest(self, description: str = 'desc') -> str:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('Quota Test Quest', %s, 'T1', %s)
+                   RETURNING id""",
+                (description, self._creator),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        conn.close()
+        self._inserted_qids.append(qid)
+        return qid
+
+    def test_tc_g29b_description_over_4096_rejected(self) -> None:
+        """TC-G29b: INSERT quest with description > 4096 chars → CHECK violation."""
+        import psycopg2
+        conn = _db_connect()
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO quests (title, description, tier, created_by)
+                       VALUES ('Too Long', %s, 'T1', %s)""",
+                    ('x' * 4097, self._creator),
+                )
+            conn.commit()
+        conn.rollback()
+        conn.close()
+
+    def test_tc_g29b_exactly_4096_accepted(self) -> None:
+        """Boundary: description exactly 4096 chars is accepted."""
+        qid = self._insert_quest('y' * 4096)
+        assert qid is not None
+
+    def test_tc_g29a_quota_enforced_at_limit(self) -> None:
+        """TC-G29a: 11th extraction attempt in one day raises ExtractionQuotaExceededError."""
+        from sos.contracts.quest_vectors import _check_and_increment_quota, EXTRACTION_QUOTA_DAILY
+
+        conn = _db_connect()
+        # Exhaust quota
+        for _ in range(EXTRACTION_QUOTA_DAILY):
+            _check_and_increment_quota(conn, self._creator)
+
+        # Next call should raise
+        with pytest.raises(ExtractionQuotaExceededError, match='daily extraction quota'):
+            _check_and_increment_quota(conn, self._creator)
+
+        # Verify quota was not incremented beyond the limit
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT used_count FROM quest_extraction_quota WHERE creator_id = %s AND window_date = current_date',
+                (self._creator,),
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert int(row['used_count']) == EXTRACTION_QUOTA_DAILY
+
+    def test_tc_g29d_quota_resets_next_day(self) -> None:
+        """TC-G29d: quota is per window_date — yesterday's count doesn't block today."""
+        import psycopg2
+        from sos.contracts.quest_vectors import _check_and_increment_quota, EXTRACTION_QUOTA_DAILY
+
+        conn = _db_connect()
+        # Simulate yesterday's exhausted quota
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quest_extraction_quota (creator_id, window_date, used_count)
+                   VALUES (%s, current_date - 1, %s)
+                   ON CONFLICT (creator_id, window_date) DO UPDATE SET used_count = EXCLUDED.used_count""",
+                (self._creator, EXTRACTION_QUOTA_DAILY),
+            )
+        conn.commit()
+
+        # Today's quota is fresh — first call should succeed
+        count = _check_and_increment_quota(conn, self._creator)
+        conn.close()
+        assert count == 1

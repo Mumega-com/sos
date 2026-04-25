@@ -25,10 +25,12 @@ Stores result in `quest_vectors` (FLOAT8[] vector + JSONB named_dims sidecar).
 Scores are in [0.0, 1.0]: 0.0 = not at all required; 1.0 = essential.
 
 Public API:
-  DIMENSION_NAMES   — ordered list of 16 dimension names
-  extract(quest_id) — auto-extract via Vertex Flash Lite + upsert to quest_vectors
+  DIMENSION_NAMES              — ordered list of 16 dimension names
+  EXTRACTION_QUOTA_DAILY       — max Vertex calls per creator per UTC day (env: EXTRACTION_QUOTA_DAILY)
+  ExtractionQuotaExceededError — raised when creator hits daily quota
+  extract(quest_id)            — auto-extract via Vertex Flash Lite + upsert to quest_vectors
   upsert_manual(quest_id, vector) — manual override (source='manual')
-  get_vector(quest_id) — retrieve stored vector + named_dims
+  get_vector(quest_id)         — retrieve stored vector + named_dims
 """
 from __future__ import annotations
 
@@ -37,6 +39,11 @@ import logging
 import os
 import re
 from typing import Any
+
+# F-13 (G29): description truncation limit for Vertex prompt (chars)
+_DESCRIPTION_PROMPT_MAX = 2048
+# F-13 (G29): daily extraction quota per creator (configurable)
+EXTRACTION_QUOTA_DAILY = int(os.environ.get('EXTRACTION_QUOTA_DAILY', '10'))
 
 import psycopg2
 import psycopg2.extras
@@ -87,10 +94,21 @@ Reply with ONLY a JSON object with these exact keys and float values."""
 
 
 def _build_prompt(title: str, description: str) -> str:
+    """Build the Vertex extraction prompt.
+
+    F-13 (G29): description is truncated to _DESCRIPTION_PROMPT_MAX (2048) chars
+    before being injected into the prompt. Truncation marker appended so the model
+    knows the body was capped. This protects against cost amplification via oversized
+    quest descriptions (full 4096-char DB cap still applies at write time via CHECK
+    constraint; this is a prompt-time cap, not a storage cap).
+    """
+    raw_desc = description or '(no description provided)'
+    if len(raw_desc) > _DESCRIPTION_PROMPT_MAX:
+        raw_desc = raw_desc[:_DESCRIPTION_PROMPT_MAX] + f'\u2026[truncated, original {len(description)} chars]'
     dim_list = '\n'.join(f'- {name}' for name in DIMENSION_NAMES)
     return _EXTRACTION_PROMPT_TEMPLATE.format(
         title=title,
-        description=description or '(no description provided)',
+        description=raw_desc,
         dim_list=dim_list,
     )
 
@@ -141,11 +159,56 @@ def _connect():
 def _fetch_quest(conn, quest_id: str) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            'SELECT id, title, description FROM quests WHERE id = %s',
+            'SELECT id, title, description, created_by FROM quests WHERE id = %s',
             (quest_id,),
         )
         row = cur.fetchone()
     return dict(row) if row else None
+
+
+class ExtractionQuotaExceededError(Exception):
+    """Raised when a creator's daily extraction quota is exhausted.
+
+    Callers should surface this as HTTP 429 with a Retry-After header
+    pointing to the next UTC midnight.
+    """
+
+
+def _check_and_increment_quota(conn, creator_id: str) -> int:
+    """Atomically increment today's extraction count for creator_id.
+
+    Returns the new used_count. Raises ExtractionQuotaExceededError if
+    the pre-increment count already equals EXTRACTION_QUOTA_DAILY.
+
+    F-13 (G29): prevents cost amplification via mass quest emission.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO quest_extraction_quota (creator_id, window_date, used_count)
+               VALUES (%s, current_date, 1)
+               ON CONFLICT (creator_id, window_date) DO UPDATE
+               SET used_count = quest_extraction_quota.used_count + 1
+               RETURNING used_count""",
+            (creator_id,),
+        )
+        row = cur.fetchone()
+    used = int(row['used_count'])
+    if used > EXTRACTION_QUOTA_DAILY:
+        # Roll back the increment — quota exceeded, don't count this attempt
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE quest_extraction_quota
+                   SET used_count = used_count - 1
+                   WHERE creator_id = %s AND window_date = current_date""",
+                (creator_id,),
+            )
+        conn.commit()
+        raise ExtractionQuotaExceededError(
+            f'creator {creator_id!r} has reached the daily extraction quota of '
+            f'{EXTRACTION_QUOTA_DAILY}. Retry after UTC midnight.'
+        )
+    conn.commit()
+    return used
 
 
 def _upsert_vector(
@@ -202,6 +265,11 @@ def extract(quest_id: str) -> dict[str, Any]:
 
     title = quest['title']
     description = quest.get('description') or ''
+    creator_id = quest.get('created_by') or 'system'
+
+    # F-13 (G29): enforce per-creator daily extraction quota before Vertex call
+    with _connect() as conn:
+        _check_and_increment_quota(conn, creator_id)
 
     prompt = _build_prompt(title, description)
     model = 'gemini-2.5-flash-lite'
