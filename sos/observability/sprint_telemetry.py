@@ -563,6 +563,84 @@ def emit_verifier_drift_detected(
     return payload
 
 
+def emit_knight_minted(
+    knight_id: str,
+    customer_id: str,
+    payment_intent_id: str,
+    project: str,
+    emitted_by: str = "billing",
+) -> dict[str, Any]:
+    """Emit knight_minted on successful automated knight mint (Sprint 006 E.3 / G69).
+
+    Fires once per successful mint from the Stripe webhook handler.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "knight_id": knight_id,
+        "customer_id": customer_id,
+        "payment_intent_id": payment_intent_id,
+        "project": project,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="knight_minted",
+            resource=f"knight:{knight_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"knight_minted_{knight_id.replace(':', '_')}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_stripe_webhook(
+    payment_intent_id: str,
+    event_type: str,
+    outcome: str,
+    emitted_by: str = "billing",
+) -> dict[str, Any]:
+    """Emit stripe_webhook on every Stripe webhook receipt (Sprint 006 E.3 / G69).
+
+    outcome: 'minted' | 'replay_skipped' | 'no_contract' | 'signature_invalid'
+             | 'mint_failed' | 'project_scope_refused'
+    Fires on every webhook receipt — outcome tells the story.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "payment_intent_id": payment_intent_id,
+        "event_type": event_type,
+        "outcome": outcome,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="stripe_webhook",
+            resource=f"payment_intent:{payment_intent_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"stripe_webhook_{payment_intent_id}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def drain_sprint_markers(dry_run: bool = False) -> dict[str, Any]:
     """C.6: Drain .sprint_markers/*.json into audit_events when DB reachable.
 

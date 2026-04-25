@@ -10,15 +10,19 @@ import asyncio
 import json
 import logging
 import os
+import uuid as _uuid
 from typing import Any
 
+import asyncpg  # type: ignore[import]
 import stripe
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from sos.services.billing.knight_mint import mint_knight_programmatic
 from sos.services.billing.provision import provision_tenant
 from sos.contracts.tenant import TenantCreate, TenantPlan, TenantUpdate, TenantStatus
 from sos.clients.saas import AsyncSaasClient
+from sos.observability.sprint_telemetry import emit_knight_minted, emit_stripe_webhook
 
 log = logging.getLogger("sos.billing.webhook")
 
@@ -50,20 +54,34 @@ def _slug_from_email(email: str) -> str:
 
 
 def _verify_signature(payload: bytes, sig_header: str) -> dict[str, Any]:
-    """Verify Stripe webhook signature. Raises HTTPException on failure."""
-    if not STRIPE_WEBHOOK_SECRET:
+    """Verify Stripe webhook signature. Raises HTTPException on failure.
+
+    BLOCK-3: tolerance=300 — Stripe SDK enforces 5-minute timestamp window.
+    WARN-1: dual-secret rotation — try STRIPE_WEBHOOK_SECRET then STRIPE_WEBHOOK_SECRET_NEW.
+    """
+    # WARN-1: collect both secrets to support zero-downtime rotation
+    secrets_to_try = [s for s in [
+        STRIPE_WEBHOOK_SECRET,
+        os.environ.get("STRIPE_WEBHOOK_SECRET_NEW", ""),
+    ] if s]
+
+    if not secrets_to_try:
         log.warning("STRIPE_WEBHOOK_SECRET not set — skipping signature verification")
         return json.loads(payload)
 
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-        return event  # type: ignore[return-value]
-    except stripe.error.SignatureVerificationError:  # type: ignore[attr-error]
-        log.error("Stripe signature verification failed")
-        raise HTTPException(status_code=400, detail="Invalid signature")
-    except Exception as exc:
-        log.error("Stripe webhook verification error: %s", exc)
-        raise HTTPException(status_code=400, detail="Webhook verification failed")
+    last_exc: Exception | None = None
+    for secret in secrets_to_try:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, secret, tolerance=300)  # BLOCK-3
+            return event  # type: ignore[return-value]
+        except stripe.error.SignatureVerificationError as exc:  # type: ignore[attr-error]
+            last_exc = exc
+        except Exception as exc:
+            log.error("Stripe webhook verification error: %s", exc)
+            raise HTTPException(status_code=400, detail="Webhook verification failed")
+
+    log.error("Stripe signature verification failed")
+    raise HTTPException(status_code=400, detail="Invalid signature")
 
 
 async def handle_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
@@ -131,6 +149,245 @@ async def handle_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+async def handle_payment_intent_succeeded(
+    payment_intent: dict[str, Any],
+    *,
+    livemode: bool = True,
+) -> dict[str, Any]:
+    """Handle payment_intent.succeeded — idempotent knight mint (Sprint 006 E.3 / G69 v0.3).
+
+    Flow (Athena BLOCKs 1-5 + WARNs 1-3):
+      WARN-3: livemode guard before any DB work.
+      BLOCK-1: single atomic transaction wraps all DB writes; savepoint for idempotency INSERT.
+      BLOCK-2: stripe_customer_id from pi.customer; project from contracts.project (not metadata).
+      BLOCK-5: stripe_webhook_id passed as FK proof to mint_knight_programmatic.
+      Mint failure raises → transaction rollback → row gone → Stripe retry-safe.
+    """
+    payment_intent_id: str = payment_intent.get("id", "")
+    stripe_customer_id: str = payment_intent.get("customer", "")  # BLOCK-2: Stripe-managed field
+    metadata: dict = payment_intent.get("metadata", {})
+    customer_email: str = payment_intent.get("receipt_email", "") or metadata.get("email", "")
+
+    # WARN-3: livemode guard — refuse test-mode payments in production
+    sos_env = os.environ.get("SOS_ENV", "production")
+    if sos_env != "test" and not livemode:
+        log.warning(
+            "payment_intent.succeeded: livemode=False rejected in SOS_ENV=%s payment_intent_id=%s",
+            sos_env, payment_intent_id,
+        )
+        return {"ok": False, "reason": "not_livemode", "payment_intent_id": payment_intent_id}
+
+    db_url = os.environ.get("MIRROR_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not db_url:
+        log.error("payment_intent.succeeded: DATABASE_URL not set — cannot process")
+        return {"ok": False, "reason": "db_not_configured"}
+
+    webhook_id = str(_uuid.uuid4())
+    conn = await asyncpg.connect(db_url)
+    try:
+        async with conn.transaction():  # BLOCK-1: single atomic transaction
+            # ── 1. Idempotency INSERT (savepoint to catch UniqueViolationError inside tx) ──
+            try:
+                async with conn.transaction():  # inner = SAVEPOINT
+                    await conn.execute(
+                        "INSERT INTO stripe_webhook_processed (id, payment_intent_id, status) "
+                        "VALUES ($1, $2, 'processing')",
+                        webhook_id, payment_intent_id,
+                    )
+            except asyncpg.UniqueViolationError:
+                existing = await conn.fetchrow(
+                    "SELECT id, status, resulting_knight_id "
+                    "FROM stripe_webhook_processed WHERE payment_intent_id = $1",
+                    payment_intent_id,
+                )
+                status = existing["status"] if existing else "unknown"
+                knight_id_prior = existing["resulting_knight_id"] if existing else None
+                if status == "processed":
+                    log.info(
+                        "payment_intent.succeeded: replay_idempotent_skip payment_intent_id=%s knight=%s",
+                        payment_intent_id, knight_id_prior,
+                    )
+                    emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "replay_skipped")
+                    return {
+                        "ok": True,
+                        "reason": "replay_idempotent_skip",
+                        "knight_id": knight_id_prior,
+                    }
+                elif status == "processing":
+                    log.warning(
+                        "payment_intent.succeeded: concurrent retry in-flight payment_intent_id=%s",
+                        payment_intent_id,
+                    )
+                    return {"ok": False, "reason": "retry_in_flight", "payment_intent_id": payment_intent_id}
+                else:  # failed — needs human investigation
+                    log.error(
+                        "payment_intent.succeeded: prior_attempt_failed payment_intent_id=%s",
+                        payment_intent_id,
+                    )
+                    _alert_athena(
+                        f"E.3 prior_attempt_failed: payment {payment_intent_id} status=failed — "
+                        "manual investigation required before retry."
+                    )
+                    emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "prior_failed")
+                    return {
+                        "ok": False,
+                        "reason": "prior_attempt_failed",
+                        "payment_intent_id": payment_intent_id,
+                    }
+
+            # ── 2. Contract verification (BLOCK-2: stripe_customer_id from pi.customer) ──
+            contract = await conn.fetchrow(
+                "SELECT id, principal_id, tenant_slug, stripe_customer_id, "
+                "cause_statement, status, project "
+                "FROM contracts WHERE stripe_customer_id = $1 ORDER BY created_at DESC LIMIT 1",
+                stripe_customer_id,
+            )
+            if not contract:
+                log.warning(
+                    "payment_intent.succeeded: no contract for stripe_customer_id=%s",
+                    stripe_customer_id,
+                )
+                await conn.execute(
+                    "UPDATE stripe_webhook_processed SET status='failed', last_error='no_contract' "
+                    "WHERE id = $1",
+                    webhook_id,
+                )
+                emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "no_contract")
+                _alert_athena(
+                    f"E.3 no_contract: payment {payment_intent_id} received for "
+                    f"stripe_customer={stripe_customer_id} but no contracts row found."
+                )
+                return {"ok": False, "reason": "no_contract", "stripe_customer_id": stripe_customer_id}
+
+            # ── 3. Project scope guard (BLOCK-2: authoritative source is contracts.project) ──
+            project = (contract["project"] or "mumega").strip()
+            if project != "mumega":
+                log.warning(
+                    "payment_intent.succeeded: project=%r refused (BLOCK-2) payment_intent_id=%s",
+                    project, payment_intent_id,
+                )
+                await conn.execute(
+                    "UPDATE stripe_webhook_processed SET status='failed', "
+                    "last_error='project_scope_refused' WHERE id = $1",
+                    webhook_id,
+                )
+                emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "project_scope_refused")
+                _alert_athena(
+                    f"E.3 scope guard: contracts.project={project!r} refused for payment {payment_intent_id}"
+                )
+                return {
+                    "ok": False,
+                    "reason": "project_scope_refused",
+                    "payment_intent_id": payment_intent_id,
+                }
+
+            # ── 4. Derive knight inputs ──
+            tenant_slug: str = contract["tenant_slug"] or metadata.get("tenant_slug", "")
+            cause_raw: str = (
+                contract["cause_statement"]
+                or metadata.get("cause", "")
+                or f"Serves {tenant_slug or 'this customer'} as their dedicated agent on the substrate."
+            )
+            customer_name: str = metadata.get("customer_name", tenant_slug or stripe_customer_id)
+            knight_name: str = metadata.get("knight_name", tenant_slug or f"knight-{payment_intent_id[-8:]}")
+
+            # ── 5. Mint knight (BLOCK-5: stripe_webhook_id mandatory FK proof) ──
+            mint_result = mint_knight_programmatic(
+                knight_name=knight_name,
+                customer_slug=tenant_slug or knight_name,
+                customer_name=customer_name,
+                customer_email=customer_email or None,
+                cause_statement=cause_raw,
+                project=project,
+                stripe_webhook_id=webhook_id,  # BLOCK-5
+            )
+
+            if not mint_result["ok"]:
+                log.error(
+                    "payment_intent.succeeded: mint failed payment_intent_id=%s error=%s",
+                    payment_intent_id, mint_result.get("error"),
+                )
+                # Raise → transaction rollback → idempotency row removed → Stripe retry-safe
+                raise RuntimeError(f"mint_failed: {mint_result.get('error', 'unknown')}")
+
+            knight_id_str: str = mint_result["knight_id"] or ""
+            knight_slug: str = mint_result["knight_slug"] or ""
+            qnft_uri: str = mint_result["qnft_uri"] or ""
+
+            # ── 6. Persist results (inside single transaction, BLOCK-1) ──
+            await conn.execute(
+                "UPDATE stripe_webhook_processed SET status='processed', resulting_knight_id=$1, "
+                "resulting_knight_qnft_uri=$2, completed_at=now() WHERE id=$3",
+                knight_id_str, qnft_uri, webhook_id,
+            )
+            await conn.execute(
+                "UPDATE contracts SET signed_at=now(), knight_id=$1 WHERE id=$2",
+                knight_id_str, contract["id"],
+            )
+            # Transaction commits here (end of async with conn.transaction())
+
+        # ── 7. After commit: emit (BLOCK-1: emits fire AFTER transaction commit) ──
+        emit_knight_minted(knight_id_str, stripe_customer_id, payment_intent_id, project)
+        emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "minted")
+
+        log.info(
+            "payment_intent.succeeded: knight minted knight_id=%s payment_intent_id=%s",
+            knight_id_str, payment_intent_id,
+        )
+        return {
+            "ok": True,
+            "knight_id": knight_id_str,
+            "knight_slug": knight_slug,
+            "qnft_uri": qnft_uri,
+            "payment_intent_id": payment_intent_id,
+            "skipped": mint_result.get("skipped", False),
+        }
+
+    except RuntimeError as exc:
+        # Mint failure: transaction rolled back, idempotency row gone, retry-safe
+        if "mint_failed" in str(exc):
+            log.error(
+                "payment_intent.succeeded: mint_failed payment_intent_id=%s — tx rolled back, retry-safe",
+                payment_intent_id,
+            )
+            try:
+                emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "mint_failed")
+            except Exception:
+                pass
+            return {"ok": False, "reason": "mint_failed", "payment_intent_id": payment_intent_id}
+        raise
+
+    except Exception as exc:
+        log.error(
+            "payment_intent.succeeded: unexpected error payment_intent_id=%s: %s",
+            payment_intent_id, exc, exc_info=True,
+        )
+        try:
+            emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "mint_failed")
+        except Exception:
+            pass
+        raise
+
+    finally:
+        await conn.close()
+
+
+def _alert_athena(message: str) -> None:
+    """Best-effort bus alert to Athena for payment anomalies."""
+    try:
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "bus_send", Path.home() / "scripts" / "bus-send.py"
+        )
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            mod.send(to="athena", text=f"[ALERT] E.3 Stripe webhook anomaly: {message}", source="billing")
+    except Exception as exc:
+        log.warning("_alert_athena failed (non-fatal): %s", exc)
+
+
 async def handle_subscription_deleted(subscription: dict[str, Any]) -> dict[str, Any]:
     """Handle customer.subscription.deleted — mark tenant inactive."""
     customer_id = subscription.get("customer", "")
@@ -183,6 +440,19 @@ async def stripe_webhook_handler(request: Request) -> JSONResponse:
         # Fire-and-forget provisioning so we return 200 within Stripe's 30s window
         asyncio.create_task(_safe_provision(data_object))
         return JSONResponse({"status": "accepted", "event": event_type})
+
+    elif event_type == "payment_intent.succeeded":
+        # E.3 / G69: idempotent knight mint on payment success
+        try:
+            result = await handle_payment_intent_succeeded(data_object, livemode=event.get("livemode", True))
+        except Exception as exc:
+            log.error("payment_intent.succeeded handler crashed: %s", exc, exc_info=True)
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
+        if result.get("ok"):
+            return JSONResponse({"status": "ok", **result})
+        # ok=False with known reason: return 200 so Stripe doesn't retry
+        # (no_contract, project_scope_refused, replay_idempotent_skip)
+        return JSONResponse({"status": "noop", **result})
 
     elif event_type == "customer.subscription.deleted":
         result = await handle_subscription_deleted(data_object)
