@@ -79,17 +79,23 @@ def _r2_object_key(stream_id: str, last_seq: int, ts: datetime) -> str:
 
 
 def _put_r2_object(s3_client: Any, bucket: str, key: str, body: bytes, retain: bool) -> None:
-    """Upload body to R2 with optional Object Lock retention."""
+    """Upload body to R2 with optional Object Lock retention.
+
+    Cloudflare R2 uses bucket-level lock rules (not per-object S3 headers).
+    When retain=True, we rely on the bucket's COMPLIANCE retention rule
+    (set via CF API: 7-year rule on anchors/ prefix). Per-object
+    ObjectLockMode/ObjectLockRetainUntilDate headers are NOT sent — CF R2
+    returns NotImplemented for them. The bucket rule enforces retention
+    automatically on any object written under the anchors/ prefix.
+    """
     put_kwargs: dict[str, Any] = {
         "Bucket": bucket,
         "Key": key,
         "Body": body,
         "ContentType": "application/json",
     }
-    if retain:
-        retain_until = datetime.now(timezone.utc) + timedelta(days=_RETENTION_YEARS * 365)
-        put_kwargs["ObjectLockMode"] = "COMPLIANCE"
-        put_kwargs["ObjectLockRetainUntilDate"] = retain_until
+    # Note: AWS S3 per-object lock headers (ObjectLockMode, ObjectLockRetainUntilDate)
+    # are NOT used — CF R2 enforces retention via bucket-level rules only.
     s3_client.put_object(**put_kwargs)
 
 
