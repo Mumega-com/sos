@@ -373,7 +373,7 @@ def audit_idp_ceiling_violations() -> list[dict]:
         tier = _role_tier_name(role_id)
         ceiling = row['max_grantable_tier']
         if tier not in _TIER_ORDER:
-            # Unknown tier — always flag for reconciliation
+            # Unknown role tier — always flag for reconciliation
             violations.append({
                 'idp_id': row['idp_id'],
                 'group_name': row['group_name'],
@@ -382,7 +382,18 @@ def audit_idp_ceiling_violations() -> list[dict]:
                 'idp_ceiling': ceiling,
                 'violation': 'unknown_tier',
             })
-        elif _TIER_ORDER[tier] > _TIER_ORDER.get(ceiling, -1):
+        elif ceiling not in _TIER_ORDER:
+            # WARN-3 fix: unknown ceiling tier — flag for reconciliation rather than
+            # silently using -1 (which would mark every role as a violation and mask real ones)
+            violations.append({
+                'idp_id': row['idp_id'],
+                'group_name': row['group_name'],
+                'role_id': role_id,
+                'role_tier': tier,
+                'idp_ceiling': ceiling,
+                'violation': 'unknown_ceiling',
+            })
+        elif _TIER_ORDER[tier] > _TIER_ORDER[ceiling]:
             violations.append({
                 'idp_id': row['idp_id'],
                 'group_name': row['group_name'],

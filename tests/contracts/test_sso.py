@@ -1135,3 +1135,26 @@ class TestScimSoftNotes:
         with patch('sos.contracts.sso._connect', return_value=mock_conn):
             result = audit_idp_ceiling_violations()
         assert result == []
+
+    def test_g61_audit_flags_unknown_ceiling_as_violation(self) -> None:
+        """TC-G61 WARN-3: audit flags rows with unknown/corrupt ceiling tier."""
+        from unittest.mock import patch, MagicMock
+        from sos.contracts.sso import audit_idp_ceiling_violations
+
+        rows = [
+            {'idp_id': 'idp-4', 'group_name': 'staff', 'role_id': 'role:sos:worker', 'max_grantable_tier': 'superadmin'},
+        ]
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = rows
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = audit_idp_ceiling_violations()
+
+        assert len(result) == 1
+        assert result[0]['violation'] == 'unknown_ceiling'
+        assert result[0]['idp_ceiling'] == 'superadmin'
