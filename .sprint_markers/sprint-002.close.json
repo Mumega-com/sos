@@ -1,0 +1,7 @@
+{
+  "sprint_id": "sprint-002",
+  "action": "close",
+  "closed_by": "loom",
+  "ts": "2026-04-24T23:00:00+00:00",
+  "note": "retroactive close marker for telemetry baseline"
+}
