@@ -300,3 +300,105 @@ async def test_g55e_verify_stream_events_but_no_anchors() -> None:
     assert result["ok"] is False
     assert result["reason"] == "events_exist_but_no_anchor"
     assert result["event_count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# TC-G55f: _verify_stream chain-link check (BLOCK-6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_g55f_verify_stream_valid_chain_link() -> None:
+    """TC-G55f: _verify_stream passes when prev_anchor_hash matches prior row."""
+    from sos.jobs.audit_anchor import _verify_stream
+
+    stream_id = "test:stream:g55:chain-link"
+    prev_payload = _make_anchor_payload(stream_id, 41, "e" * 64, None)
+    payload = _make_anchor_payload(stream_id, 42, "f" * 64, prev_payload["anchor_hash"])
+
+    # fetchrow called twice: current anchor, then previous anchor
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(side_effect=[
+        {  # current anchor (seq=42)
+            "anchored_seq": 42,
+            "anchor_hash": bytes.fromhex(payload["anchor_hash"]),
+            "prev_anchor_hash": bytes.fromhex(payload["prev_anchor_hash"]),
+            "r2_object_key": payload["r2_key"],
+        },
+        {  # previous anchor (seq=41)
+            "anchor_hash": bytes.fromhex(prev_payload["anchor_hash"]),
+        },
+    ])
+
+    mock_s3 = MagicMock()
+    mock_body = MagicMock()
+    mock_body.read = MagicMock(return_value=json.dumps(payload).encode())
+    mock_s3.get_object = MagicMock(return_value={"Body": mock_body})
+
+    result = await _verify_stream(mock_conn, stream_id, mock_s3, "test-bucket")
+    assert result["ok"] is True, f"Expected ok=True, got: {result}"
+    assert result["reason"] == "hash_verified"
+
+
+@pytest.mark.asyncio
+async def test_g55f_verify_stream_broken_chain_link() -> None:
+    """TC-G55f BLOCK-6: forged top-of-chain anchor with wrong prev_anchor_hash detected."""
+    from sos.jobs.audit_anchor import _verify_stream
+
+    stream_id = "test:stream:g55:forged-chain"
+    real_prev = _make_anchor_payload(stream_id, 41, "g" * 64, None)
+    # Attacker builds anchor with correct self-hash but wrong prev_anchor_hash
+    forged_prev_hash = "00" * 32
+    forged = _make_anchor_payload(stream_id, 42, "h" * 64, forged_prev_hash)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(side_effect=[
+        {  # current anchor (forged)
+            "anchored_seq": 42,
+            "anchor_hash": bytes.fromhex(forged["anchor_hash"]),
+            "prev_anchor_hash": bytes.fromhex(forged_prev_hash),
+            "r2_object_key": forged["r2_key"],
+        },
+        {  # actual previous row in DB (different hash from what forged claims)
+            "anchor_hash": bytes.fromhex(real_prev["anchor_hash"]),
+        },
+    ])
+
+    mock_s3 = MagicMock()
+    mock_body = MagicMock()
+    mock_body.read = MagicMock(return_value=json.dumps(forged).encode())
+    mock_s3.get_object = MagicMock(return_value={"Body": mock_body})
+
+    result = await _verify_stream(mock_conn, stream_id, mock_s3, "test-bucket")
+    assert result["ok"] is False
+    assert result["reason"] == "chain_link_broken"
+
+
+@pytest.mark.asyncio
+async def test_g55f_verify_stream_prev_anchor_missing() -> None:
+    """TC-G55f: anchor claims a prev_anchor_hash but no prior row exists → chain_broken."""
+    from sos.jobs.audit_anchor import _verify_stream
+
+    stream_id = "test:stream:g55:orphan"
+    fake_prev_hash = "ab" * 32
+    payload = _make_anchor_payload(stream_id, 42, "i" * 64, fake_prev_hash)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(side_effect=[
+        {  # current anchor
+            "anchored_seq": 42,
+            "anchor_hash": bytes.fromhex(payload["anchor_hash"]),
+            "prev_anchor_hash": bytes.fromhex(fake_prev_hash),
+            "r2_object_key": payload["r2_key"],
+        },
+        None,  # no previous anchor row found
+    ])
+
+    mock_s3 = MagicMock()
+    mock_body = MagicMock()
+    mock_body.read = MagicMock(return_value=json.dumps(payload).encode())
+    mock_s3.get_object = MagicMock(return_value={"Body": mock_body})
+
+    result = await _verify_stream(mock_conn, stream_id, mock_s3, "test-bucket")
+    assert result["ok"] is False
+    assert result["reason"] == "prev_anchor_missing"

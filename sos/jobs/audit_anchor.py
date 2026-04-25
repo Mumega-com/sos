@@ -147,65 +147,104 @@ async def _anchor_stream(
 ) -> bool:
     """Attempt to anchor one stream.  Returns True if a new anchor was written."""
 
-    # 1. Latest event in this stream
-    latest_event = await conn.fetchrow(
-        """
-        SELECT seq, hash FROM audit_events
-        WHERE stream_id = $1
-        ORDER BY seq DESC LIMIT 1
-        """,
-        stream_id,
-    )
-    if not latest_event:
-        return False  # no events yet
-
-    latest_seq: int = latest_event["seq"]
-    chain_head_hash: bytes = bytes(latest_event["hash"])
-
-    # 2. Last anchor for this stream
-    last_anchor = await conn.fetchrow(
-        """
-        SELECT anchored_seq, anchor_hash FROM audit_anchors
-        WHERE stream_id = $1
-        ORDER BY anchored_seq DESC LIMIT 1
-        """,
-        stream_id,
-    )
-
-    if last_anchor and last_anchor["anchored_seq"] >= latest_seq:
-        return False  # already anchored up to the current head
-
-    prev_anchor_hash: bytes | None = (
-        bytes(last_anchor["anchor_hash"]) if last_anchor else None
-    )
-
-    # 3. Build anchor object
-    anchored_at = datetime.now(timezone.utc)
-    anchor_obj: dict[str, Any] = {
-        "stream_id": stream_id,
-        "anchored_seq": latest_seq,
-        "chain_head_hash": chain_head_hash.hex(),
-        "prev_anchor_hash": prev_anchor_hash.hex() if prev_anchor_hash else None,
-        "anchored_at": anchored_at.isoformat(),
-    }
-    anchor_canonical = _canonical_json(anchor_obj)
-
-    # 4. Compute anchor_hash = SHA-256(prev_anchor_hash_bytes || anchor_canonical)
-    h = hashlib.sha256()
-    if prev_anchor_hash:
-        h.update(prev_anchor_hash)
-    h.update(anchor_canonical)
-    anchor_hash: bytes = h.digest()
-
-    # 5. R2 object key
-    r2_key = _r2_object_key(stream_id, latest_seq, anchored_at)
-
-    # 6. Build the full R2 payload (includes the anchor_hash)
-    r2_payload = {**anchor_obj, "anchor_hash": anchor_hash.hex(), "r2_key": r2_key}
-    r2_body = _canonical_json(r2_payload)
-
-    # 7. Upload to R2 in thread pool (boto3 is synchronous)
+    # BLOCK-5 fix: REPEATABLE READ transaction holds the stream's head position
+    # for the duration of both reads and the DB INSERT, preventing a race where
+    # new events arrive between reads and the anchor references a stale seq.
+    #
+    # BLOCK-7 fix: DB INSERT happens inside the transaction (before R2 upload).
+    # R2 upload happens after commit. If the process crashes after DB commit but
+    # before R2 upload, the DB row exists with the correct r2_object_key and
+    # anchor_hash; the verifier reports r2_fetch_failed (observable signal) until
+    # a repair pass re-uploads the object. With WORM compliance mode on the R2
+    # bucket, crash-after-R2-before-DB would have created an unoverwritable
+    # orphan object — this order eliminates that scenario.
     loop = asyncio.get_event_loop()
+    db_inserted = False
+    r2_key: str = ""
+    r2_body: bytes = b""
+
+    async with conn.transaction(isolation="repeatable_read"):
+        # 1. Latest event in this stream
+        latest_event = await conn.fetchrow(
+            """
+            SELECT seq, hash FROM audit_events
+            WHERE stream_id = $1
+            ORDER BY seq DESC LIMIT 1
+            """,
+            stream_id,
+        )
+        if not latest_event:
+            return False  # no events yet
+
+        latest_seq: int = latest_event["seq"]
+        chain_head_hash: bytes = bytes(latest_event["hash"])
+
+        # 2. Last anchor for this stream
+        last_anchor = await conn.fetchrow(
+            """
+            SELECT anchored_seq, anchor_hash FROM audit_anchors
+            WHERE stream_id = $1
+            ORDER BY anchored_seq DESC LIMIT 1
+            """,
+            stream_id,
+        )
+
+        if last_anchor and last_anchor["anchored_seq"] >= latest_seq:
+            return False  # already anchored up to the current head
+
+        prev_anchor_hash: bytes | None = (
+            bytes(last_anchor["anchor_hash"]) if last_anchor else None
+        )
+
+        # 3. Build anchor object
+        anchored_at = datetime.now(timezone.utc)
+        anchor_obj: dict[str, Any] = {
+            "stream_id": stream_id,
+            "anchored_seq": latest_seq,
+            "chain_head_hash": chain_head_hash.hex(),
+            "prev_anchor_hash": prev_anchor_hash.hex() if prev_anchor_hash else None,
+            "anchored_at": anchored_at.isoformat(),
+        }
+        anchor_canonical = _canonical_json(anchor_obj)
+
+        # 4. Compute anchor_hash = SHA-256(prev_anchor_hash_bytes || anchor_canonical)
+        h = hashlib.sha256()
+        if prev_anchor_hash:
+            h.update(prev_anchor_hash)
+        h.update(anchor_canonical)
+        anchor_hash: bytes = h.digest()
+
+        # 5. R2 object key (computed before INSERT so it's in the DB row)
+        r2_key = _r2_object_key(stream_id, latest_seq, anchored_at)
+
+        # 6. Build the full R2 payload (includes the anchor_hash)
+        r2_payload = {**anchor_obj, "anchor_hash": anchor_hash.hex(), "r2_key": r2_key}
+        r2_body = _canonical_json(r2_payload)
+
+        # 7. DB INSERT first (idempotent: ON CONFLICT DO NOTHING)
+        insert_status: str = await conn.execute(
+            """
+            INSERT INTO audit_anchors
+                (stream_id, anchored_seq, chain_head_hash, prev_anchor_hash, anchor_hash, r2_object_key, anchored_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (stream_id, anchored_seq) DO NOTHING
+            """,
+            stream_id,
+            latest_seq,
+            chain_head_hash,
+            prev_anchor_hash,
+            anchor_hash,
+            r2_key,
+            anchored_at,
+        )
+        db_inserted = insert_status == "INSERT 0 1"
+
+    if not db_inserted:
+        return False  # concurrent writer already anchored this seq
+
+    # 8. R2 upload after DB commit (outside transaction).
+    # On failure: DB row exists, chain is intact. Verifier reports r2_fetch_failed
+    # until a repair pass re-uploads the object. No unrecoverable WORM orphan.
     try:
         await loop.run_in_executor(
             None,
@@ -217,28 +256,13 @@ async def _anchor_stream(
         )
     except Exception as exc:
         logger.error(
-            "audit_anchor: R2 upload failed stream=%s seq=%d: %s",
+            "audit_anchor: R2 upload failed stream=%s seq=%d: %s — "
+            "anchor committed to DB, chain intact; R2 repair needed",
             stream_id, latest_seq, exc,
         )
-        # Do NOT write DB row if R2 failed — keeps chain honest
-        return False
+        # Return True: the anchor IS in DB. Verifier will signal r2_fetch_failed.
+        return True
 
-    # 8. Insert anchor row (idempotent: ON CONFLICT DO NOTHING)
-    await conn.execute(
-        """
-        INSERT INTO audit_anchors
-            (stream_id, anchored_seq, chain_head_hash, prev_anchor_hash, anchor_hash, r2_object_key, anchored_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (stream_id, anchored_seq) DO NOTHING
-        """,
-        stream_id,
-        latest_seq,
-        chain_head_hash,
-        prev_anchor_hash,
-        anchor_hash,
-        r2_key,
-        anchored_at,
-    )
     return True
 
 
@@ -347,8 +371,10 @@ async def _verify_stream(
     if not anchor_row:
         # BLOCK-2 fix: ok=True only if the stream also has no events.
         # "no anchors" with existing events is an integrity anomaly.
+        # WARN-4 fix: query audit_events (committed events), not audit_stream_seqs
+        # (which tracks registered streams, not event presence).
         event_count: int = await conn.fetchval(
-            "SELECT COUNT(*) FROM audit_stream_seqs WHERE stream_id = $1",
+            "SELECT COUNT(*) FROM audit_events WHERE stream_id = $1",
             stream_id,
         )
         if event_count:
@@ -435,6 +461,56 @@ async def _verify_stream(
             "expected": expected_hex,
             "r2_stored": stored_hash_hex,
         }
+
+    # BLOCK-6 fix: verify the chain link — current anchor's prev_anchor_hash must
+    # match the anchor_hash of the previous anchor row. Without this, an attacker
+    # can insert a forged top-of-chain anchor with any prev_anchor_hash and pass
+    # the per-anchor hash check. One-depth check per cycle is sufficient.
+    current_prev_raw = anchor_row["prev_anchor_hash"]
+    if current_prev_raw is not None:
+        current_prev_hex = (
+            current_prev_raw.hex()
+            if isinstance(current_prev_raw, (bytes, bytearray))
+            else current_prev_raw
+        )
+        prev_anchor = await conn.fetchrow(
+            """
+            SELECT anchor_hash FROM audit_anchors
+            WHERE stream_id = $1 AND anchored_seq < $2
+            ORDER BY anchored_seq DESC LIMIT 1
+            """,
+            stream_id,
+            anchor_row["anchored_seq"],
+        )
+        if prev_anchor is None:
+            logger.error(
+                "audit_anchor: CHAIN LINK BROKEN stream=%s seq=%d has prev_anchor_hash but no prior row",
+                stream_id, anchor_row["anchored_seq"],
+            )
+            return {
+                "stream_id": stream_id,
+                "ok": False,
+                "reason": "prev_anchor_missing",
+                "seq": anchor_row["anchored_seq"],
+            }
+        prev_db_hash_hex = (
+            prev_anchor["anchor_hash"].hex()
+            if isinstance(prev_anchor["anchor_hash"], (bytes, bytearray))
+            else prev_anchor["anchor_hash"]
+        )
+        if prev_db_hash_hex != current_prev_hex:
+            logger.error(
+                "audit_anchor: CHAIN LINK BROKEN stream=%s seq=%d prev_anchor_hash=%s but prior row hash=%s",
+                stream_id, anchor_row["anchored_seq"], current_prev_hex, prev_db_hash_hex,
+            )
+            return {
+                "stream_id": stream_id,
+                "ok": False,
+                "reason": "chain_link_broken",
+                "seq": anchor_row["anchored_seq"],
+                "expected_prev": current_prev_hex,
+                "actual_prev": prev_db_hash_hex,
+            }
 
     return {
         "stream_id": stream_id,
