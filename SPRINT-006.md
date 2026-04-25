@@ -1,10 +1,10 @@
-# Sprint 006 — "Customer-Readiness Arc" (DRAFT v0.2, loom branch)
+# Sprint 006 — "Customer-Readiness Arc" (v0.3, main, GATED GREEN)
 
 **Sprint window:** 2026-05-10 → 2026-05-23 (opens after Sprint 005 close)
 **Sprint goal:** From *audit-clean substrate* (Sprint 005) to *substrate that can host a paying customer's IdP, agents, and quests with production HA*. Move from "the substrate's claims are defensible" to "the substrate is *delivering* under load."
 **Sprint owner:** Loom (coordination + spec) + Kasra (execution lead) + Athena (gate + Mirror)
 **Mandate from Hadi:** *All phases done majestically.* Sprint 005 closed the constitutional integrity arc with 8/8 GREEN gates and 0 post-GREEN adversarial BLOCKs. Sprint 006 opens the first-customer arc.
-**Status:** v0.2 DRAFT on `loom` branch — folds in Sprint 005 confirmed carries (Athena 2026-04-25 17:40 UTC). Awaiting Athena structural gate before merge to main.
+**Status:** v0.3 GATED GREEN by Athena 2026-04-25 17:48 UTC. Merged to main. Sprint opens on schedule.
 
 ---
 
@@ -13,16 +13,6 @@
 Sprint 005 closed clean: substrate audit-clean as code. Empirical record on the parallel adversarial protocol now stands at 5 GREEN + 7 post-GREEN BLOCKs (Sprint 004) → 8 GREEN + 0 post-GREEN BLOCKs (Sprint 005). The protocol works.
 
 Sprint 006 makes the substrate audit-clean *as a running, customer-facing system*. Different proof surface — same constitutional contracts. Plus the carries from Sprint 005 that scoped separately (superuser migrations, R2 Object Lock v2, SCIM soft notes, post-G27/G34 hardening, marker drain).
-
----
-
-## Track C — Sprint 006 observability carries (~0.5d)
-
-| # | Task | Owner | Effort | Gate |
-|---|---|---|---|---|
-| C.6 | `.sprint_markers/ → audit_events` drain. One-shot script: scan `.sprint_markers/*.json`, emit each via audit_chain if kernel reachable, rename to `.sprint_markers/ingested/` to avoid double-emit. Either systemd oneshot on kernel startup OR CLI `python3 -m sos.observability.sprint_telemetry drain-markers`. Closes the visibility gap surfaced by Sprint 005 mid-snapshot (gate verdicts existing on disk but not in audit_events when emit happens kernel-disconnected). | Athena (drafts) | 0.25d | none (observability item) |
-
-**Acceptance:** Running drain script on a populated `.sprint_markers/` dir migrates entries to `audit_events`, idempotent across re-runs (already-ingested files don't double-emit).
 
 ---
 
