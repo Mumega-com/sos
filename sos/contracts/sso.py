@@ -31,6 +31,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ from urllib.parse import urlencode
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import pyotp
 import webauthn
 from pydantic import BaseModel, ConfigDict
@@ -495,6 +497,15 @@ def _row_to_link(row: dict) -> SsoIdentityLink:
 
 
 # ── SAML 2.0 ──────────────────────────────────────────────────────────────────
+#
+# G63: connection pool for saml_used_assertions INSERT path.
+# SAML logins are one INSERT per login — keeping a pool avoids connection
+# setup cost on every SSO callback. Pool is lazily initialised on first use
+# and shared across threads within one worker process.
+_SAML_POOL: 'psycopg2.pool.ThreadedConnectionPool | None' = None
+_SAML_POOL_LOCK: threading.Lock = threading.Lock()
+_SAML_POOL_MIN = 1
+_SAML_POOL_MAX = 10
 
 
 def build_saml_auth_request(idp: IdpConfig, relay_state: str = '') -> str:
@@ -633,6 +644,55 @@ def process_saml_response(
     )
 
 
+def _get_saml_pool() -> 'psycopg2.pool.ThreadedConnectionPool':
+    """Return (lazily initialised) SAML connection pool. Thread-safe."""
+    global _SAML_POOL
+    if _SAML_POOL is None:
+        with _SAML_POOL_LOCK:
+            if _SAML_POOL is None:
+                _SAML_POOL = psycopg2.pool.ThreadedConnectionPool(
+                    _SAML_POOL_MIN,
+                    _SAML_POOL_MAX,
+                    _db_url(),
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                )
+    return _SAML_POOL
+
+
+def _saml_id_looks_predictable(assertion_id: str) -> bool:
+    """
+    G63: Heuristic for low-entropy SAML assertion IDs.
+
+    Returns True when the ID pattern suggests it may be predictable.
+    Predictable IDs undermine the replay ledger: if an attacker can guess
+    a future assertion_id, they can pre-insert it to force a replay error
+    on the legitimate login (self-DoS by ledger poisoning).
+
+    Detects:
+      - All-numeric IDs (sequential counter or low-entropy integer)
+      - Very short IDs (< 16 chars: insufficient collision resistance)
+      - UUID v1 (time-based: MAC + monotone clock — deterministic from host)
+
+    Does NOT reject on detection — logs a WARNING only. The replay ledger
+    (PK uniqueness guard) remains the load-bearing control regardless of
+    ID entropy.
+    """
+    # All-numeric: counter or low-entropy integer
+    if assertion_id.isdigit():
+        return True
+    # Short: insufficient entropy
+    if len(assertion_id) < 16:
+        return True
+    # UUID v1 — time + MAC, structurally predictable
+    try:
+        u = uuid.UUID(assertion_id)
+        if u.version == 1:
+            return True
+    except ValueError:
+        pass
+    return False
+
+
 def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
     """
     F-20 (G34): Insert the assertion into saml_used_assertions to prevent replay.
@@ -660,6 +720,17 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
             'or assertion element absent from response.'
         )
 
+    # G63: warn on predictable assertion IDs (numeric, short, UUID v1).
+    # Does NOT reject — the PK replay guard is the load-bearing control.
+    if _saml_id_looks_predictable(assertion_id):
+        log.warning(
+            'G63: IdP %r is issuing potentially predictable assertion IDs '
+            '(id prefix=%r). Predictable IDs enable ledger-poisoning pre-insert '
+            'that causes legitimate logins to fail. Request that the IdP use '
+            'cryptographically random assertion IDs.',
+            idp_id, assertion_id[:32],
+        )
+
     # not_on_or_after: cleanup job anchor; fallback to now()+5min if unavailable
     # F1 fix: cap at 24h to block pre-poisoning with attacker-controlled far-future timestamps
     try:
@@ -674,8 +745,11 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
     max_expiry = datetime.fromtimestamp(time.time() + 86400, tz=timezone.utc)
     not_on_or_after = min(not_on_or_after, max_expiry)
 
+    # G63: use pooled connection for INSERT — avoids per-login connection setup cost.
+    pool = _get_saml_pool()
+    conn = pool.getconn()
     try:
-        with _connect() as conn:
+        with conn:
             with conn.cursor() as cur:
                 try:
                     cur.execute(
@@ -717,6 +791,8 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
     except psycopg2.Error as exc:
         log.error('SAML replay ledger INSERT failed: %s', exc)
         raise ValueError('SAML replay ledger unavailable — login rejected') from exc
+    finally:
+        pool.putconn(conn)
 
 
 def _host_from_url(url: str) -> str:

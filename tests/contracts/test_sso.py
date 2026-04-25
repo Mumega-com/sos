@@ -44,6 +44,7 @@ from sos.contracts.sso import (
     scim_deprovision_user,
     scim_provision_user,
     verify_totp,
+    _saml_id_looks_predictable,
 )
 from sos.contracts.principals import (
     create_role,
@@ -1306,3 +1307,79 @@ class TestMfaFloodQuota:
             deleted = cleanup_mfa_used_codes()
 
         assert deleted == 0
+
+
+# ── Unit: G63 SAML hardening ──────────────────────────────────────────────────
+
+
+class TestSamlHardening:
+    """TC-G63: Assertion ID predictability detection + connection pool + TTL clamp.
+
+    Unit tests only — no DB required.
+    """
+
+    # ── TC-G63a: _saml_id_looks_predictable detection ────────────────────────
+
+    def test_tc_g63a_numeric_id_is_predictable(self) -> None:
+        """TC-G63a: All-numeric assertion ID is flagged as predictable."""
+        assert _saml_id_looks_predictable('123456789012345') is True
+
+    def test_tc_g63a_short_id_is_predictable(self) -> None:
+        """TC-G63a: IDs shorter than 16 chars are flagged (insufficient entropy)."""
+        assert _saml_id_looks_predictable('abc') is True
+        assert _saml_id_looks_predictable('short1234567') is True  # 12 chars
+
+    def test_tc_g63a_uuid_v1_is_predictable(self) -> None:
+        """TC-G63a: UUID v1 (time+MAC) is flagged as structurally predictable."""
+        # UUID v1: version nibble in position 14 of canonical form is '1'
+        uuid_v1 = '550e8400-e29b-11d4-a716-446655440000'
+        assert _saml_id_looks_predictable(uuid_v1) is True
+
+    def test_tc_g63b_uuid_v4_is_not_predictable(self) -> None:
+        """TC-G63b: UUID v4 (random) is not flagged as predictable."""
+        import uuid as uuid_mod
+        uid = str(uuid_mod.uuid4())
+        assert _saml_id_looks_predictable(uid) is False
+
+    def test_tc_g63b_long_hex_string_is_not_predictable(self) -> None:
+        """TC-G63b: Long hex string (>=16 chars, non-numeric, non-UUID) passes."""
+        assert _saml_id_looks_predictable('_' + 'a' * 31) is False
+        assert _saml_id_looks_predictable('id-' + 'f9e8d7c6b5a49382' * 2) is False
+
+    def test_tc_g63b_exactly_16_chars_passes_if_not_numeric(self) -> None:
+        """TC-G63b: 16-char non-numeric non-UUID v1 ID passes length threshold."""
+        assert _saml_id_looks_predictable('AbCdEfGhIjKlMnOp') is False
+
+    # ── TC-G63c: pool is used (not _connect) in _record_saml_assertion ───────
+
+    def test_tc_g63c_saml_record_uses_pool(self) -> None:
+        """TC-G63c: _record_saml_assertion acquires from pool, not _connect()."""
+        from unittest.mock import MagicMock, patch
+
+        # Mock pool: getconn() returns a psycopg2-like connection mock
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+
+        mock_pool = MagicMock()
+        mock_pool.getconn.return_value = mock_conn
+
+        mock_saml_auth = MagicMock()
+        mock_saml_auth.get_last_assertion_id.return_value = str(uuid.uuid4())
+        mock_saml_auth.get_session_expiration.return_value = None
+
+        from sos.contracts.sso import _record_saml_assertion
+        with patch('sos.contracts.sso._get_saml_pool', return_value=mock_pool), \
+             patch('sos.contracts.sso._connect') as mock_direct_connect:
+            _record_saml_assertion(saml_auth=mock_saml_auth, idp_id='idp-test')
+
+        # Pool getconn() must be called; direct _connect() must NOT be called
+        mock_pool.getconn.assert_called_once()
+        mock_direct_connect.assert_not_called()
+        # Connection must be returned to pool
+        mock_pool.putconn.assert_called_once_with(mock_conn)
