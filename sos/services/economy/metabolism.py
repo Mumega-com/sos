@@ -108,48 +108,28 @@ TOKEN_SOURCES = {
 # Project Definitions — The Organs
 # ============================================
 
+# 2026-04-25 (Hadi): pause all non-Mumega projects until SOS substrate
+# is mature enough to handle clean dispatch. Brain phantom-emission bug
+# (read of stale ✅ entries from .mumega/loop_progress.txt) surfaced
+# 2026-04-25 18:24 — until structural fix lands and all source readers
+# are filtered, no external project should be in the brain's portfolio.
+# Mumega's 30% takes everything-non-reserve until projects re-onboard.
+# Reserve keeps its 10% as system maintenance.
+#
+# Re-onboarding procedure (when SOS readiness window closes):
+# 1. Confirm brain source-reader filtering (no stale ✅ emissions)
+# 2. Per-organism re-onboarding via ~/.mumega/organisms/<name>.yaml:
+#    flip status: paused → status: active
+# 3. Restore PROJECTS entry with budget_pct + priority below
+# 4. Verify brain emits to the project's named agent only after a
+#    spec is registered for the requested work
 PROJECTS = {
     "mumega": {
-        "name": "Mumega Platform",
-        "budget_pct": 30,  # % of total pool
-        "agents": ["kasra", "athena", "river"],
+        "name": "Mumega Platform (sos + mirror + inkwell)",
+        "budget_pct": 90,  # was 30; absorbs paused budgets pending re-onboarding
+        "agents": ["kasra", "athena", "loom"],
         "revenue_source": "stripe_mumega",
         "priority": 1,  # highest priority
-    },
-    "dentalnearyou": {
-        "name": "DentalNearYou",
-        "budget_pct": 20,
-        "agents": ["dandan"],
-        "revenue_source": "stripe_dnu",
-        "priority": 2,
-    },
-    "torivers": {
-        "name": "ToRivers Marketplace",
-        "budget_pct": 15,
-        "agents": ["torivers_workers"],
-        "revenue_source": "stripe_torivers",
-        "priority": 2,
-    },
-    "therealmofpatterns": {
-        "name": "The Realm of Patterns",
-        "budget_pct": 10,
-        "agents": ["sol"],
-        "revenue_source": "stripe_trop",
-        "priority": 3,
-    },
-    "gaf": {
-        "name": "GrantAndFunding",
-        "budget_pct": 10,
-        "agents": ["gaf_agent"],
-        "revenue_source": "stripe_gaf",
-        "priority": 3,
-    },
-    "prefrontal": {
-        "name": "Prefrontal Club",
-        "budget_pct": 5,
-        "agents": ["prefrontal_agent"],
-        "revenue_source": "stripe_prefrontal",
-        "priority": 4,
     },
     "reserve": {
         "name": "System Reserve",
@@ -158,6 +138,18 @@ PROJECTS = {
         "revenue_source": None,
         "priority": 0,  # always maintained
     },
+    # === PAUSED 2026-04-25 (Hadi) — restore budget_pct + priority on re-onboard ===
+    # "dentalnearyou":     budget_pct=20, priority=2, agents=["dandan"]
+    # "torivers":          budget_pct=15, priority=2, agents=["torivers_workers"]
+    #                      NOTE: ToRivers is an external marketplace (own devs);
+    #                      Mumega's relationship is the bridge adapter at
+    #                      sos/adapters/torivers/bridge.py. This portfolio entry
+    #                      tracked Mumega's allocation toward bridge-side work
+    #                      and is paused with the rest until re-evaluated.
+    # "therealmofpatterns": budget_pct=10, priority=3, agents=["sol"]
+    # "gaf":               budget_pct=10, priority=3, agents=["gaf_agent"]
+    # "prefrontal":        budget_pct=5,  priority=4, agents=["prefrontal_agent"]
+    #                      (also organism-paused 2026-04-25 — needs restructuring)
 }
 
 
