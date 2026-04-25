@@ -110,7 +110,7 @@ CREATE TABLE profile_consents (
   consent_type      TEXT NOT NULL,  -- data_processing | marketing | impersonation | tool_connection
   target_agent_id   TEXT,            -- nullable; used for impersonation
   target_tool       TEXT,            -- nullable; used for tool_connection
-  granted_at        TIMESTAMPTZ,
+  granted_at        TIMESTAMPTZ NOT NULL,
   revoked_at        TIMESTAMPTZ,
   scope             JSONB,           -- fine-grained (e.g. {tools:[email], actions:[send]})
   evidence          TEXT             -- reference to NDA/T&C version, or IP+timestamp hash
@@ -137,14 +137,16 @@ CREATE INDEX ON profile_access_log(contact_id, accessed_at DESC);
 
 ```sql
 CREATE TABLE profile_tool_connections (
-  id               SERIAL PRIMARY KEY,
-  contact_id       INTEGER REFERENCES contacts(id),
-  tool             TEXT NOT NULL,         -- gmail | gcal | gdrive | ghl | quickbooks
-  scope            TEXT[] NOT NULL,
-  encrypted_token  BYTEA NOT NULL,        -- envelope-encrypted (§8 pattern)
-  connected_at     TIMESTAMPTZ,
-  disconnected_at  TIMESTAMPTZ,
-  last_used_at     TIMESTAMPTZ
+  id               TEXT PRIMARY KEY,
+  profile_id       TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  workspace_id     TEXT NOT NULL,         -- workspace scope; cross-workspace leak vector if missing
+  tool_name        TEXT NOT NULL,         -- gmail | gcal | gdrive | ghl | quickbooks
+  scopes           TEXT[],
+  status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked','expired')),
+  oauth_token_ref  TEXT,                  -- Vault path (never plaintext; envelope-encrypted §8 pattern)
+  connected_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at       TIMESTAMPTZ,
+  UNIQUE (profile_id, tool_name)
 );
 ```
 
@@ -155,10 +157,27 @@ CREATE TABLE profile_export_jobs (
   id              SERIAL PRIMARY KEY,
   contact_id      INTEGER REFERENCES contacts(id),
   requested_at    TIMESTAMPTZ,
-  status          TEXT NOT NULL,   -- queued | running | ready | expired | failed
+  status          TEXT NOT NULL CHECK (status IN ('queued','running','ready','expired','failed')),
   signed_url      TEXT,
   expires_at      TIMESTAMPTZ,
   row_counts      JSONB            -- { engrams: N, events: M, ... } for the receipt
+);
+```
+
+### 3.6 Erasure / amendment requests
+
+```sql
+CREATE TABLE profile_requests (
+  id              TEXT PRIMARY KEY,
+  profile_id      TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  workspace_id    TEXT NOT NULL,
+  type            TEXT NOT NULL CHECK (type IN ('erasure','export','correction','access')),
+  status          TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending','in_progress','completed','rejected')),
+  requested_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at    TIMESTAMPTZ,
+  retain_reason   TEXT,            -- PIPEDA legal-basis paper trail for retained rows
+  receipt         JSONB            -- breakdown: deleted rows, retained rows + legal basis per row
 );
 ```
 
