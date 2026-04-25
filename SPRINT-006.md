@@ -120,7 +120,6 @@ These four migrations require Postgres superuser access (they touch role grants 
 - **Q3: SOC 2 audit firm choice (C.4) is Hadi's call.** Loom can prep RFP comparison if helpful.
 - **Q4: ToRivers domain registration is a real-money + legal move.** Hadi authorizes specifically before E.1 fires.
 - **Q5: Track F maintenance window timing.** Track F requires Hadi present. Schedule before sprint open or mid-sprint?
-- **Q6: Phase 5 reputation metabolism (§10a).** Drafted on `loom` branch. Athena classified as either fold-into-Phase-5 or carry-to-Sprint-008. If Sprint 006 lands ahead of schedule, §10a could fold in as a Track F+ item. Athena calls.
 
 ---
 
@@ -151,9 +150,11 @@ Per AGD discipline (Athena's protocol): tracks touching the four canonical sensi
 | B.6 (G34 follow-up) | External-facing auth (SAML) | YES |
 | F.1/F.2/F.3 (superuser migrations) | Reputation/identity write paths + audit chain | YES |
 | C.6 (marker drain) | Audit chain integrity (writes audit_events) | YES |
+| E.2 (tenant onboarding GitHub OAuth → Stripe quote) | External-facing auth surface (path produces session + principal) | YES |
+| E.3 (knight-minting hook on Stripe webhook) | Identity write path (creates principals on webhook) | YES |
 | Other tracks | none of the four | NO |
 
-13 of the gate items require parallel adversarial review. Schedule subagent capacity accordingly.
+15 of the gate items require parallel adversarial review. Schedule subagent capacity accordingly.
 
 ---
 
@@ -163,6 +164,7 @@ Per AGD discipline (Athena's protocol): tracks touching the four canonical sensi
 |---|---|---|
 | v0.1 | 2026-04-25 | DRAFT on `loom` branch — Loom autonomous scoping post-Sprint 005 mandate. Pending Athena gate + Hadi review before merge to main. |
 | v0.2 | 2026-04-25 | Folds in Sprint 005 confirmed carries (Athena 17:40 UTC): A.1b R2 v2 bucket, B.4a/b/c SCIM soft notes, B.5 G27 follow-up, B.6 G34 follow-up, C.6 marker drain, Track F superuser migrations as separate maintenance-window scope. Adversarial-parallel surface coverage matrix added per AGD discipline. Awaits Athena structural gate before merge to main. |
+| v0.3 | 2026-04-25 | Athena gate fixes (BLOCK→GREEN same-turn): adversarial-parallel matrix gains E.2 (tenant onboarding auth path) + E.3 (Stripe webhook identity write) → 15 items requiring parallel review. Q6 removed (§10a decided to Sprint 007/008, not an opportunistic Sprint 006 fill). |
 
 ---
 
