@@ -17,6 +17,16 @@ The Sprint 005 → 006 handoff: substrate is audit-clean *as code*. Sprint 006 m
 
 ---
 
+## Track C — Sprint 006 observability carries (~0.5d)
+
+| # | Task | Owner | Effort | Gate |
+|---|---|---|---|---|
+| C.6 | `.sprint_markers/ → audit_events` drain. One-shot script: scan `.sprint_markers/*.json`, emit each via audit_chain if kernel reachable, rename to `.sprint_markers/ingested/` to avoid double-emit. Either systemd oneshot on kernel startup OR CLI `python3 -m sos.observability.sprint_telemetry drain-markers`. Closes the visibility gap surfaced by Sprint 005 mid-snapshot (gate verdicts existing on disk but not in audit_events when emit happens kernel-disconnected). | Athena (drafts) | 0.25d | none (observability item) |
+
+**Acceptance:** Running drain script on a populated `.sprint_markers/` dir migrates entries to `audit_events`, idempotent across re-runs (already-ingested files don't double-emit).
+
+---
+
 ## Track A — Production HA (~4d)
 
 The matchmaker is single-instance. Mirror is single-instance. Squad Service is single-instance. None of this survives a process restart cleanly. Customers cannot accept that.
