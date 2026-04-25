@@ -4,6 +4,8 @@
 
 **Sister doc:** [ROADMAP.md](./ROADMAP.md) — what we're building and in what order. The MAP is constitutional; the ROADMAP is operational.
 
+**Version:** v1.2 (2026-04-25). Adds the team architecture as substrate canon (4-prior gate cycle: Loom synthesis / Kasra build / Athena structural / Adversarial subagent for security-critical contracts), §13/§14/§15/§16 substrate primitives, audit-chain-WORM with R2 Object Lock proven enforcing, defence-grade-as-property-not-vertical reframe, citizen rights complete (export + nullify+confiscate erasure with reactivation token).
+
 ---
 
 ## 1. What SOS Is

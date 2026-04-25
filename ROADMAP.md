@@ -1,10 +1,15 @@
 # Mumega — Full Phase Roadmap
 
 **Author:** Loom
-**Date:** 2026-04-24
-**Version:** v1.1
-**Scope:** The end-to-end architecture from what ships today to the fully realized organism. Consolidates Sections 01–11, Phase 2/2.5/3/3.5/4/5/6 plans, and the Defence Track (9 deltas) into one navigable map.
+**Date:** 2026-04-25
+**Version:** v1.2
+**Scope:** The end-to-end architecture from what ships today to the fully realized organism. Consolidates Sections 01–16, Sprint 002/003/004 plans, the Defence Track (9 deltas), and the Phase 8 routing arc (§16 matchmaking + Glicko-2 reputation) into one navigable map.
 **Audience:** Hadi + team agents (Kasra, Athena, Codex, River) + future contributors + investor-facing architectural narrative.
+
+## Versioning
+| v1.0 | 2026-04-23 | Initial roadmap through Phase 6 |
+| v1.1 | 2026-04-24 | Sprint 002 closure: §10 metabolic loop + §11 profile primitive + §12 sos-docs + Phase 7.5 strategic path |
+| v1.2 | 2026-04-25 | Sprint 003+004 closure: §13 Guild + §14 Inventory + §15 Reputation (Glicko-2) + §16 Matchmaking; identity layer formal (§1A SSO+SCIM+MFA); per-workspace DEK envelope encryption; audit chain WORM with R2 Object Lock; nullify+confiscate erasure; Vertex routing via ADC. Adversarial-review-as-parallel-gate-condition codified. Phase 8 routing live in DRY_RUN observation mode. |
 
 ---
 
@@ -18,7 +23,7 @@ The system is being built in discrete **phases**, each one landing a specific or
 
 ---
 
-## 1. Current State (what's shipped, as of 2026-04-24)
+## 1. Current State (what's shipped, as of 2026-04-25 14:30 UTC)
 
 | Organ | Code home | Status |
 |---|---|---|
@@ -38,10 +43,35 @@ The system is being built in discrete **phases**, each one landing a specific or
 | Customer seed: GAF (grantandfunding.com) | `Digid/gaf/` | ✅ In prod |
 | Customer seed: AgentLink MVP (pitch pages) | `mumega.com/agents/loom/customers/gaf/` | ✅ Pitch-ready |
 
+**NEW shipped Sprint 003 (sovereignty arc, 2026-04-25 night):**
+- §1A formal role registry + SSO/SCIM/MFA contracts (migrations 023-024)
+- §13 Guild — durable orgs with treasury + governance log (migration 020)
+- §14 Inventory — unified capability composition across 5 silos (migration 021)
+- §15 Reputation v1 → Glicko-2 reshape Sprint 004 (migrations 022 → 029)
+- Per-workspace DEK envelope encryption with AAD-bound isolation (migration 026)
+- §6.10 data export + §6.11 nullify+confiscate erasure (migration 025)
+- Audit chain WORM anchor to R2 Object Lock 7-year compliance (`audit-anchor.timer`)
+- 4 first-class guilds backfilled (Mumega Inc, Digid Inc, GAF, AgentLink)
+- AC1 zero plaintext on disk (Vault refs everywhere via `vault_env.py`)
+- Trust Center page deployed at mumega.com/trust (CAIQ v4.0.2 mapped)
+
+**NEW shipped Sprint 004 (Phase 8 routing arc, 2026-04-25 day):**
+- §16 Matchmaking primitive (5-stage: eligibility → FRC veto v1 → cosine 16D → multi-objective scalarization → deterministic exploration)
+- Glicko-2 reputation upgrade replacing v1 decayed-weighted-sum (μ, φ, σ kernel-private)
+- Hungarian assignment tick (`matchmaker.timer`, every 30s, **DRY_RUN observation mode** pending live-flip)
+- match_history learning loop with `agent_dna.evolve()` integration
+- Quest_vectors auto-extraction via Vertex Flash Lite (16-dim work-skill taxonomy)
+
+**Adversarial review (Sprint 004 close, 2026-04-25 ~13:30):**
+- 7 P0 BLOCK findings closed at code level in ~46 minutes (F-17, F-02+F-11, F-01, F-05, F-10+F-15)
+- 13 WARN/Low findings + 4 Sprint 005 deferred ops items (F-02b/F-01b/F-11b/P0-2b) carried
+- Architectural protocol change: adversarial review becomes parallel gate condition for security-critical contracts
+- Live-flip authorization: pending E2E sign-off, then matchmaker.service flips DRY_RUN → live
+
 **Shipped but incomplete:**
-- Compliance hardening sprint (audit logs, forensic chain) — 2A–2F landed, need 2G production verification
 - GAF customer signup path — was broken due to migration collision; Kasra fix pending deploy
-- MCP dispatcher OAuth discovery — just fixed tonight by Kasra (nginx /.well-known/ + /oauth/ blocks)
+- MCP dispatcher OAuth discovery — fixed Sprint 002 by Kasra (nginx /.well-known/ + /oauth/ blocks)
+- Sprint 005 P0: superuser migrations + key distribution (F-02b/F-01b/F-11b/P0-2b)
 
 ---
 
