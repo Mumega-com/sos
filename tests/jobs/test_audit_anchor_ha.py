@@ -124,7 +124,8 @@ async def test_g55b_verifier_path_when_lock_held() -> None:
     with patch("sos.jobs.audit_anchor._try_acquire_anchor_lock", return_value=mock_conn):
         with patch("sos.jobs.audit_anchor._get_pool", new=AsyncMock(return_value=mock_pool)):
             with patch("sos.jobs.audit_anchor._build_s3_client", return_value=MagicMock()):
-                result = await run_with_quorum()
+                with patch.dict("os.environ", {"AUDIT_R2_BUCKET": "sos-audit-worm-v2"}):
+                    result = await run_with_quorum()
 
     assert result["mode"] == "verifier"
     assert result["ok"] is True
