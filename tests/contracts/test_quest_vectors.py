@@ -9,6 +9,7 @@ Run unit:    pytest tests/contracts/test_quest_vectors.py -v -m "not db"
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import uuid
@@ -62,14 +63,14 @@ class TestDimensionNames:
             assert ' ' not in name
 
     def test_canonical_names_present(self) -> None:
-        """Core expected dimensions exist."""
-        for expected in ('technical_depth', 'reliability', 'compliance', 'innovation'):
+        """G_A4b: dimensions are lambda_dna basis (Torivers.16D.001), not work-skills."""
+        for expected in ('stability', 'internal_consistency', 'intent_alignment', 'governance_compliance'):
             assert expected in DIMENSION_NAMES
 
     def test_order_is_stable(self) -> None:
         """Order must be deterministic — vector index maps to dimension."""
-        assert DIMENSION_NAMES[0] == 'technical_depth'
-        assert DIMENSION_NAMES[15] == 'innovation'
+        assert DIMENSION_NAMES[0] == 'stability'
+        assert DIMENSION_NAMES[15] == 'governance_compliance'
 
 
 # ── Unit: _parse_response ─────────────────────────────────────────────────────
@@ -349,7 +350,7 @@ class TestExtractMocked:
         assert stored is not None
         assert stored['source'] == 'auto-extracted'
         assert stored['named_dims'] is not None
-        assert stored['named_dims']['technical_depth'] == pytest.approx(0.6)
+        assert stored['named_dims']['stability'] == pytest.approx(0.6)  # G_A4b: lambda_dna basis
 
     def test_extract_vertex_failure_raises(self) -> None:
         from sos.contracts.quest_vectors import extract
@@ -480,8 +481,9 @@ class TestExtractionQuota:
             _check_and_increment_quota(conn, self._creator)
 
         # Next call should raise
-        with pytest.raises(ExtractionQuotaExceededError, match='daily extraction quota'):
+        with pytest.raises(ExtractionQuotaExceededError, match='daily extraction quota') as exc_info:
             _check_and_increment_quota(conn, self._creator)
+        assert exc_info.value.window_date == datetime.date.today()
 
         # Verify quota was not incremented beyond the limit
         with conn.cursor() as cur:
@@ -513,3 +515,125 @@ class TestExtractionQuota:
         count = _check_and_increment_quota(conn, self._creator)
         conn.close()
         assert count == 1
+
+
+# ── G_A4b: lambda_dna basis discipline ────────────────────────────────────────
+
+
+class TestLambdaDnaBasisPrompt:
+    """TC-G_A4b: verify extraction prompt uses lambda_dna basis labels."""
+
+    def test_prompt_contains_group_a_labels(self) -> None:
+        prompt = _build_prompt('Test Quest', 'Some description')
+        for label in ('stability', 'variance_control', 'recursion_depth', 'termination_certainty'):
+            assert label in prompt, f'lambda_dna Group A label missing from prompt: {label!r}'
+
+    def test_prompt_contains_group_d_labels(self) -> None:
+        prompt = _build_prompt('Test Quest', 'Some description')
+        for label in ('drift_resistance', 'feedback_integration', 'cross_agent_compatibility', 'governance_compliance'):
+            assert label in prompt, f'lambda_dna Group D label missing from prompt: {label!r}'
+
+    def test_prompt_does_not_contain_work_skills(self) -> None:
+        prompt = _build_prompt('Test Quest', 'Some description')
+        for old_label in ('technical_depth', 'communication', 'reliability', 'innovation'):
+            assert old_label not in prompt, f'Old work-skills label still in prompt: {old_label!r}'
+
+    def test_vec_basis_constant_is_lambda_dna(self) -> None:
+        from sos.contracts.quest_vectors import VEC_BASIS
+        assert VEC_BASIS == 'lambda_dna'
+
+
+@db
+class TestLambdaDnaBasisDB:
+    """TC-G_A4b-a/b/c — DB-level basis enforcement."""
+
+    def setup_method(self) -> None:
+        self._creator = f'pid-test-a4b-{uuid.uuid4().hex[:8]}'
+        self._inserted_qids: list = []
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._creator, f'{self._creator}@test.local'),
+            )
+        conn.commit()
+        conn.close()
+
+    def teardown_method(self) -> None:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            if self._inserted_qids:
+                cur.execute('DELETE FROM quest_vectors WHERE quest_id = ANY(%s)', (self._inserted_qids,))
+                cur.execute('DELETE FROM quest_extraction_quota WHERE creator_id = %s', (self._creator,))
+                cur.execute('DELETE FROM quests WHERE id = ANY(%s)', (self._inserted_qids,))
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._creator,))
+        conn.commit()
+        conn.close()
+
+    def _insert_quest(self) -> str:
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('Basis Test Quest', 'Test description for lambda_dna basis', 'T1', %s)
+                   RETURNING id""",
+                (self._creator,),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        conn.close()
+        self._inserted_qids.append(qid)
+        return qid
+
+    def test_tc_g_a4b_c_check_constraint_rejects_wrong_basis(self) -> None:
+        """TC-G_A4b-c: INSERT quest_vector with vec_basis != 'lambda_dna' → CHECK violation."""
+        import psycopg2
+        qid = self._insert_quest()
+        conn = _db_connect()
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO quest_vectors (quest_id, vector, source, vec_basis, extracted_at)
+                       VALUES (%s, %s, 'manual', 'work_skills', now())""",
+                    (qid, [0.5] * 16),
+                )
+            conn.commit()
+        conn.rollback()
+        conn.close()
+
+    def test_tc_g_a4b_a_extract_writes_lambda_dna_named_dims(self) -> None:
+        """TC-G_A4b-a: extract() stores lambda_dna dimension names in named_dims."""
+        from sos.contracts.quest_vectors import extract
+        from sos.adapters.base import ExecutionResult, UsageInfo
+
+        qid = self._insert_quest()
+        # Mock response uses lambda_dna keys
+        mock_scores = {name: 0.5 for name in DIMENSION_NAMES}
+        mock_text = json.dumps(mock_scores)
+
+        mock_result = ExecutionResult(
+            text=mock_text,
+            usage=UsageInfo(model='gemini-2.5-flash-lite', provider='google-vertex'),
+            success=True,
+        )
+
+        with patch('sos.adapters.vertex_gemini_adapter.VertexGeminiAdapter') as MockAdapter:
+            instance = MockAdapter.return_value
+            instance.execute = AsyncMock(return_value=mock_result)
+            result = extract(qid)
+
+        assert result['named_dims'] is not None
+        # Must have lambda_dna keys, NOT work-skills keys
+        assert 'stability' in result['named_dims']
+        assert 'governance_compliance' in result['named_dims']
+        assert 'technical_depth' not in result['named_dims']
+        assert 'innovation' not in result['named_dims']
+
+        # Verify DB row has vec_basis = 'lambda_dna'
+        conn = _db_connect()
+        with conn.cursor() as cur:
+            cur.execute('SELECT vec_basis FROM quest_vectors WHERE quest_id = %s', (qid,))
+            row = cur.fetchone()
+        conn.close()
+        assert row['vec_basis'] == 'lambda_dna'

@@ -34,6 +34,7 @@ Public API:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -50,36 +51,58 @@ import psycopg2.extras
 
 log = logging.getLogger(__name__)
 
-# ── Canonical 16D schema ──────────────────────────────────────────────────────
+# ── Canonical 16D lambda_dna schema (Torivers.16D.001) ───────────────────────
+#
+# Source: /home/mumega/infra/shared-kb/frc/CANONICAL.md — Torivers.16D.001
+# Group A (Structural Stability): stability, variance_control, recursion_depth, termination_certainty
+# Group B (Semantic Integrity):   internal_consistency, context_retention, constraint_adherence, error_containment
+# Group C (Functional Alignment): intent_alignment, structural_yield, dependency_discipline, action_justification
+# Group D (Coherence Control):    drift_resistance, feedback_integration, cross_agent_compatibility, governance_compliance
+#
+# G_A4b: replaced work-skills taxonomy (technical_depth, communication…) with lambda_dna basis
+# so that cosine(citizen_v, quest_v) is across the same coordinate space.
+# See §16a basis discipline doc for the single-basis rule.
+
+VEC_BASIS = 'lambda_dna'
 
 DIMENSION_NAMES: list[str] = [
-    'technical_depth',
-    'communication',
-    'reliability',
-    'creativity',
-    'analytical_rigor',
-    'scope_awareness',
-    'execution_speed',
-    'collaboration',
-    'documentation',
-    'mentorship',
-    'strategic_thinking',
-    'compliance',
-    'resilience',
-    'initiative',
-    'domain_breadth',
-    'innovation',
+    # Group A — Structural Stability
+    'stability',
+    'variance_control',
+    'recursion_depth',
+    'termination_certainty',
+    # Group B — Semantic Integrity
+    'internal_consistency',
+    'context_retention',
+    'constraint_adherence',
+    'error_containment',
+    # Group C — Functional Alignment
+    'intent_alignment',
+    'structural_yield',
+    'dependency_discipline',
+    'action_justification',
+    # Group D — Coherence Control
+    'drift_resistance',
+    'feedback_integration',
+    'cross_agent_compatibility',
+    'governance_compliance',
 ]
 
 assert len(DIMENSION_NAMES) == 16, 'DIMENSION_NAMES must have exactly 16 entries'
 
-# ── Extraction prompt ─────────────────────────────────────────────────────────
+# ── Extraction prompt (Path A: direct lambda_dna prediction) ──────────────────
+#
+# Path A: classifier prompt includes lambda_dna axis descriptions and asks for
+# 16 floats in that basis. Recommended over Path B (taxonomy + projection matrix)
+# per §16a §2.2. The basis is explicit at generation time; no secondary mapping
+# step needed.
 
 _EXTRACTION_SYSTEM = """\
-You are a precision quest-alignment scorer for the SOS citizen platform.
-Given a quest title and description, score the quest on 16 dimensions.
+You are a precision quest-alignment scorer for the SOS platform.
+You score quests on the 16 lambda_dna resonance dimensions of the Torivers.16D.001 vector space.
+Each dimension measures how much the quest REQUIRES that property of the person doing it.
 Each score is a float in [0.0, 1.0]: 0.0 = not required at all, 1.0 = essential.
-Be calibrated: most quests score 0.2–0.8 on most dimensions; extremes (0.0 or 1.0) are rare.
+Be calibrated: most quests score 0.2–0.8; extremes (0.0 or 1.0) are rare.
 Reply with ONLY a JSON object — no preamble, no explanation, no markdown fences.
 """
 
@@ -87,8 +110,20 @@ _EXTRACTION_PROMPT_TEMPLATE = """\
 Quest title: {title}
 Quest description: {description}
 
-Score this quest on the following 16 dimensions (float 0.0–1.0 each):
-{dim_list}
+Score this quest's requirements on the following 16 lambda_dna dimensions (float 0.0–1.0 each).
+These dimensions measure structural and semantic properties of the work, not surface skills:
+
+Group A — Structural Stability (how stable/controlled must the work pattern be?):
+{dim_group_a}
+
+Group B — Semantic Integrity (how tightly must meaning be preserved across steps?):
+{dim_group_b}
+
+Group C — Functional Alignment (how precisely must the work match the stated intent?):
+{dim_group_c}
+
+Group D — Coherence Control (how well must the work resist drift and integrate feedback?):
+{dim_group_d}
 
 Reply with ONLY a JSON object with these exact keys and float values."""
 
@@ -105,11 +140,15 @@ def _build_prompt(title: str, description: str) -> str:
     raw_desc = description or '(no description provided)'
     if len(raw_desc) > _DESCRIPTION_PROMPT_MAX:
         raw_desc = raw_desc[:_DESCRIPTION_PROMPT_MAX] + f'\u2026[truncated, original {len(description)} chars]'
-    dim_list = '\n'.join(f'- {name}' for name in DIMENSION_NAMES)
+    # lambda_dna groups (4 per group, order matches DIMENSION_NAMES)
+    groups = [DIMENSION_NAMES[i:i+4] for i in range(0, 16, 4)]
     return _EXTRACTION_PROMPT_TEMPLATE.format(
         title=title,
         description=raw_desc,
-        dim_list=dim_list,
+        dim_group_a='\n'.join(f'- {n}' for n in groups[0]),
+        dim_group_b='\n'.join(f'- {n}' for n in groups[1]),
+        dim_group_c='\n'.join(f'- {n}' for n in groups[2]),
+        dim_group_d='\n'.join(f'- {n}' for n in groups[3]),
     )
 
 
@@ -169,9 +208,14 @@ def _fetch_quest(conn, quest_id: str) -> dict | None:
 class ExtractionQuotaExceededError(Exception):
     """Raised when a creator's daily extraction quota is exhausted.
 
-    Callers should surface this as HTTP 429 with a Retry-After header
-    pointing to the next UTC midnight.
+    Attributes:
+        window_date: The current quota window date (datetime.date). Callers
+            compute Retry-After as next UTC midnight: window_date + timedelta(days=1).
     """
+
+    def __init__(self, message: str, window_date: datetime.date) -> None:
+        super().__init__(message)
+        self.window_date = window_date
 
 
 def _check_and_increment_quota(conn, creator_id: str) -> int:
@@ -203,9 +247,11 @@ def _check_and_increment_quota(conn, creator_id: str) -> int:
                 (creator_id,),
             )
         conn.commit()
+        today = datetime.date.today()
         raise ExtractionQuotaExceededError(
             f'creator {creator_id!r} has reached the daily extraction quota of '
-            f'{EXTRACTION_QUOTA_DAILY}. Retry after UTC midnight.'
+            f'{EXTRACTION_QUOTA_DAILY}. Retry after UTC midnight.',
+            window_date=today,
         )
     conn.commit()
     return used
@@ -220,18 +266,20 @@ def _upsert_vector(
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO quest_vectors (quest_id, vector, named_dims, source, extracted_at)
-               VALUES (%s, %s, %s, %s, now())
+            """INSERT INTO quest_vectors (quest_id, vector, named_dims, source, vec_basis, extracted_at)
+               VALUES (%s, %s, %s, %s, %s, now())
                ON CONFLICT (quest_id) DO UPDATE SET
                    vector       = EXCLUDED.vector,
                    named_dims   = EXCLUDED.named_dims,
                    source       = EXCLUDED.source,
+                   vec_basis    = EXCLUDED.vec_basis,
                    extracted_at = now()""",
             (
                 quest_id,
                 vector,
                 json.dumps(named_dims) if named_dims is not None else None,
                 source,
+                VEC_BASIS,
             ),
         )
     conn.commit()
