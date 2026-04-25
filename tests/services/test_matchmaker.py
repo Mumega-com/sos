@@ -268,3 +268,43 @@ class TestLeaderLock:
         assert stats['leader_acquired'] is True
         assert 'quests' in stats
         assert 'candidates' in stats
+
+    def test_g50f_observer_runs_pipeline_no_writes(self) -> None:
+        """TC-G50f: observer mode runs full pipeline but suppresses all writes.
+
+        When another session holds the leader lock, run_tick() must:
+          - NOT return early with zero stats (that was the old behavior)
+          - Run the pipeline (fetch quests/candidates, build matrix, assign)
+          - Set leader_acquired=False
+          - Not call record_assignment() or _dispatch_to_squad()
+        """
+        import psycopg2
+        import psycopg2.extras
+
+        from sos.services.matchmaker import _db_url, _LEADER_CLASSID, _LEADER_OBJID
+
+        # Hold the test lock from an external connection to force observer mode
+        holder_conn = psycopg2.connect(_db_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            with holder_conn.cursor() as cur:
+                cur.execute('SELECT pg_try_advisory_lock(%s, %s)', (_LEADER_CLASSID, _LEADER_OBJID))
+                acquired = cur.fetchone()['pg_try_advisory_lock']
+            assert acquired, "holder_conn should acquire test lock"
+
+            with (
+                patch('sos.services.matchmaker.DRY_RUN', True),
+                patch('sos.services.matchmaker.record_assignment') as mock_record,
+                patch('sos.services.matchmaker._dispatch_to_squad') as mock_dispatch,
+            ):
+                stats = run_tick()
+
+            # Observer: did not write
+            mock_record.assert_not_called()
+            mock_dispatch.assert_not_called()
+            # Observer: leader_acquired=False
+            assert stats['leader_acquired'] is False
+            # Observer: pipeline ran (quests/candidates keys present from pipeline)
+            assert 'quests' in stats
+            assert 'candidates' in stats
+        finally:
+            holder_conn.close()

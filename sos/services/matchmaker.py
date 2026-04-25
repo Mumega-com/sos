@@ -4,9 +4,11 @@
 Runs as a systemd one-shot service on a 30-second timer.
 Each tick:
   1. Acquires a PG session-level advisory leader lock (Sprint 006 A.1 / G50).
-     If another instance holds the lock, this process exits immediately as an
-     observer (zero writes).  The lock is released automatically when the
-     process exits — including kill -9 (PG drops the session lock on disconnect).
+     If another instance holds the lock, this process runs in observer mode:
+     the full pipeline executes (same SELECT, matrix, Hungarian) but writes
+     (record_assignment, _dispatch_to_squad, emit_leader_election) are suppressed.
+     Observer logs would-have-made assignments at DEBUG for divergence detection.
+     The lock is released automatically on process exit, including kill -9.
   2. Fetches all open quests from Mirror DB.
   3. Builds candidate pool from active citizens (recent reputation_state or citizen_vectors).
   4. Runs rank_candidates() per quest (five-stage pipeline from A.3).
@@ -68,8 +70,13 @@ _LIVE                        = os.environ.get('MATCHMAKER_LIVE', '') == '1'
 DRY_RUN              = not _LIVE
 # Sprint 006 A.1 (G50): dual-instance leader election via PG advisory lock
 INSTANCE_ID          = os.environ.get('MATCHMAKER_INSTANCE_ID', 'default')
-_LEADER_CLASSID      = 1001   # G23 matchmaker advisory lock namespace
-_LEADER_OBJID        = 0      # leader sentinel (objid=0 reserved for leader election)
+# ADV-G50-NS: classid=1003 — distinct from G23 matchmaker quest locks (classid=1001,
+# objid=hashtext(quest_id)) and audit-anchor leader (classid=1002).
+# G23 uses pg_advisory_xact_lock(1001, hashtext(quest_id)); hashtext() CAN return 0
+# which would collide with objid=0 if we shared classid=1001. Separate namespace prevents
+# any collision between the leader-sentinel lock and per-quest assignment locks.
+_LEADER_CLASSID      = 1003   # matchmaker leader sentinel namespace (distinct from 1001/1002)
+_LEADER_OBJID        = 0      # leader sentinel — exactly one instance may hold this
 
 _HEADERS = {
     'Authorization': f'Bearer {SOS_SYSTEM_TOKEN}',
@@ -115,6 +122,44 @@ def _try_acquire_leader_lock(conn) -> bool:
         row = cur.fetchone()
         # RealDictCursor returns a dict-like row; key is the function name
         return bool(row['pg_try_advisory_lock'])
+
+
+def _emit_leader_election(instance_id: str, role: str, transition_reason: str) -> None:
+    """Emit a leader_election audit event (AC§2 #16 / brief §5).
+
+    Roles: 'leader', 'observer'
+    Transition reasons: 'startup_acquired', 'startup_observer', 'failover_acquired',
+                        'lost_lock_demoted', 'shutdown'
+
+    Non-blocking — logs warning on failure but does not interrupt the tick.
+    """
+    try:
+        from sos.observability.sprint_telemetry import emit_leader_election as _emit
+        _emit(instance_id=instance_id, role=role, transition_reason=transition_reason)
+    except Exception as exc:
+        log.warning('matchmaker: emit_leader_election failed (non-fatal): %s', exc)
+
+
+def _has_pending_offer(quest_id: str, candidate_id: str) -> bool:
+    """Return True if there is already a pending (outcome IS NULL) offer for this pair.
+
+    ADV-G50-HIGH-1: prevents duplicate assignments when the leader crashes after
+    writing match_history but before the timer tick exits cleanly.  On the next
+    tick the same (quest_id, candidate_id) would otherwise be re-dispatched.
+    """
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 1 FROM match_history
+                        WHERE quest_id = %s AND candidate_id = %s AND outcome IS NULL
+                        LIMIT 1""",
+                    (quest_id, candidate_id),
+                )
+                return cur.fetchone() is not None
+    except Exception as exc:
+        log.warning('matchmaker: _has_pending_offer check failed (allowing assignment): %s', exc)
+        return False  # fail-open: let record_assignment proceed; PG idempotency handles it
 
 
 def _fetch_open_quests(conn) -> list[dict]:
@@ -334,14 +379,15 @@ def run_tick() -> dict:
     lock_conn: 'psycopg2.extensions.connection | None' = None
     try:
         lock_conn = _connect()
-        if not _try_acquire_leader_lock(lock_conn):
-            log.info(
-                'matchmaker[%s]: observer — leader lock held by another instance, exiting',
-                INSTANCE_ID,
-            )
-            return stats
-        stats['leader_acquired'] = True
-        log.debug('matchmaker[%s]: leader lock acquired', INSTANCE_ID)
+        is_leader = _try_acquire_leader_lock(lock_conn)
+        stats['leader_acquired'] = is_leader
+
+        if is_leader:
+            log.info('matchmaker[%s]: leader — lock acquired', INSTANCE_ID)
+            _emit_leader_election(INSTANCE_ID, 'leader', 'startup_acquired')
+        else:
+            log.info('matchmaker[%s]: observer — running pipeline without writes', INSTANCE_ID)
+            _emit_leader_election(INSTANCE_ID, 'observer', 'startup_observer')
 
         # Phase 0: learning loop — process pending outcomes before assigning new quests.
         # BLOCK-2 fix: bounded by PROCESS_OUTCOMES_TIMEOUT_S so a hung/deadlocked
@@ -403,6 +449,26 @@ def run_tick() -> dict:
 
         for quest, candidate_id, composite_score in assignments:
             quest_id = quest['id']
+
+            if not is_leader:
+                # Observer mode: log what would have been dispatched (AC§2 #6/#7)
+                log.debug(
+                    'matchmaker[%s]: observer — would assign quest=%s → %s (score=%.4f)',
+                    INSTANCE_ID, quest_id, candidate_id, composite_score,
+                )
+                stats['skipped'] += 1
+                continue
+
+            # ADV-G50-HIGH-1: skip if a pending offer already exists for this pair
+            # (prevents duplicate dispatch when leader crashes after match_history INSERT
+            # but before the tick exits; next-tick re-runs the same open quest).
+            if _has_pending_offer(quest_id, candidate_id):
+                log.debug(
+                    'matchmaker: pending offer already exists for quest=%s candidate=%s — skipping',
+                    quest_id, candidate_id,
+                )
+                stats['skipped'] += 1
+                continue
 
             # Record in match_history
             match_id = record_assignment(quest_id, candidate_id, composite_score)

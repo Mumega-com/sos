@@ -146,6 +146,8 @@ def compute_sprint_stats(sprint_id: str, db_url: str | None = None) -> SprintSta
     bounds query window, counts gates / tests / migrations / commits / saves.
     """
     started_at, closed_at = _read_sprint_markers(sprint_id, db_url=db_url)
+    # For open sprints, use now() as the query window end so live counts are non-zero.
+    query_end = closed_at or (datetime.now(timezone.utc).isoformat() if started_at else None)
     bus_time_seconds = None
     if started_at and closed_at:
         try:
@@ -155,14 +157,15 @@ def compute_sprint_stats(sprint_id: str, db_url: str | None = None) -> SprintSta
         except Exception:
             pass
 
-    gates_closed = _count_audit_actions(db_url, sprint_id, ["gate_passed", "gate_green"], started_at, closed_at)
-    audit_events_emitted = _count_audit_events(db_url, started_at, closed_at)
-    production_saves = _count_audit_actions(db_url, sprint_id, ["incident_resolved", "production_save"], started_at, closed_at)
+    gates_closed = _count_audit_actions(db_url, sprint_id, ["gate_verdict", "gate_passed", "gate_green"], started_at, query_end)
+    audit_events_emitted = _count_audit_events(db_url, started_at, query_end)
+    production_saves = _count_audit_actions(db_url, sprint_id, ["incident_resolved", "production_save"], started_at, query_end)
+    adversarial_findings_count = _count_audit_actions(db_url, sprint_id, ["adversarial_finding"], started_at, query_end)
 
-    tests_added = _count_files_in_window("tests/", started_at, closed_at, repos=[SOS_REPO])
-    migrations_applied = _count_files_in_window("migrations/", started_at, closed_at, repos=[MIRROR_REPO])
-    contract_files_shipped = _count_files_in_window("sos/contracts/", started_at, closed_at, repos=[SOS_REPO])
-    commits_landed = _count_commits_in_window(started_at, closed_at)
+    tests_added = _count_files_in_window("tests/", started_at, query_end, repos=[SOS_REPO])
+    migrations_applied = _count_files_in_window("migrations/", started_at, query_end, repos=[MIRROR_REPO])
+    contract_files_shipped = _count_files_in_window("sos/contracts/", started_at, query_end, repos=[SOS_REPO])
+    commits_landed = _count_commits_in_window(started_at, query_end)
 
     return SprintStats(
         sprint_id=sprint_id,
@@ -176,7 +179,7 @@ def compute_sprint_stats(sprint_id: str, db_url: str | None = None) -> SprintSta
         commits_landed=commits_landed,
         audit_events_emitted=audit_events_emitted,
         production_saves=production_saves,
-        adversarial_findings=None,  # caller fills in from adversarial report if applicable
+        adversarial_findings=adversarial_findings_count or None,  # None if no DB; caller may override
     )
 
 
@@ -286,6 +289,276 @@ def _count_commits_in_window(start: str | None, end: str | None) -> int:
     return total
 
 
+# ----- emit helpers for gate verdicts, incidents, adversarial findings -----
+
+def emit_gate_verdict(gate_id: str, verdict: str, emitted_by: str = "athena") -> dict[str, Any]:
+    """Emit a gate_verdict audit event. Verdict should be GREEN/YELLOW/BLOCKED/RESHAPE."""
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {"gate_id": gate_id, "verdict": verdict.upper(), "emitted_by": emitted_by, "ts": ts}
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="agent",
+            action="gate_verdict",
+            resource=f"gate:{gate_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"gate_verdict_{gate_id}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_incident_resolved(description: str, emitted_by: str = "athena") -> dict[str, Any]:
+    """Emit a production_save audit event for sprint telemetry."""
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {"description": description, "emitted_by": emitted_by, "ts": ts}
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="agent",
+            action="incident_resolved",
+            resource="production:save",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"incident_resolved_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_adversarial_finding(finding_id: str, severity: str, emitted_by: str = "athena") -> dict[str, Any]:
+    """Emit an adversarial_finding audit event for sprint telemetry."""
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {"finding_id": finding_id, "severity": severity.upper(), "emitted_by": emitted_by, "ts": ts}
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="agent",
+            action="adversarial_finding",
+            resource=f"finding:{finding_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"adversarial_finding_{finding_id}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_leader_election(
+    instance_id: str,
+    role: str,
+    transition_reason: str,
+    emitted_by: str = "matchmaker",
+) -> dict[str, Any]:
+    """Emit a leader_election audit event for matchmaker dual-instance HA (Sprint 006 A.1 / G50).
+
+    role: 'leader' | 'observer'
+    transition_reason: 'startup_acquired' | 'startup_observer' | 'failover_acquired' |
+                       'lost_lock_demoted' | 'shutdown'
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "instance_id": instance_id,
+        "role": role,
+        "transition_reason": transition_reason,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="matchmaker",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="leader_election",
+            resource=f"instance:{instance_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"leader_election_{instance_id}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def drain_sprint_markers(dry_run: bool = False) -> dict[str, Any]:
+    """C.6: Drain .sprint_markers/*.json into audit_events when DB reachable.
+
+    Scans .sprint_markers/ for unprocessed JSON files, writes each as a row
+    in audit_events via direct psycopg2 INSERT (bypasses the async audit_chain
+    layer — appropriate for a one-shot batch drain), then moves successfully
+    ingested files to .sprint_markers/ingested/ to prevent double-emit.
+
+    Returns a summary: {drained, skipped, failed, dry_run, db_reachable}.
+    """
+    import psycopg2
+    import psycopg2.extras
+
+    marker_dir = SOS_REPO / ".sprint_markers"
+    ingested_dir = marker_dir / "ingested"
+
+    if not marker_dir.exists():
+        return {"drained": 0, "skipped": 0, "failed": 0, "dry_run": dry_run, "db_reachable": False}
+
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv(SOS_REPO / ".env")
+    except Exception:
+        pass
+    db_url = os.environ.get("MIRROR_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    db_reachable = False
+    conn = None
+    if not dry_run:
+        try:
+            conn = psycopg2.connect(db_url)
+            db_reachable = True
+        except Exception:
+            db_reachable = False
+
+    drained, skipped, failed = 0, 0, 0
+    results: list[dict] = []
+
+    for f in sorted(marker_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except Exception:
+            skipped += 1
+            results.append({"file": f.name, "status": "skip-parse-error"})
+            continue
+
+        # Resolve audit_events row fields from marker content
+        if "gate_id" in data:
+            action = "gate_verdict"
+            resource = f"gate:{data['gate_id']}"
+        elif "finding_id" in data:
+            action = "adversarial_finding"
+            resource = f"finding:{data['finding_id']}"
+        elif "description" in data and "incident" in f.name:
+            action = "incident_resolved"
+            resource = "production:save"
+        elif data.get("action") in ("start", "close") and "sprint_id" in data:
+            action = f"sprint_{data['action']}"
+            resource = f"sprint:{data['sprint_id']}"
+        else:
+            skipped += 1
+            results.append({"file": f.name, "status": "skip-unknown-type"})
+            continue
+
+        actor_id = (
+            data.get("emitted_by") or data.get("opened_by")
+            or data.get("closed_by") or "athena"
+        )
+
+        if dry_run:
+            drained += 1
+            results.append({"file": f.name, "status": "dry-run", "action": action})
+            continue
+
+        if not db_reachable:
+            skipped += 1
+            results.append({"file": f.name, "status": "skip-db-unreachable"})
+            continue
+
+        try:
+            import hashlib
+            import uuid as _uuid
+            from datetime import timezone as _tz
+            with conn.cursor() as cur:  # type: ignore[union-attr]
+                # Allocate seq atomically (advisory lock inside PG function)
+                cur.execute("SELECT audit_next_seq(%s)", ("kernel",))
+                seq = cur.fetchone()[0]
+                # Fetch prev_hash for chain integrity
+                cur.execute(
+                    "SELECT hash FROM audit_events WHERE stream_id=%s AND seq=%s",
+                    ("kernel", seq - 1),
+                )
+                prev_row = cur.fetchone()
+                prev_hash: bytes | None = prev_row[0] if prev_row else None
+                ts_now = datetime.now(_tz.utc)
+                event_id = str(_uuid.uuid4())
+                # Canonical representation (matches audit_chain.py emit_audit exactly)
+                canonical_obj = {
+                    "id": event_id,
+                    "stream_id": "kernel",
+                    "seq": seq,
+                    "ts": ts_now.isoformat(),
+                    "actor_id": actor_id,
+                    "actor_type": "agent",
+                    "action": action,
+                    "resource": resource,
+                    "payload": data,
+                    "payload_redacted": False,
+                    "prev_hash": prev_hash.hex() if prev_hash else None,
+                }
+                canonical_bytes = json.dumps(
+                    canonical_obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+                h = hashlib.sha256()
+                if prev_hash:
+                    h.update(prev_hash)
+                h.update(canonical_bytes)
+                event_hash = h.digest()
+                cur.execute(
+                    """
+                    INSERT INTO audit_events
+                        (id, stream_id, seq, ts,
+                         actor_id, actor_type, action, resource,
+                         payload, payload_redacted, prev_hash, hash)
+                    VALUES (%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s)
+                    """,
+                    (
+                        event_id, "kernel", seq, ts_now,
+                        actor_id, "agent", action, resource,
+                        psycopg2.extras.Json(data), False, prev_hash, event_hash,
+                    ),
+                )
+            conn.commit()  # type: ignore[union-attr]
+            ingested_dir.mkdir(exist_ok=True)
+            f.rename(ingested_dir / f.name)
+            drained += 1
+            results.append({"file": f.name, "status": "drained", "action": action})
+        except Exception as exc:
+            try:
+                conn.rollback()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            failed += 1
+            results.append({"file": f.name, "status": "failed", "error": str(exc)})
+
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return {
+        "drained": drained,
+        "skipped": skipped,
+        "failed": failed,
+        "dry_run": dry_run,
+        "db_reachable": db_reachable,
+        "results": results,
+    }
+
+
 # ----- CLI for ad-hoc retro use -----
 
 if __name__ == "__main__":
@@ -309,6 +582,23 @@ if __name__ == "__main__":
 
     s_now = sub.add_parser("current", help="Print active sprint slug")
 
+    s_gate = sub.add_parser("gate-verdict", help="Emit gate_verdict audit event")
+    s_gate.add_argument("gate_id", help="e.g. G17b")
+    s_gate.add_argument("verdict", help="GREEN | YELLOW | BLOCKED | RESHAPE")
+    s_gate.add_argument("--by", default="athena")
+
+    s_incident = sub.add_parser("incident-resolved", help="Emit incident_resolved audit event")
+    s_incident.add_argument("description")
+    s_incident.add_argument("--by", default="athena")
+
+    s_adv = sub.add_parser("adversarial-finding", help="Emit adversarial_finding audit event")
+    s_adv.add_argument("finding_id", help="e.g. F-02")
+    s_adv.add_argument("severity", help="BLOCK | HIGH | WARN | LOW")
+    s_adv.add_argument("--by", default="athena")
+
+    s_drain = sub.add_parser("drain-markers", help="C.6: drain .sprint_markers/ into audit_events")
+    s_drain.add_argument("--dry-run", action="store_true", help="Show what would be drained without emitting")
+
     args = p.parse_args()
     if args.cmd == "start":
         print(json.dumps(sprint_start(args.sprint_id, opened_by=args.by), indent=2))
@@ -321,3 +611,14 @@ if __name__ == "__main__":
         print(json.dumps(asdict(stats), indent=2, default=str))
     elif args.cmd == "current":
         print(current_sprint() or "(no active sprint)")
+    elif args.cmd == "gate-verdict":
+        print(json.dumps(emit_gate_verdict(args.gate_id, args.verdict, emitted_by=args.by), indent=2))
+    elif args.cmd == "incident-resolved":
+        print(json.dumps(emit_incident_resolved(args.description, emitted_by=args.by), indent=2))
+    elif args.cmd == "adversarial-finding":
+        print(json.dumps(emit_adversarial_finding(args.finding_id, args.severity, emitted_by=args.by), indent=2))
+    elif args.cmd == "drain-markers":
+        result = drain_sprint_markers(dry_run=args.dry_run)
+        print(json.dumps(result, indent=2))
+        if not args.dry_run:
+            print(f"\nDrained {result['drained']} markers, {result['skipped']} skipped, {result['failed']} failed.")
