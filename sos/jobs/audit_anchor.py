@@ -49,7 +49,7 @@ logger = logging.getLogger("sos.jobs.audit_anchor")
 _RETENTION_YEARS = 7
 
 # Quorum / leader-election (Sprint 006 A.5 / G55)
-_ANCHOR_LOCK_CLASSID: int = 1002  # audit-anchor namespace (separate from matchmaker 1001)
+_ANCHOR_LOCK_CLASSID: int = 1002  # audit-anchor namespace (separate from matchmaker 1003, G23 quest-xact 1001)
 _ANCHOR_LOCK_OBJID: int = 0       # writer sentinel
 
 # ---------------------------------------------------------------------------
@@ -609,6 +609,7 @@ async def run_with_quorum() -> dict[str, Any]:
             )
             streams = [row["stream_id"] for row in rows]
 
+        instance_id = os.environ.get("AUDIT_ANCHOR_INSTANCE_ID", "audit-anchor-secondary")
         verify_results: dict[str, Any] = {}
         all_ok = True
         for stream_id in streams:
@@ -617,6 +618,21 @@ async def run_with_quorum() -> dict[str, Any]:
             verify_results[stream_id] = vr
             if not vr["ok"]:
                 all_ok = False
+                # BLOCK-1: drift must be loud — emit explicit bus signal per failing stream
+                try:
+                    from sos.observability.sprint_telemetry import emit_verifier_drift_detected
+                    emit_verifier_drift_detected(
+                        stream_id=stream_id,
+                        reason=vr.get("reason", "unknown"),
+                        seq=vr.get("anchored_seq"),
+                        instance_id=instance_id,
+                    )
+                except Exception as _emit_exc:
+                    logger.error("audit_anchor: emit_verifier_drift_detected failed: %s", _emit_exc)
+                logger.warning(
+                    "audit_anchor: DRIFT DETECTED stream=%s reason=%s seq=%s",
+                    stream_id, vr.get("reason"), vr.get("anchored_seq"),
+                )
 
         logger.info(
             "audit_anchor: verify complete — %d streams, all_ok=%s",
@@ -686,6 +702,11 @@ def main() -> None:
         else:
             result = await _runner()
             print(json.dumps(result, indent=2))
+            # BLOCK-1: verifier drift must produce non-zero exit so systemd alerts.
+            # Systemd's OnFailure= + journald capture this; silent ok=False exit 0 = invisible.
+            if result.get("mode") == "verifier" and not result.get("ok"):
+                import sys
+                sys.exit(1)
 
     asyncio.run(_run())
 

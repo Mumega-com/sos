@@ -518,6 +518,51 @@ def emit_claim_ttl_reclaim(
     return payload
 
 
+def emit_verifier_drift_detected(
+    stream_id: str,
+    reason: str,
+    seq: int | None,
+    instance_id: str,
+    emitted_by: str = "audit-anchor",
+) -> dict[str, Any]:
+    """Emit verifier_drift_detected when audit chain verification fails (Sprint 006 A.5 / G55).
+
+    BLOCK-1 fix: drift detection must be loud at the operational layer.
+    Fires once per failing stream per verifier pass.
+
+    reason: 'r2_fetch_failed' | 'parse_failed' | 'hash_mismatch' | 'db_hash_mismatch'
+            | 'r2_hash_mismatch' | 'chain_link_broken' | 'prev_anchor_missing'
+            | 'events_exist_but_no_anchor'
+    seq:    anchored_seq of the failing anchor (None if no anchor found)
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "stream_id": stream_id,
+        "reason": reason,
+        "seq": seq,
+        "instance_id": instance_id,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="audit",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="verifier_drift_detected",
+            resource=f"stream:{stream_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"verifier_drift_{stream_id.replace(':', '_')}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def drain_sprint_markers(dry_run: bool = False) -> dict[str, Any]:
     """C.6: Drain .sprint_markers/*.json into audit_events when DB reachable.
 
