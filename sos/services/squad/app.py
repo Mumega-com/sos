@@ -487,6 +487,24 @@ async def tasks_board(
     return {"squad": squad, "total": len(items), "groups": groups}
 
 
+@app.get("/tasks/dedupe/{external_ref}")
+async def dedupe_task(
+    external_ref: str,
+    ttl_seconds: int = 86400,
+    auth: AuthContext = Depends(require_capability("tasks", "read")),
+) -> dict[str, Any]:
+    """G35: source-signal dedupe probe.
+
+    Returns {"exists": true, "task_id": "...", "status": "..."} if a task with
+    this external_ref is active (queued/claimed/in_flight) or was completed
+    within ttl_seconds. Returns {"exists": false} if safe to emit.
+    """
+    task = tasks.get_by_external_ref(external_ref, ttl_seconds=ttl_seconds, tenant_id=auth.tenant_scope)
+    if task:
+        return {"exists": True, "task_id": task.id, "status": task.status.value}
+    return {"exists": False}
+
+
 @app.get("/tasks/{task_id}")
 async def get_task(
     task_id: str,
