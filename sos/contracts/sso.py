@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -1017,7 +1018,9 @@ def _totp_window_start(totp_obj: 'pyotp.TOTP', code: str) -> int | None:
     for offset in (-1, 0, 1):
         candidate = counter + offset
         candidate_time = candidate * interval
-        if totp_obj.at(candidate_time) == code:
+        # Use hmac.compare_digest (constant-time) to avoid timing side-channel
+        # on the code comparison — matches pyotp.verify()'s internal guard.
+        if hmac.compare_digest(totp_obj.at(candidate_time), code):
             return candidate_time
     return None
 
@@ -1080,6 +1083,13 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
         log.warning(
             'TOTP replay attempt rejected for principal %s (window=%d)',
             principal_id, time_window_start,
+        )
+        return False
+    except psycopg2.Error as exc:
+        # Non-replay DB error (network, disk, pool exhaustion) — fail closed.
+        # verify_totp() contract is -> bool; unhandled DB exceptions violate it.
+        log.error(
+            'TOTP ledger INSERT failed for principal %s: %s', principal_id, exc
         )
         return False
 
