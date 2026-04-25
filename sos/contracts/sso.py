@@ -280,9 +280,19 @@ def _role_tier_name(role_id: str) -> str:
 
 
 def _role_within_ceiling(role_id: str, ceiling: str) -> bool:
-    """Return True if role_id's tier is at or below ceiling."""
+    """Return True if role_id's tier is at or below ceiling.
+
+    G59 fix: unknown tier raises ValueError instead of silently defaulting to
+    -1 (which was ≤ all valid tier indices, so unknown tiers passed the ceiling
+    check unconditionally — a silent escalation path).
+    """
     tier = _role_tier_name(role_id)
-    return _TIER_ORDER.get(tier, -1) <= _TIER_ORDER.get(ceiling, -1)
+    if tier not in _TIER_ORDER:
+        raise ValueError(
+            f'tier_unrecognised: role {role_id!r} has unknown tier {tier!r}; '
+            f'valid tiers: {list(_TIER_ORDER)}'
+        )
+    return _TIER_ORDER[tier] <= _TIER_ORDER.get(ceiling, -1)
 
 
 # ── IdP group → role mapping ───────────────────────────────────────────────────
@@ -329,6 +339,50 @@ def get_roles_for_groups(idp_id: str, group_names: list[str]) -> list[str]:
                 (idp_id, group_names),
             )
             return [r['role_id'] for r in cur.fetchall()]
+
+
+def audit_idp_ceiling_violations() -> list[dict]:
+    """Return idp_group_role_map rows where the mapped role exceeds the IdP's max_grantable_tier.
+
+    G61: surfaces pre-existing high-tier entries that were inserted before the
+    F-15 ceiling was enforced (or via direct DB writes), so a coordinator can
+    reconcile them.  Returns a list of dicts: {idp_id, group_name, role_id,
+    role_tier, idp_ceiling}.  Empty list = no violations.
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.idp_id, m.group_name, m.role_id, i.max_grantable_tier
+                   FROM idp_group_role_map m
+                   JOIN idp_configurations i ON i.id = m.idp_id"""
+            )
+            rows = cur.fetchall()
+
+    violations = []
+    for row in rows:
+        role_id = row['role_id']
+        tier = _role_tier_name(role_id)
+        ceiling = row['max_grantable_tier']
+        if tier not in _TIER_ORDER:
+            # Unknown tier — always flag for reconciliation
+            violations.append({
+                'idp_id': row['idp_id'],
+                'group_name': row['group_name'],
+                'role_id': role_id,
+                'role_tier': tier,
+                'idp_ceiling': ceiling,
+                'violation': 'unknown_tier',
+            })
+        elif _TIER_ORDER[tier] > _TIER_ORDER.get(ceiling, -1):
+            violations.append({
+                'idp_id': row['idp_id'],
+                'group_name': row['group_name'],
+                'role_id': role_id,
+                'role_tier': tier,
+                'idp_ceiling': ceiling,
+                'violation': 'exceeds_ceiling',
+            })
+    return violations
 
 
 # ── SSO identity link ──────────────────────────────────────────────────────────
@@ -1031,10 +1085,14 @@ def scim_deprovision_user(
     *,
     idp_id: str,
     external_id: str,
-    tenant_id: str = 'default',
 ) -> bool:
     """
     SCIM deprovision. Returns True if principal was found and deprovisioned.
+
+    G60 fix: removed dead `tenant_id` parameter — tenant_id is derived from
+    idp_id (same as scim_provision_user) and was never actually used here.
+    The parameter accepted a caller-supplied value that was silently ignored,
+    creating a misleading API surface.
     """
     with _connect() as conn:
         with conn.cursor() as cur:

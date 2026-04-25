@@ -30,6 +30,7 @@ from sos.contracts.sso import (
     MfaEnrolledMethod,
     SsoIdentityLink,
     add_group_role_map,
+    audit_idp_ceiling_violations,
     build_oidc_auth_url,
     create_idp,
     disable_mfa_method,
@@ -1000,3 +1001,137 @@ class TestSamlReplayLedger:
             assert count == 0
         finally:
             conn.close()
+
+
+# ── TC-G59/G60/G61: SCIM soft notes (Sprint 006 B.4a/b/c) ────────────────────
+
+
+class TestScimSoftNotes:
+    """G59/G60/G61 — SCIM soft notes from Sprint 005 carry."""
+
+    # TC-G59: unknown tier raises ValueError (tier_unrecognised)
+    def test_g59_unknown_tier_raises(self) -> None:
+        """TC-G59: _role_within_ceiling raises on unrecognised tier (not silent -1 pass)."""
+        from sos.contracts.sso import _role_within_ceiling
+        import pytest
+        with pytest.raises(ValueError, match='tier_unrecognised'):
+            _role_within_ceiling('role:sos:superadmin', 'worker')
+
+    def test_g59_unknown_tier_raises_regardless_of_ceiling(self) -> None:
+        """TC-G59: unknown tier raises even when ceiling is the highest valid tier."""
+        from sos.contracts.sso import _role_within_ceiling
+        import pytest
+        with pytest.raises(ValueError, match='tier_unrecognised'):
+            _role_within_ceiling('role:sos:god', 'principal')
+
+    def test_g59_known_tiers_still_work(self) -> None:
+        """TC-G59: valid tier comparisons are unaffected by the fix."""
+        from sos.contracts.sso import _role_within_ceiling
+        assert _role_within_ceiling('role:sos:observer', 'worker') is True
+        assert _role_within_ceiling('role:sos:builder', 'worker') is False
+        assert _role_within_ceiling('role:sos:worker', 'worker') is True
+
+    # TC-G60: scim_deprovision_user no longer accepts tenant_id
+    def test_g60_deprovision_has_no_tenant_id_param(self) -> None:
+        """TC-G60: scim_deprovision_user signature must not accept tenant_id."""
+        import inspect
+        from sos.contracts.sso import scim_deprovision_user
+        params = inspect.signature(scim_deprovision_user).parameters
+        assert 'tenant_id' not in params, (
+            "tenant_id was a dead param that accepted caller-supplied values "
+            "while silently ignoring them — G60 removed it"
+        )
+
+    def test_g60_deprovision_accepts_idp_and_external_id(self) -> None:
+        """TC-G60: scim_deprovision_user still accepts idp_id + external_id."""
+        import inspect
+        from sos.contracts.sso import scim_deprovision_user
+        params = inspect.signature(scim_deprovision_user).parameters
+        assert 'idp_id' in params
+        assert 'external_id' in params
+
+    # TC-G61: audit_idp_ceiling_violations returns violations
+    def test_g61_audit_returns_empty_for_no_rows(self) -> None:
+        """TC-G61: audit returns empty list when no idp_group_role_map rows exist."""
+        from unittest.mock import patch, MagicMock
+        from sos.contracts.sso import audit_idp_ceiling_violations
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = []
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = audit_idp_ceiling_violations()
+        assert result == []
+
+    def test_g61_audit_detects_ceiling_violation(self) -> None:
+        """TC-G61: audit flags rows where role tier exceeds IdP ceiling."""
+        from unittest.mock import patch, MagicMock
+        from sos.contracts.sso import audit_idp_ceiling_violations
+
+        rows = [
+            {'idp_id': 'idp-1', 'group_name': 'admins', 'role_id': 'role:sos:builder', 'max_grantable_tier': 'worker'},
+        ]
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = rows
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = audit_idp_ceiling_violations()
+
+        assert len(result) == 1
+        assert result[0]['role_id'] == 'role:sos:builder'
+        assert result[0]['violation'] == 'exceeds_ceiling'
+        assert result[0]['idp_id'] == 'idp-1'
+
+    def test_g61_audit_flags_unknown_tier_as_violation(self) -> None:
+        """TC-G61: audit flags rows with unknown tier for coordinator reconciliation."""
+        from unittest.mock import patch, MagicMock
+        from sos.contracts.sso import audit_idp_ceiling_violations
+
+        rows = [
+            {'idp_id': 'idp-2', 'group_name': 'unknown-group', 'role_id': 'role:sos:superadmin', 'max_grantable_tier': 'worker'},
+        ]
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = rows
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = audit_idp_ceiling_violations()
+
+        assert len(result) == 1
+        assert result[0]['violation'] == 'unknown_tier'
+        assert result[0]['role_tier'] == 'superadmin'
+
+    def test_g61_audit_passes_compliant_rows(self) -> None:
+        """TC-G61: audit does not flag rows within ceiling."""
+        from unittest.mock import patch, MagicMock
+        from sos.contracts.sso import audit_idp_ceiling_violations
+
+        rows = [
+            {'idp_id': 'idp-3', 'group_name': 'staff', 'role_id': 'role:sos:worker', 'max_grantable_tier': 'builder'},
+            {'idp_id': 'idp-3', 'group_name': 'staff', 'role_id': 'role:sos:observer', 'max_grantable_tier': 'worker'},
+        ]
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = rows
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = audit_idp_ceiling_violations()
+        assert result == []
