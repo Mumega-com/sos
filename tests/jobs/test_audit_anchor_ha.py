@@ -231,7 +231,41 @@ async def test_g55d_verify_stream_tampered_anchor() -> None:
 
     result = await _verify_stream(mock_conn, stream_id, mock_s3, "test-bucket")
     assert result["ok"] is False
-    assert result["reason"] == "hash_mismatch"
+    # BLOCK-1 fix: DB column checked first — hash_mismatch now splits into
+    # db_hash_mismatch (DB tampered) or r2_hash_mismatch (R2 overwritten).
+    # DB and R2 have the same tampered hash here, so db_hash_mismatch fires.
+    assert result["reason"] == "db_hash_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_g55d_verify_stream_r2_overwrite_attack() -> None:
+    """TC-G55d variant: R2 overwrite attack — DB has correct hash, R2 was rewritten."""
+    from sos.jobs.audit_anchor import _verify_stream
+
+    stream_id = "test:stream:g55:r2-overwrite"
+    payload = _make_anchor_payload(stream_id, 44, "c" * 64, None)
+    correct_hash = payload["anchor_hash"]
+
+    # Attacker rewrites R2 with a new payload + recomputed hash — but DB still has original
+    tampered_payload = _make_anchor_payload(stream_id, 44, "d" * 64, None)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value={
+        "anchored_seq": 44,
+        "anchor_hash": bytes.fromhex(correct_hash),  # DB still has original
+        "prev_anchor_hash": None,
+        "r2_object_key": payload["r2_key"],
+    })
+
+    mock_s3 = MagicMock()
+    mock_body = MagicMock()
+    mock_body.read = MagicMock(return_value=json.dumps(tampered_payload).encode())
+    mock_s3.get_object = MagicMock(return_value={"Body": mock_body})
+
+    result = await _verify_stream(mock_conn, stream_id, mock_s3, "test-bucket")
+    assert result["ok"] is False
+    # DB hash doesn't match recomputed (from tampered R2 fields) → db_hash_mismatch
+    assert result["reason"] == "db_hash_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +274,29 @@ async def test_g55d_verify_stream_tampered_anchor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_g55e_verify_stream_no_anchors() -> None:
-    """TC-G55e: _verify_stream returns ok=True when stream has no anchors yet."""
+async def test_g55e_verify_stream_no_anchors_no_events() -> None:
+    """TC-G55e: _verify_stream returns ok=True only when stream has no events either."""
     from sos.jobs.audit_anchor import _verify_stream
 
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=0)  # no events
 
     result = await _verify_stream(mock_conn, "test:empty", MagicMock(), "bucket")
     assert result["ok"] is True
-    assert result["reason"] == "no_anchors"
+    assert result["reason"] == "no_events"
+
+
+@pytest.mark.asyncio
+async def test_g55e_verify_stream_events_but_no_anchors() -> None:
+    """TC-G55e BLOCK-2: events exist but no anchors → integrity anomaly, ok=False."""
+    from sos.jobs.audit_anchor import _verify_stream
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=5)  # 5 events, no anchor
+
+    result = await _verify_stream(mock_conn, "test:unanchored", MagicMock(), "bucket")
+    assert result["ok"] is False
+    assert result["reason"] == "events_exist_but_no_anchor"
+    assert result["event_count"] == 5

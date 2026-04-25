@@ -123,10 +123,12 @@ async def _get_pool() -> Any:
     global _pool
     if _pool is None:
         import asyncpg
-        db_url = os.getenv(
-            "DATABASE_URL",
-            "postgresql://postgres:postgres@localhost:5432/postgres",
-        )
+        db_url = os.environ.get("DATABASE_URL")
+        if not db_url:
+            raise RuntimeError(
+                "DATABASE_URL is required for audit_anchor — no default allowed "
+                "(insecure fallback removed per adversarial gate G55 BLOCK-4)"
+            )
         _pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
     return _pool
 
@@ -303,10 +305,12 @@ async def _try_acquire_anchor_lock() -> "asyncpg.Connection":  # type: ignore[na
     """
     import asyncpg  # type: ignore[import]
 
-    db_url = os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/postgres",
-    )
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError(
+            "DATABASE_URL is required for audit_anchor advisory lock — no default allowed "
+            "(insecure fallback removed per adversarial gate G55 BLOCK-4)"
+        )
     conn = await asyncpg.connect(db_url)
     acquired: bool = await conn.fetchval(
         "SELECT pg_try_advisory_lock($1, $2)",
@@ -341,7 +345,24 @@ async def _verify_stream(
         stream_id,
     )
     if not anchor_row:
-        return {"stream_id": stream_id, "ok": True, "reason": "no_anchors"}
+        # BLOCK-2 fix: ok=True only if the stream also has no events.
+        # "no anchors" with existing events is an integrity anomaly.
+        event_count: int = await conn.fetchval(
+            "SELECT COUNT(*) FROM audit_stream_seqs WHERE stream_id = $1",
+            stream_id,
+        )
+        if event_count:
+            logger.error(
+                "audit_anchor: INTEGRITY ANOMALY stream=%s has %d event(s) but no anchors",
+                stream_id, event_count,
+            )
+            return {
+                "stream_id": stream_id,
+                "ok": False,
+                "reason": "events_exist_but_no_anchor",
+                "event_count": event_count,
+            }
+        return {"stream_id": stream_id, "ok": True, "reason": "no_events"}
 
     r2_key: str = anchor_row["r2_object_key"]
     loop = asyncio.get_event_loop()
@@ -383,18 +404,36 @@ async def _verify_stream(
     h.update(anchor_canonical)
     expected_hex = h.hexdigest()
 
+    # BLOCK-1 fix: cross-reference against DB anchor_hash (authoritative) AND R2.
+    # R2 is the WORM copy; DB is the source of truth. Both must agree.
+    db_hash_hex: str = anchor_row["anchor_hash"].hex() if isinstance(anchor_row["anchor_hash"], (bytes, bytearray)) else anchor_row["anchor_hash"]
+
+    if expected_hex != db_hash_hex:
+        logger.error(
+            "audit_anchor: DB CHAIN INTEGRITY FAILURE stream=%s seq=%d expected=%s db_stored=%s",
+            stream_id, anchor_row["anchored_seq"], expected_hex, db_hash_hex,
+        )
+        return {
+            "stream_id": stream_id,
+            "ok": False,
+            "reason": "db_hash_mismatch",
+            "seq": anchor_row["anchored_seq"],
+            "expected": expected_hex,
+            "db_stored": db_hash_hex,
+        }
+
     if expected_hex != stored_hash_hex:
         logger.error(
-            "audit_anchor: CHAIN INTEGRITY FAILURE stream=%s seq=%d expected=%s stored=%s",
+            "audit_anchor: R2 CHAIN INTEGRITY FAILURE stream=%s seq=%d expected=%s r2_stored=%s",
             stream_id, anchor_row["anchored_seq"], expected_hex, stored_hash_hex,
         )
         return {
             "stream_id": stream_id,
             "ok": False,
-            "reason": "hash_mismatch",
+            "reason": "r2_hash_mismatch",
             "seq": anchor_row["anchored_seq"],
             "expected": expected_hex,
-            "stored": stored_hash_hex,
+            "r2_stored": stored_hash_hex,
         }
 
     return {
@@ -499,6 +538,12 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # BLOCK-3 fix: --no-quorum is a production security control bypass.
+    # Require explicit AUDIT_MAINTENANCE_MODE=1 to prevent accidental/malicious use
+    # via systemd overrides or CI scripts.
+    if args.no_quorum and os.environ.get("AUDIT_MAINTENANCE_MODE") != "1":
+        parser.error("--no-quorum requires AUDIT_MAINTENANCE_MODE=1 (set env var to enable)")
 
     _runner = run_once if args.no_quorum else run_with_quorum
 
