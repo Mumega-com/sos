@@ -164,10 +164,10 @@ Any service can declare sources. `sos-datalake` reads manifests and orchestrates
 On Mirror's engram table, add:
 
 ```sql
-ALTER TABLE engrams ADD COLUMN access_count INT DEFAULT 0;
-ALTER TABLE engrams ADD COLUMN last_accessed_at TIMESTAMPTZ;
-ALTER TABLE engrams ADD COLUMN corroboration_count INT DEFAULT 1;
-ALTER TABLE engrams ADD COLUMN weight NUMERIC DEFAULT 1.0;
+ALTER TABLE mirror_engrams ADD COLUMN access_count INT DEFAULT 0;
+ALTER TABLE mirror_engrams ADD COLUMN last_accessed_at TIMESTAMPTZ;
+ALTER TABLE mirror_engrams ADD COLUMN corroboration_count INT DEFAULT 1;
+ALTER TABLE mirror_engrams ADD COLUMN weight NUMERIC DEFAULT 1.0;
 ```
 
 - **`access_count`**: incremented on every retrieval.
@@ -184,9 +184,9 @@ Weight is **monotone-decreasing in time** if not re-accessed or re-corroborated.
 Today: `mirror-dreamer.timer` fires nightly. Runs consolidation. No pattern extraction, no archive-and-free.
 
 Add:
-- **Event trigger**: subscribe to `cortex-events` for signal `mirror.hot_store_threshold_exceeded`. When total engram count in hot store crosses N (e.g., 100k) or weighted sum crosses W, fire Dreamer.
+- **Event trigger**: subscribe to Redis channel `mirror.hot_store_threshold_exceeded` (the actual channel published by `mirror_api.py`; `cortex-events` is a separate SOS bus stream and is not the trigger surface here). When total engram count in hot store crosses N (e.g., 100k) or weighted sum crosses W, fire Dreamer.
 - **Pattern extraction**: Dreamer reads a cluster of low-weight engrams covering related topics, calls Sonnet to extract the pattern (the "what they taught us"), writes as a `type=pattern` node in Section 7's node table.
-- **Archive-and-free**: raw engrams whose pattern is now extracted get moved to cold storage (R2), FK preserved, but out of hot retrieval. Pattern node carries pointer back to archive.
+- **Archive-and-free**: raw engrams whose pattern is now extracted get moved to cold storage (R2), FK preserved, but out of hot retrieval. Pattern node carries pointer back to archive via `metadata.archive_r2_key` (the R2 object key, e.g. `archives/engrams/{year}/{month}/{pattern_id}.jsonl`). Kasra's Dreamer implementation must write this field when archiving.
 
 ### 4.5 Pattern Primitive (Spores)
 
