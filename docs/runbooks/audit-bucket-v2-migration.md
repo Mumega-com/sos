@@ -154,7 +154,7 @@ Decision pending Athena (open Q2 above). Recommend full re-anchor from earliest 
 
 Per Kasra's analysis (Q4): the `AUDIT_R2_OBJECT_LOCK=false` env var path is now dead code on v2 (the `retain` parameter no longer wires to anything since per-object headers were removed; bucket rule enforces COMPLIANCE regardless). Recommendation stands: **remove the env var + dead code path entirely**. Aligns with `feedback_silent_fail_open_at_contract_boundaries.md`: "the workaround should not be available once the structural fix is in place." The env var existing as a dead toggle suggests an operator can disable WORM, but they can't — the env var is now a lie.
 
-**Action for next sprint (Sprint 007 backlog):** clean up `sos/jobs/audit_anchor.py` to remove the `AUDIT_R2_OBJECT_LOCK` env var handling and the now-unused `retain` parameter. Make WORM-on-bucket the only supported behavior. If the per-object header is ever rejected by a future bucket configuration, the anchor service should fail loud, not fall back silently.
+**Status: DONE (commit 49acccfe, G51 GREEN).** The `AUDIT_R2_OBJECT_LOCK` env var and `retain` parameter were removed in the same commit that shipped the v2 migration. No S007 carry required — the structural fix and the workaround removal landed together. `_put_r2_object(s3_client, bucket, key, body)` signature is clean; bucket-level COMPLIANCE rule is the only WORM enforcement path.
 
 ### L5 — Build-before-brief inversion (Athena 21:28 UTC)
 
