@@ -61,8 +61,10 @@ SOS_SYSTEM_TOKEN     = os.environ.get('SOS_SYSTEM_TOKEN', 'sk-sos-system')
 MAX_POOL_SIZE        = int(os.environ.get('MAX_POOL_SIZE', '200'))
 # F-05: quest-flood DoS protection — cap quests per tick and bound matrix build time
 MAX_QUESTS_PER_TICK  = int(os.environ.get('MAX_QUESTS_PER_TICK', '100'))
-MATRIX_TIMEOUT_S     = int(os.environ.get('MATCHMAKER_MATRIX_TIMEOUT', '25'))
-_LIVE                = os.environ.get('MATCHMAKER_LIVE', '') == '1'
+MATRIX_TIMEOUT_S             = int(os.environ.get('MATCHMAKER_MATRIX_TIMEOUT', '25'))
+# BLOCK-2 fix: learning-loop ceiling so a hung process_outcomes cannot hold leader lock indefinitely
+PROCESS_OUTCOMES_TIMEOUT_S   = int(os.environ.get('PROCESS_OUTCOMES_TIMEOUT_S', '60'))
+_LIVE                        = os.environ.get('MATCHMAKER_LIVE', '') == '1'
 DRY_RUN              = not _LIVE
 # Sprint 006 A.1 (G50): dual-instance leader election via PG advisory lock
 INSTANCE_ID          = os.environ.get('MATCHMAKER_INSTANCE_ID', 'default')
@@ -327,8 +329,11 @@ def run_tick() -> dict:
 
     # ── Leader election (G50) ────────────────────────────────────────────────
     # Separate connection so the session lock outlives individual transactions.
-    lock_conn = _connect()
+    # BLOCK-1 fix: initialise to None so `finally` guard never raises UnboundLocalError
+    # if _connect() itself fails (DB unavailable).
+    lock_conn: 'psycopg2.extensions.connection | None' = None
     try:
+        lock_conn = _connect()
         if not _try_acquire_leader_lock(lock_conn):
             log.info(
                 'matchmaker[%s]: observer — leader lock held by another instance, exiting',
@@ -338,13 +343,25 @@ def run_tick() -> dict:
         stats['leader_acquired'] = True
         log.debug('matchmaker[%s]: leader lock acquired', INSTANCE_ID)
 
-        # Phase 0: learning loop — process pending outcomes before assigning new quests
+        # Phase 0: learning loop — process pending outcomes before assigning new quests.
+        # BLOCK-2 fix: bounded by PROCESS_OUTCOMES_TIMEOUT_S so a hung/deadlocked
+        # process_outcomes() cannot hold the leader lock indefinitely and starve dispatch.
+        _lo_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _lo_future = _lo_executor.submit(process_outcomes)
         try:
-            lo_stats = process_outcomes()
+            lo_stats = _lo_future.result(timeout=PROCESS_OUTCOMES_TIMEOUT_S)
             stats['outcomes_processed'] = lo_stats['processed']
             stats['vector_updates']     = lo_stats['vector_updates']
+        except concurrent.futures.TimeoutError:
+            log.warning(
+                'matchmaker: process_outcomes exceeded %ds ceiling — skipping learning loop '
+                'for this tick to release leader lock on schedule',
+                PROCESS_OUTCOMES_TIMEOUT_S,
+            )
         except Exception as exc:
             log.warning('matchmaker: learning loop error (non-fatal): %s', exc)
+        finally:
+            _lo_executor.shutdown(wait=False)
 
         with _connect() as conn:
             quests = _fetch_open_quests(conn)
