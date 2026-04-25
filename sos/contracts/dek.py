@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 import psycopg2
@@ -65,20 +67,40 @@ def _connect():
 
 # ── Vault helpers ──────────────────────────────────────────────────────────────
 
-# B.2: Module-level token cache — avoids AppRole login on every call.
-# Keys: 'token' (str), 'expires_at' (float, unix epoch), 'addr' (str).
-_vault_token_cache: dict = {}
+# G26 (F-08): Per-workspace token cache — isolates cache entries so a 403 on
+# workspace A does not evict workspace B's token.
+#
+# Cache key: workspace_id (str).
+# Each entry: {'token', 'addr', 'expires_at', 'request_id'}.
+# request_id tags the entry at insertion — eviction on 403 only removes the
+# entry if its request_id matches the one that triggered the 403, preventing
+# a concurrent fresh login for the same workspace from being evicted.
+#
+# LRU eviction: when cache exceeds VAULT_CACHE_PER_WORKSPACE entries, the
+# least-recently-used workspace entry is evicted. This bounds memory growth
+# if many workspaces are accessed.
+#
+# TODO Sprint 006: add proactive invalidation on workspace suspension.
+
+VAULT_CACHE_PER_WORKSPACE: int = int(os.environ.get('VAULT_CACHE_PER_WORKSPACE', '100'))
+
+_vault_token_cache: OrderedDict[str, dict] = OrderedDict()
+_vault_cache_lock = threading.Lock()
 
 _VAULT_TOKEN_TTL = 3500      # seconds — slightly under Vault default 1hr lease
 _VAULT_TOKEN_BUFFER = 30     # seconds — refresh this early to avoid edge expiry
 
 
-def _vault_client(*, _skip_cache: bool = False):
-    """Return an authenticated hvac Vault client via AppRole.
+def _vault_client(workspace_id: str, *, _skip_cache: bool = False) -> tuple:
+    """Return (hvac.Client, request_id) for the given workspace via AppRole.
 
-    B.2: Token is cached for ~1 hr (VAULT_TOKEN_TTL). The cache is keyed
-    implicitly — any addr change clears it via the 'addr' field mismatch.
-    Call with _skip_cache=True to force a fresh login (used after 403).
+    G26 (F-08): Token is cached per workspace_id in an LRU OrderedDict
+    (max VAULT_CACHE_PER_WORKSPACE entries). Returns the cached entry's
+    request_id so callers can call _evict_workspace_token() with the right
+    request_id on a 403 — preventing concurrent requests from evicting each
+    other's tokens.
+
+    Call with _skip_cache=True to force a fresh login (used after 403 eviction).
     """
     import hvac
 
@@ -90,18 +112,20 @@ def _vault_client(*, _skip_cache: bool = False):
         raise RuntimeError('VAULT_ROLE_ID and VAULT_SECRET_ID must be set')
 
     now = time.monotonic()
-    cached = _vault_token_cache
 
-    # Reuse cached token if still valid (not skipping, same addr, not near expiry)
-    if (
-        not _skip_cache
-        and cached.get('token')
-        and cached.get('addr') == addr
-        and cached.get('expires_at', 0) > now + _VAULT_TOKEN_BUFFER
-    ):
-        client = hvac.Client(url=addr)
-        client.token = cached['token']
-        return client
+    if not _skip_cache:
+        with _vault_cache_lock:
+            cached = _vault_token_cache.get(workspace_id)
+            if (
+                cached
+                and cached.get('addr') == addr
+                and cached.get('expires_at', 0) > now + _VAULT_TOKEN_BUFFER
+            ):
+                # Move to end (LRU — most recently used)
+                _vault_token_cache.move_to_end(workspace_id)
+                client = hvac.Client(url=addr)
+                client.token = cached['token']
+                return client, cached['request_id']
 
     # Fresh AppRole login
     client = hvac.Client(url=addr)
@@ -111,18 +135,40 @@ def _vault_client(*, _skip_cache: bool = False):
     if not client.is_authenticated():
         raise RuntimeError('Vault AppRole authentication failed')
 
-    # Store in cache
-    _vault_token_cache.clear()
-    _vault_token_cache['token'] = client.token
-    _vault_token_cache['addr'] = addr
-    _vault_token_cache['expires_at'] = now + _VAULT_TOKEN_TTL
+    new_req_id = str(uuid.uuid4())
+    entry = {
+        'token': client.token,
+        'addr': addr,
+        'expires_at': now + _VAULT_TOKEN_TTL,
+        'request_id': new_req_id,
+    }
 
-    return client
+    with _vault_cache_lock:
+        _vault_token_cache[workspace_id] = entry
+        _vault_token_cache.move_to_end(workspace_id)
+        # LRU eviction — evict oldest entry if over limit
+        while len(_vault_token_cache) > VAULT_CACHE_PER_WORKSPACE:
+            _vault_token_cache.popitem(last=False)
+
+    return client, new_req_id
 
 
-def _clear_vault_token_cache() -> None:
-    """Evict the cached Vault token (called on 403 Forbidden)."""
-    _vault_token_cache.clear()
+def _evict_workspace_token(workspace_id: str, request_id: str) -> None:
+    """Evict the cache entry for workspace_id only if it still carries request_id.
+
+    G26 (F-08): A concurrent request may have already refreshed the entry with
+    a new request_id. In that case, we do NOT evict — the fresh entry is valid.
+    Only evict if this is still the same entry that triggered the 403.
+    Logs at WARNING with workspace_id and request_id.
+    """
+    with _vault_cache_lock:
+        entry = _vault_token_cache.get(workspace_id)
+        if entry and entry.get('request_id') == request_id:
+            del _vault_token_cache[workspace_id]
+            log.warning(
+                'Vault token cache evicted: workspace_id=%s request_id=%s',
+                workspace_id, request_id,
+            )
 
 
 def _kek_vault_path(workspace_id: str) -> str:
@@ -135,24 +181,27 @@ def _read_kek(workspace_id: str) -> tuple[bytes, int]:
     Returns (kek_bytes, version_number).  Version is captured here so
     rotate_workspace_key() can destroy the old version after re-wrapping (B.3).
 
-    B.2: On 403 Forbidden, evicts the token cache and retries once with a
-    fresh AppRole login.
+    G26 (F-08): On 403 Forbidden, evicts only this workspace's cache entry
+    (not the global cache) and retries once with a fresh AppRole login.
+    Other workspaces' cached tokens are unaffected.
     """
     path = _kek_vault_path(workspace_id)
 
-    def _do_read(skip_cache: bool) -> dict:
-        client = _vault_client(_skip_cache=skip_cache)
-        return client.secrets.kv.v2.read_secret_version(path=path, mount_point='sos')
-
     try:
+        client, req_id = _vault_client(workspace_id)
         try:
-            resp = _do_read(skip_cache=False)
+            resp = client.secrets.kv.v2.read_secret_version(path=path, mount_point='sos')
         except Exception as exc:
-            # Detect 403/Forbidden — evict cache and retry once
+            # Detect 403/Forbidden — evict only this workspace's entry and retry once
             if '403' in str(exc) or 'Forbidden' in str(exc):
-                log.warning('Vault 403 on KEK read — evicting token cache and retrying')
-                _clear_vault_token_cache()
-                resp = _do_read(skip_cache=True)
+                log.warning(
+                    'Vault 403 on KEK read — evicting workspace token and retrying '
+                    '(workspace_id=%s request_id=%s)',
+                    workspace_id, req_id,
+                )
+                _evict_workspace_token(workspace_id, req_id)
+                client, _ = _vault_client(workspace_id, _skip_cache=True)
+                resp = client.secrets.kv.v2.read_secret_version(path=path, mount_point='sos')
             else:
                 raise
         hex_key = resp['data']['data']['value']
@@ -164,7 +213,7 @@ def _read_kek(workspace_id: str) -> tuple[bytes, int]:
 
 def _write_kek(workspace_id: str, kek_bytes: bytes) -> str:
     """Write a new KEK to Vault. Returns the Vault path."""
-    client = _vault_client()
+    client, _ = _vault_client(workspace_id)
     path = _kek_vault_path(workspace_id)
     client.secrets.kv.v2.create_or_update_secret(
         path=path,
@@ -419,7 +468,7 @@ def rotate_workspace_key(workspace_id: str, *, caller_id: str = 'system') -> Non
     # itself succeeded and the old version is already unreachable via the updated
     # kek_ref.  A follow-up cleanup job can retry if needed.
     try:
-        client = _vault_client()
+        client, _ = _vault_client(workspace_id)
         path = _kek_vault_path(workspace_id)
         client.secrets.kv.v2.destroy_secret_versions(
             path=path,

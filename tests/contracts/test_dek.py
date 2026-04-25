@@ -132,7 +132,7 @@ class TestEncryptDecrypt:
         plaintext = b'sensitive-engram-body'
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import decrypt, encrypt
 
             blob = encrypt(plaintext, 'workspace-acme')
@@ -146,7 +146,7 @@ class TestEncryptDecrypt:
         vault = _make_vault_client_mock(kek_hex=kek_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import encrypt
             blob = encrypt(b'do not store me plain', 'workspace-acme')
 
@@ -162,7 +162,7 @@ class TestEncryptDecrypt:
         vault_a = _make_vault_client_mock(kek_hex=kek_a_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn_a), \
-             patch('sos.contracts.dek._vault_client', return_value=vault_a):
+             patch('sos.contracts.dek._vault_client', return_value=(vault_a, 'req-a')):
             from sos.contracts.dek import encrypt
             blob = encrypt(b'secret-a', 'workspace-a')
 
@@ -171,7 +171,7 @@ class TestEncryptDecrypt:
         vault_b = _make_vault_client_mock(kek_hex=kek_b_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn_b), \
-             patch('sos.contracts.dek._vault_client', return_value=vault_b):
+             patch('sos.contracts.dek._vault_client', return_value=(vault_b, 'req-b')):
             from sos.contracts.dek import decrypt
             with pytest.raises(ValueError, match='Decryption failed'):
                 decrypt(blob, 'workspace-b')
@@ -189,7 +189,7 @@ class TestEncryptDecrypt:
         vault = _make_vault_client_mock(kek_hex=kek_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import decrypt
             with pytest.raises(ValueError, match='too short'):
                 decrypt(b'tooshort', 'workspace-acme')
@@ -213,7 +213,7 @@ class TestProvision:
         vault = _make_vault_client_mock()
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import provision_workspace_key
             provision_workspace_key('workspace-new')
 
@@ -228,7 +228,7 @@ class TestProvision:
         vault = _make_vault_client_mock()
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import provision_workspace_key
             with pytest.raises(ValueError, match='already has a DEK'):
                 provision_workspace_key('workspace-exists')
@@ -265,7 +265,7 @@ class TestRotation:
         vault = _make_vault_client_mock(kek_hex=kek_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import rotate_workspace_key
             rotate_workspace_key('acme')
 
@@ -291,7 +291,7 @@ class TestRotation:
         vault = _make_vault_client_mock(kek_hex=kek_hex)
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import rotate_workspace_key
             rotate_workspace_key('acme')
 
@@ -309,32 +309,29 @@ class TestRotation:
         return kek.hex(), wrapped
 
 
-# ── B.2 Vault token cache ─────────────────────────────────────────────────────
+# ── B.2 / G26 Vault token cache ───────────────────────────────────────────────
 
 
 class TestVaultTokenCache:
     def setup_method(self) -> None:
-        """Clear the module-level cache before each test."""
+        """Clear the per-workspace cache before each test."""
         import sos.contracts.dek as dek_mod
         dek_mod._vault_token_cache.clear()
 
     def test_cached_token_reused_on_second_call(self) -> None:
-        """B.2: Second call to _vault_client() reuses the cached token without re-logging in.
-
-        We test this by pre-populating the cache with a valid (non-expired) token
-        and asserting that _vault_client() returns a client carrying that same token
-        without performing an AppRole login.
-        """
+        """G26: Second call for same workspace reuses the cached token (no re-login)."""
         import time
 
         import sos.contracts.dek as dek_mod
 
-        # Pre-populate a valid cache entry
-        dek_mod._vault_token_cache['token'] = 'cached-tok-xyz'
-        dek_mod._vault_token_cache['addr'] = 'http://127.0.0.1:8200'
-        dek_mod._vault_token_cache['expires_at'] = time.monotonic() + 3000  # well in future
+        # Pre-populate a valid per-workspace cache entry
+        dek_mod._vault_token_cache['ws-a'] = {
+            'token': 'cached-tok-xyz',
+            'addr': 'http://127.0.0.1:8200',
+            'expires_at': time.monotonic() + 3000,
+            'request_id': 'cached-req-abc',
+        }
 
-        # We track login calls via a mock on the approle.login path
         login_mock = MagicMock(return_value={'auth': {'client_token': 'should-not-see'}})
         fake_client = MagicMock()
         fake_client.is_authenticated.return_value = True
@@ -342,23 +339,27 @@ class TestVaultTokenCache:
 
         with patch('hvac.Client', return_value=fake_client):
             from sos.contracts.dek import _vault_client
-            client = _vault_client()
+            client, req_id = _vault_client('ws-a')
 
-        # Token must be the cached one
+        # Token must be the cached one, request_id must match cached entry
         assert client.token == 'cached-tok-xyz'
+        assert req_id == 'cached-req-abc'
         # AppRole login must NOT have been called
         login_mock.assert_not_called()
 
     def test_expired_cache_triggers_fresh_login(self) -> None:
-        """B.2: An expired cache entry causes a new AppRole login and updates the cache."""
+        """G26: An expired cache entry causes a new AppRole login and updates the cache."""
         import time
 
         import sos.contracts.dek as dek_mod
 
-        # Pre-populate cache with an already-expired entry
-        dek_mod._vault_token_cache['token'] = 'old-tok'
-        dek_mod._vault_token_cache['addr'] = 'http://127.0.0.1:8200'
-        dek_mod._vault_token_cache['expires_at'] = time.monotonic() - 1  # already expired
+        # Pre-populate cache with an already-expired entry for 'ws-a'
+        dek_mod._vault_token_cache['ws-a'] = {
+            'token': 'old-tok',
+            'addr': 'http://127.0.0.1:8200',
+            'expires_at': time.monotonic() - 1,
+            'request_id': 'old-req',
+        }
 
         login_mock = MagicMock(return_value={'auth': {'client_token': 'fresh-tok'}})
         fake_client = MagicMock()
@@ -367,12 +368,145 @@ class TestVaultTokenCache:
 
         with patch('hvac.Client', return_value=fake_client):
             from sos.contracts.dek import _vault_client
-            client = _vault_client()
+            client, req_id = _vault_client('ws-a')
 
         # A fresh login must have been performed
         login_mock.assert_called_once()
-        # Cache must now hold the fresh token
-        assert dek_mod._vault_token_cache.get('token') == 'fresh-tok'
+        # Cache must now hold the fresh token under workspace key
+        assert dek_mod._vault_token_cache['ws-a']['token'] == 'fresh-tok'
+        # New request_id is a UUID (different from 'old-req')
+        assert req_id != 'old-req'
+
+
+# ── TC-G26 per-workspace cache isolation ─────────────────────────────────────
+
+
+class TestG26Cache:
+    """G26 (F-08): per-workspace Vault token cache isolation tests."""
+
+    def setup_method(self) -> None:
+        import sos.contracts.dek as dek_mod
+        dek_mod._vault_token_cache.clear()
+
+    def test_tc_g26a_403_on_workspace_a_preserves_workspace_b(self) -> None:
+        """TC-G26a: 403 on workspace A evicts A's entry; B's entry survives."""
+        import time
+
+        import sos.contracts.dek as dek_mod
+
+        # Pre-populate B with a valid token
+        dek_mod._vault_token_cache['ws-b'] = {
+            'token': 'tok-b',
+            'addr': 'http://127.0.0.1:8200',
+            'expires_at': time.monotonic() + 3000,
+            'request_id': 'req-b-original',
+        }
+
+        # Pre-populate A with its token
+        dek_mod._vault_token_cache['ws-a'] = {
+            'token': 'tok-a',
+            'addr': 'http://127.0.0.1:8200',
+            'expires_at': time.monotonic() + 3000,
+            'request_id': 'req-a-original',
+        }
+
+        # Simulate 403 eviction for workspace A with req-a-original
+        from sos.contracts.dek import _evict_workspace_token
+        _evict_workspace_token('ws-a', 'req-a-original')
+
+        # A's entry is gone
+        assert 'ws-a' not in dek_mod._vault_token_cache
+        # B's entry is intact
+        assert dek_mod._vault_token_cache.get('ws-b', {}).get('token') == 'tok-b'
+
+    def test_tc_g26a_eviction_wrong_request_id_leaves_entry(self) -> None:
+        """TC-G26a: Eviction with stale request_id does NOT evict fresh entry.
+
+        Simulates: workspace A gets a 403, concurrent request already refreshed
+        the cache with a new request_id — the 403-triggered eviction must not
+        evict the new entry.
+        """
+        import time
+
+        import sos.contracts.dek as dek_mod
+
+        # Cache has been refreshed (new request_id)
+        dek_mod._vault_token_cache['ws-a'] = {
+            'token': 'tok-a-fresh',
+            'addr': 'http://127.0.0.1:8200',
+            'expires_at': time.monotonic() + 3000,
+            'request_id': 'req-a-new',
+        }
+
+        # Eviction attempt with OLD request_id — should be a no-op
+        from sos.contracts.dek import _evict_workspace_token
+        _evict_workspace_token('ws-a', 'req-a-stale')
+
+        # Fresh entry must survive
+        assert dek_mod._vault_token_cache.get('ws-a', {}).get('token') == 'tok-a-fresh'
+
+    def test_tc_g26b_cache_key_uniqueness_across_workspaces(self) -> None:
+        """TC-G26b: Rapid writes for A/B/C/D — each key stored separately, no overwrite."""
+        import time
+
+        import sos.contracts.dek as dek_mod
+
+        workspaces = ['ws-a', 'ws-b', 'ws-c', 'ws-d']
+        tokens = {ws: f'tok-{ws}' for ws in workspaces}
+
+        for ws in workspaces:
+            dek_mod._vault_token_cache[ws] = {
+                'token': tokens[ws],
+                'addr': 'http://127.0.0.1:8200',
+                'expires_at': time.monotonic() + 3000,
+                'request_id': f'req-{ws}',
+            }
+
+        # Verify all 4 entries exist with their own tokens
+        for ws in workspaces:
+            assert dek_mod._vault_token_cache[ws]['token'] == tokens[ws], (
+                f'{ws} token overwritten by another workspace'
+            )
+
+    def test_tc_g26c_lru_eviction_bounded_by_vault_cache_per_workspace(self) -> None:
+        """TC-G26c: Cache size bounded — fill to VAULT_CACHE_PER_WORKSPACE + 1,
+        assert oldest entry evicted (LRU) without affecting newer entries.
+        """
+        import time
+
+        import sos.contracts.dek as dek_mod
+
+        # Set a small limit for testing
+        original_limit = dek_mod.VAULT_CACHE_PER_WORKSPACE
+        dek_mod.VAULT_CACHE_PER_WORKSPACE = 3
+        try:
+            login_mock = MagicMock(
+                side_effect=[
+                    {'auth': {'client_token': f'tok-ws-{i}'}} for i in range(5)
+                ]
+            )
+            fake_client = MagicMock()
+            fake_client.is_authenticated.return_value = True
+            fake_client.auth.approle.login = login_mock
+
+            with patch('hvac.Client', return_value=fake_client):
+                from sos.contracts.dek import _vault_client
+                # Fill cache with 3 workspaces (fills to limit)
+                _vault_client('ws-1')
+                _vault_client('ws-2')
+                _vault_client('ws-3')
+
+                # Cache is at limit — adding ws-4 must evict oldest (ws-1)
+                _vault_client('ws-4')
+
+            # ws-1 (oldest) should have been evicted
+            assert 'ws-1' not in dek_mod._vault_token_cache
+            # ws-2, ws-3, ws-4 should remain
+            assert 'ws-2' in dek_mod._vault_token_cache
+            assert 'ws-3' in dek_mod._vault_token_cache
+            assert 'ws-4' in dek_mod._vault_token_cache
+        finally:
+            dek_mod.VAULT_CACHE_PER_WORKSPACE = original_limit
 
 
 # ── B.4 TOCTOU ON CONFLICT ───────────────────────────────────────────────────
@@ -394,7 +528,7 @@ class TestProvisionTOCTOU:
         vault = _make_vault_client_mock()
 
         with patch('sos.contracts.dek._connect', return_value=conn), \
-             patch('sos.contracts.dek._vault_client', return_value=vault):
+             patch('sos.contracts.dek._vault_client', return_value=(vault, 'test-req-id')):
             from sos.contracts.dek import provision_workspace_key
             with pytest.raises(ValueError, match='concurrent race'):
                 provision_workspace_key('workspace-race')
