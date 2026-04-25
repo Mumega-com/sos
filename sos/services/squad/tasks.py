@@ -21,12 +21,29 @@ from sos.services.squad.service import DEFAULT_TENANT_ID, SquadBus, SquadDB, now
 
 log = get_logger("squad_tasks")
 
+# Env-overridable TTL for claimed tasks — allows fast cycling in tests (CLAIM_TTL_SECONDS=5).
+# Production default: 1 hour. Operators MUST set to ≥2× max observed task duration.
+CLAIM_TTL_SECONDS: int = int(os.getenv("CLAIM_TTL_SECONDS", "3600"))
+
+# Instance identity — disambiguates PID-reuse across restarts in dual-instance HA.
+SQUAD_INSTANCE_ID: str = os.getenv("SQUAD_INSTANCE_ID", "squad-default")
+
 
 class NotAllDoneError(ValueError):
     """Raised when a SquadTask's ``done_when`` gate is not satisfied on /complete.
 
     Distinct from ValueError so the app layer can map it to HTTP 400
     (client mis-submitted) rather than 409 (concurrent-state conflict).
+    """
+
+
+class ClaimTokenMismatchError(ValueError):
+    """Raised when a presented claim_token does not match the task's current token.
+
+    Indicates the task was re-claimed (TTL expiry) by another instance after the
+    original owner obtained its token. Distinct from ValueError so the app layer
+    can map it to HTTP 409 with a descriptive body (Kleppmann fencing token pattern,
+    Sprint 006 A.3 / G72 §2 #11b).
     """
 
 
@@ -563,6 +580,49 @@ class SquadTaskService:
     ) -> TaskClaim:
         claimed_at = now_iso()
         with self.db.connect() as conn:
+            # Option B TTL pre-transition (Sprint 006 A.3 / G72 §2 #9a):
+            # Transition TTL-expired 'claimed' tasks to 'backlog' BEFORE the main CAS.
+            # This makes them visible to the CAS via status IN ('backlog', 'queued').
+            # Without this, SELECT finds TTL-eligible tasks but CAS UPDATE rejects them
+            # (status='claimed' not in ('backlog', 'queued')) — silent failure (BLOCK-4).
+            _ttl_expired = conn.execute(
+                """SELECT id, squad_id, claim_owner_pid, claim_owner_acquired_at
+                   FROM squad_tasks
+                   WHERE status = ? AND claim_owner_acquired_at IS NOT NULL
+                     AND claim_owner_acquired_at < datetime('now', '-' || ? || ' seconds')""",
+                (TaskStatus.CLAIMED.value, str(CLAIM_TTL_SECONDS)),
+            ).fetchall()
+            for _expired in _ttl_expired:
+                _reset = conn.execute(
+                    """UPDATE squad_tasks SET status = ?, assignee = NULL,
+                           claim_token = NULL, updated_at = ?
+                       WHERE id = ? AND status = ?""",
+                    (TaskStatus.BACKLOG.value, claimed_at, _expired["id"], TaskStatus.CLAIMED.value),
+                )
+                if _reset.rowcount == 1:
+                    log.warn(
+                        f"squad.claim: TTL-expired task {_expired['id']} reset to backlog "
+                        f"(owner_pid={_expired['claim_owner_pid']}, "
+                        f"acquired_at={_expired['claim_owner_acquired_at']}, ttl={CLAIM_TTL_SECONDS}s)"
+                    )
+                    try:
+                        from sos.observability.sprint_telemetry import emit_claim_ttl_reclaim
+                        emit_claim_ttl_reclaim(
+                            task_id=_expired["id"],
+                            prior_owner_pid=_expired["claim_owner_pid"],
+                            new_owner_pid=os.getpid(),
+                            age_seconds=CLAIM_TTL_SECONDS,
+                        )
+                    except Exception:
+                        pass
+                    self.bus.emit(
+                        "task.requeued",
+                        _expired["squad_id"],
+                        "system",
+                        {"task_id": _expired["id"], "reason": "claim_ttl_expired",
+                         "prior_pid": _expired["claim_owner_pid"]},
+                    )
+
             if tenant_id is None:
                 row = conn.execute("SELECT * FROM squad_tasks WHERE id = ?", (task_id,)).fetchone()
             else:
@@ -589,11 +649,13 @@ class SquadTaskService:
                         estimated_cost_cents=estimated_cents,
                     )
             new_attempt = task.attempt + 1
+            new_claim_token = str(_uuid.uuid4())
             updated = conn.execute(
                 """
                 UPDATE squad_tasks
                 SET assignee = ?, status = ?, claimed_at = ?, updated_at = ?,
-                    attempt = ?, claim_owner_pid = ?
+                    attempt = ?, claim_owner_pid = ?,
+                    claim_owner_instance = ?, claim_owner_acquired_at = ?, claim_token = ?
                 WHERE id = ? AND tenant_id = ? AND attempt = ? AND status IN (?, ?)
                 """,
                 (
@@ -603,6 +665,9 @@ class SquadTaskService:
                     claimed_at,
                     new_attempt,
                     os.getpid(),
+                    SQUAD_INSTANCE_ID,
+                    claimed_at,
+                    new_claim_token,
                     task_id,
                     tenant_id if tenant_id is not None else DEFAULT_TENANT_ID,
                     attempt,
@@ -612,7 +677,13 @@ class SquadTaskService:
             )
             if updated.rowcount != 1:
                 raise ValueError(f"Task {task_id} was claimed concurrently")
-        claim = TaskClaim(task_id=task_id, assignee=assignee, claimed_at=claimed_at, attempt=new_attempt)
+        claim = TaskClaim(
+            task_id=task_id,
+            assignee=assignee,
+            claimed_at=claimed_at,
+            attempt=new_attempt,
+            claim_token=new_claim_token,
+        )
         self.bus.emit("task.claimed", task.squad_id, actor or assignee, asdict(claim))
         return claim
 
@@ -622,7 +693,25 @@ class SquadTaskService:
         result: dict[str, Any],
         actor: str = "system",
         tenant_id: str | None = DEFAULT_TENANT_ID,
+        claim_token: str | None = None,
     ) -> SquadTask:
+        # Fencing token verification — Kleppmann pattern (Sprint 006 A.3 / G72 §2 #11b).
+        # If a claim_token is presented, verify it matches the current token on the task row.
+        # A stale token means another instance has re-claimed the task after TTL expiry.
+        if claim_token is not None:
+            with self.db.connect() as conn:
+                _token_row = conn.execute(
+                    "SELECT claim_token FROM squad_tasks WHERE id = ? AND tenant_id = ?",
+                    (task_id, tenant_id if tenant_id is not None else DEFAULT_TENANT_ID),
+                ).fetchone()
+            if _token_row is None:
+                raise KeyError(f"Task not found: {task_id}")
+            stored_token = _token_row["claim_token"] if _token_row else None
+            if stored_token != claim_token:
+                raise ClaimTokenMismatchError(
+                    f"claim_token invalid for task {task_id} — "
+                    "task has been re-claimed by another owner"
+                )
         task = self.get(task_id, tenant_id=tenant_id)
         if not task:
             raise KeyError(f"Task not found: {task_id}")

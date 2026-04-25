@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
@@ -39,7 +40,7 @@ from sos.services.squad.auth import AuthContext, create_api_key as _create_api_k
 from sos.services.squad.auth import _lookup_token as _squad_lookup_token
 from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
-from sos.services.squad.tasks import InsufficientFundsError, NotAllDoneError
+from sos.services.squad.tasks import ClaimTokenMismatchError, InsufficientFundsError, NotAllDoneError
 from sos.services.squad.kpis import KPISnapshot, calculate_kpis
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit
@@ -51,6 +52,7 @@ app = FastAPI(title="SOS Squad Service", version=__version__)
 instrument_fastapi(app)
 
 _START_TIME = time.time()
+_last_squad_health_status: str | None = None
 
 squads = SquadService()
 tasks = SquadTaskService()
@@ -152,6 +154,7 @@ class RouteIn(BaseModel):
 
 class CompleteIn(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
+    claim_token: Optional[str] = None
 
 
 class FailIn(BaseModel):
@@ -219,8 +222,56 @@ def _to_task(payload: SquadTaskIn) -> SquadTask:
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
-    return health_response("squad", _START_TIME)
+async def health() -> JSONResponse:
+    """G71-canonical health check — disposable SQLite SELECT 1 ping.
+
+    Returns 200 with db_reachable=True on healthy, 503 on unhealthy.
+    Transition-only emit via _last_squad_health_status module-level state.
+    """
+    global _last_squad_health_status
+    import sqlite3 as _sqlite3
+    from sos.kernel.config import DB_PATH
+    from sos.services.squad.tasks import SQUAD_INSTANCE_ID
+
+    t0 = time.perf_counter()
+    db_reachable = False
+    db_reachable_ms = 0.0
+    reason: str | None = None
+    try:
+        _conn = _sqlite3.connect(str(DB_PATH), timeout=1.0)
+        _conn.execute("SELECT 1")
+        _conn.close()
+        db_reachable = True
+    except Exception as exc:
+        reason = str(exc)
+    db_reachable_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    new_status = "healthy" if db_reachable else "unhealthy"
+    body: dict[str, Any] = {
+        "status": new_status,
+        "db_reachable": db_reachable,
+        "instance_id": SQUAD_INSTANCE_ID,
+        "db_reachable_ms": db_reachable_ms,
+    }
+    if reason:
+        body["reason"] = reason
+
+    if new_status != _last_squad_health_status:
+        prev = _last_squad_health_status or "unknown"
+        _last_squad_health_status = new_status
+        try:
+            from sos.observability.sprint_telemetry import emit_squad_health
+            emit_squad_health(
+                instance_id=SQUAD_INSTANCE_ID,
+                prev_status=prev,
+                new_status=new_status,
+                db_reachable_ms=db_reachable_ms,
+            )
+        except Exception:
+            pass
+
+    status_code = 200 if db_reachable else 503
+    return JSONResponse(status_code=status_code, content=body)
 
 
 _SYSTEM_BEARER = os.getenv("SOS_SYSTEM_TOKEN", "sk-sos-system")
@@ -585,9 +636,15 @@ async def complete_task(
 
     async def _do() -> dict[str, Any]:
         try:
-            task = tasks.complete(task_id, payload.result, tenant_id=auth.tenant_scope)
+            task = tasks.complete(
+                task_id, payload.result,
+                tenant_id=auth.tenant_scope,
+                claim_token=payload.claim_token,
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail="task_not_found")
+        except ClaimTokenMismatchError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except NotAllDoneError as exc:
             # done_when gate refused — client needs to tick the remaining
             # checks before retrying. 400 (bad request) not 409 (state

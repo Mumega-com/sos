@@ -145,6 +145,7 @@ class TaskClaim:
     assignee: str
     claimed_at: str
     attempt: int
+    claim_token: Optional[str] = None
 
 
 @dataclass
