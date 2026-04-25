@@ -32,6 +32,7 @@ from sos.contracts.sso import (
     add_group_role_map,
     audit_idp_ceiling_violations,
     build_oidc_auth_url,
+    cleanup_mfa_used_codes,
     create_idp,
     disable_mfa_method,
     enroll_totp,
@@ -1194,3 +1195,110 @@ class TestScimSoftNotes:
 
         # set_principal_status('active') must be called for re-provisioned deprovisioned user
         mock_set_status.assert_called_once_with('pid-1', 'active', updated_by='scim:idp-1')
+
+
+# ── Unit: G62 MFA flood quota + cleanup job ───────────────────────────────────
+
+
+class TestMfaFloodQuota:
+    """TC-G62: Per-principal MFA INSERT flood quota + cleanup_mfa_used_codes().
+
+    All tests are unit-level (no DB required) — they mock _connect so the
+    quota check and INSERT calls are verified without a real database.
+    """
+
+    def _mock_conn(self, count: int) -> 'MagicMock':
+        """Return a mock psycopg2 connection whose cursor returns `count` for COUNT query."""
+        from unittest.mock import MagicMock
+        mock_cur = MagicMock()
+        mock_cur.fetchone.return_value = {'cnt': count}
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+        return mock_conn
+
+    def test_tc_g62a_flood_quota_blocks_at_limit(self) -> None:
+        """TC-G62a: verify_totp returns False when per-principal count = quota limit."""
+        from unittest.mock import patch, MagicMock
+        import sos.contracts.sso as sso_mod
+
+        quota = sso_mod._MFA_FLOOD_QUOTA_PER_5MIN
+        mock_conn = self._mock_conn(count=quota)  # exactly at the limit
+
+        with patch('sos.contracts.sso._get_totp_secret_ref', return_value='local:pid:default'), \
+             patch('sos.contracts.sso._resolve_totp_secret', return_value='JBSWY3DPEHPK3PXP'), \
+             patch('sos.contracts.sso._totp_window_start', return_value=1_700_000_000), \
+             patch('sos.contracts.sso._totp_code_hash', return_value=b'\x00' * 32), \
+             patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = sso_mod.verify_totp('pid', '123456')
+
+        assert result is False
+
+    def test_tc_g62b_flood_quota_passes_below_limit(self) -> None:
+        """TC-G62b: verify_totp proceeds to INSERT when count < quota limit."""
+        from unittest.mock import patch, MagicMock, call
+        import sos.contracts.sso as sso_mod
+
+        quota = sso_mod._MFA_FLOOD_QUOTA_PER_5MIN
+        mock_conn = self._mock_conn(count=quota - 1)  # one below limit
+
+        with patch('sos.contracts.sso._get_totp_secret_ref', return_value='local:pid:default'), \
+             patch('sos.contracts.sso._resolve_totp_secret', return_value='JBSWY3DPEHPK3PXP'), \
+             patch('sos.contracts.sso._totp_window_start', return_value=1_700_000_000), \
+             patch('sos.contracts.sso._totp_code_hash', return_value=b'\x00' * 32), \
+             patch('sos.contracts.sso._update_mfa_last_used'), \
+             patch('sos.contracts.sso._connect', return_value=mock_conn):
+            result = sso_mod.verify_totp('pid', '123456')
+
+        # INSERT must have been called (second cursor.execute call)
+        cur = mock_conn.cursor.return_value.__enter__.return_value
+        assert cur.execute.call_count == 2, (
+            f'Expected 2 cursor.execute calls (COUNT + INSERT), got {cur.execute.call_count}'
+        )
+        assert result is True
+
+    def test_tc_g62c_cleanup_returns_rowcount(self) -> None:
+        """TC-G62c: cleanup_mfa_used_codes() issues DELETE and returns rows deleted."""
+        from unittest.mock import patch, MagicMock
+
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 7
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            deleted = cleanup_mfa_used_codes()
+
+        assert deleted == 7
+        # Verify the DELETE was sent
+        call_sql = mock_cur.execute.call_args[0][0]
+        assert 'DELETE FROM mfa_used_codes' in call_sql
+        assert '5 minutes' in call_sql
+
+    def test_tc_g62d_cleanup_zero_returns_zero(self) -> None:
+        """TC-G62d: cleanup_mfa_used_codes() returns 0 when nothing to delete."""
+        from unittest.mock import patch, MagicMock
+
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 0
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+
+        with patch('sos.contracts.sso._connect', return_value=mock_conn):
+            deleted = cleanup_mfa_used_codes()
+
+        assert deleted == 0

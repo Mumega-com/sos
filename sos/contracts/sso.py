@@ -58,6 +58,13 @@ log = logging.getLogger(__name__)
 # ── Dev mode: local TOTP secret store (skip Vault) ────────────────────────────
 _LOCAL_TOTP_STORE: dict[str, str] = {}   # ref → base32 secret; in-process only
 
+# ── MFA flood-quota constants (G62) ───────────────────────────────────────────
+# Maximum number of mfa_used_codes INSERTs allowed per principal within the
+# 5-minute cleanup window. Real users submit ≤ 3 codes in any 5-min span
+# (one per 30-sec TOTP window). 20 is generous enough to survive test suites
+# but caps ledger exhaustion from an attacker who holds the shared secret.
+_MFA_FLOOD_QUOTA_PER_5MIN: int = 20
+
 
 def _totp_dev_mode() -> bool:
     """Checked at call time so tests can set SOS_TOTP_STORE=local after import."""
@@ -1262,10 +1269,33 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
     # Replay ledger: INSERT with PK — duplicate fails atomically.
     # The PK resolves the race between two concurrent requests with the same
     # code: both can pass the time-window check, but only one INSERT wins.
+    #
+    # G62: flood quota check runs in the same DB round-trip as the INSERT to
+    # avoid an extra connection. We count this principal's existing rows in the
+    # last 5 minutes before inserting. A marginal TOCTOU race (two concurrent
+    # requests both read quota-19) is acceptable — the window is tiny and the
+    # goal is unbounded-table prevention, not strict per-request rate limiting.
     code_hash = _totp_code_hash(principal_id, code, time_window_start)
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
+                # G62: check flood quota before inserting
+                cur.execute(
+                    """SELECT COUNT(*) AS cnt FROM mfa_used_codes
+                         WHERE principal_id = %s
+                           AND used_at > now() - interval '5 minutes'""",
+                    (principal_id,),
+                )
+                quota_row = cur.fetchone()
+                current_count = quota_row['cnt'] if quota_row else 0
+                if current_count >= _MFA_FLOOD_QUOTA_PER_5MIN:
+                    log.warning(
+                        'TOTP flood quota exceeded for principal %s '
+                        '(%d entries in last 5 min, limit=%d)',
+                        principal_id, current_count, _MFA_FLOOD_QUOTA_PER_5MIN,
+                    )
+                    return False
+
                 cur.execute(
                     'INSERT INTO mfa_used_codes (principal_id, code_hash) VALUES (%s, %s)',
                     (principal_id, psycopg2.Binary(code_hash)),
@@ -1288,6 +1318,29 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
     _update_mfa_last_used(principal_id, 'totp', label)
     log.info('TOTP verified for principal %s', principal_id)
     return True
+
+
+def cleanup_mfa_used_codes() -> int:
+    """
+    G62: Delete mfa_used_codes rows older than 5 minutes. Returns rows deleted.
+
+    Wire to a periodic job (e.g., systemd timer every 5 minutes). The 5-minute
+    retention window exceeds the maximum TOTP replay window (90 sec = ±1 step
+    at 30 sec/step), so no live replay-prevention entries are removed.
+
+    The `mfa_used_codes_cleanup_idx ON (used_at)` index (migration 041) keeps
+    this DELETE O(expired_rows) rather than a full-table scan.
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM mfa_used_codes WHERE used_at < now() - interval '5 minutes'"
+            )
+            deleted = cur.rowcount
+        conn.commit()
+    if deleted:
+        log.info('G62: cleaned up %d expired mfa_used_codes rows', deleted)
+    return deleted
 
 
 def _vault_client() -> 'hvac.Client':
