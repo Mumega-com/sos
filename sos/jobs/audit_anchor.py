@@ -17,9 +17,9 @@ R2 environment variables
 CLOUDFLARE_ACCOUNT_ID  — used to build the R2 endpoint URL
 R2_ACCESS_KEY_ID       — R2 HMAC key id
 R2_SECRET_ACCESS_KEY   — R2 HMAC secret
-AUDIT_R2_BUCKET        — bucket name (default: sos-audit-worm)
-AUDIT_R2_OBJECT_LOCK   — set to "false" to skip Object Lock (dev/test)
-                         (default: "true" in production)
+AUDIT_R2_BUCKET        — bucket name (required; no default — raise on unset)
+                         Must point to a bucket created with Object Lock enabled.
+                         (ADV-G51-WARN-4: fallback default removed — fail loud if unset)
 
 Design notes
 ------------
@@ -82,25 +82,61 @@ def _r2_object_key(stream_id: str, last_seq: int, ts: datetime) -> str:
     return f"anchors/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{safe_stream}-{last_seq}.json"
 
 
-def _put_r2_object(s3_client: Any, bucket: str, key: str, body: bytes, retain: bool) -> None:
-    """Upload body to R2 with optional Object Lock retention.
+def _verify_bucket_object_lock(s3_client: Any, bucket: str) -> None:
+    """Assert bucket has Object Lock COMPLIANCE mode enabled.
 
-    Cloudflare R2 uses bucket-level lock rules (not per-object S3 headers).
-    When retain=True, we rely on the bucket's COMPLIANCE retention rule
-    (set via CF API: 7-year rule on anchors/ prefix). Per-object
-    ObjectLockMode/ObjectLockRetainUntilDate headers are NOT sent — CF R2
-    returns NotImplemented for them. The bucket rule enforces retention
-    automatically on any object written under the anchors/ prefix.
+    Called at anchor-service startup (ADV-G51-WARN-1).  Fails loud rather than
+    silently writing to a bucket without WORM protection.
+
+    Note: GetBucketObjectLockConfiguration is a HEAD-equivalent — read-only,
+    no data access.  A scoped write-only R2 token that lacks this permission
+    will cause a loud startup failure rather than silently anchoring to an
+    unprotected bucket.
     """
-    put_kwargs: dict[str, Any] = {
-        "Bucket": bucket,
-        "Key": key,
-        "Body": body,
-        "ContentType": "application/json",
-    }
-    # Note: AWS S3 per-object lock headers (ObjectLockMode, ObjectLockRetainUntilDate)
-    # are NOT used — CF R2 enforces retention via bucket-level rules only.
-    s3_client.put_object(**put_kwargs)
+    try:
+        resp = s3_client.get_bucket_object_lock_configuration(Bucket=bucket)
+        lock_cfg = resp.get("ObjectLockConfiguration", {})
+        enabled = lock_cfg.get("ObjectLockEnabled", "") == "Enabled"
+        rule = lock_cfg.get("Rule", {})
+        mode = rule.get("DefaultRetention", {}).get("Mode", "")
+        if not enabled or mode != "COMPLIANCE":
+            raise RuntimeError(
+                f"R2 bucket {bucket!r} does not have Object Lock COMPLIANCE mode enabled "
+                f"(ObjectLockEnabled={lock_cfg.get('ObjectLockEnabled')!r}, Mode={mode!r}). "
+                "WORM property is not enforced — refusing to anchor. "
+                "Fix: recreate the bucket with Object Lock enabled at creation."
+            )
+    except s3_client.exceptions.ClientError as exc:  # type: ignore[attr-defined]
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        if error_code in ("ObjectLockConfigurationNotFoundError", "NoSuchBucket"):
+            raise RuntimeError(
+                f"R2 bucket {bucket!r}: Object Lock not configured ({error_code}). "
+                "Anchor service refusing to start without WORM guarantee."
+            ) from exc
+        # Other client errors (permission denied, etc.) — re-raise loud
+        raise RuntimeError(
+            f"R2 bucket {bucket!r}: Object Lock configuration check failed: {exc}"
+        ) from exc
+
+
+def _put_r2_object(s3_client: Any, bucket: str, key: str, body: bytes) -> None:
+    """Upload body to R2 under the bucket's COMPLIANCE Object Lock retention rule.
+
+    Cloudflare R2 enforces WORM via bucket-level Object Lock rules (set at creation).
+    Per-object S3 Object Lock headers (ObjectLockMode, ObjectLockRetainUntilDate) are
+    not used — CF R2 returns NotImplemented for them.  The bucket's COMPLIANCE rule
+    covers all objects written under the anchors/ prefix automatically.
+
+    The `AUDIT_R2_OBJECT_LOCK` env var and `retain` parameter have been removed
+    (ADV-G51-WARN-2).  The bucket-level rule enforces WORM unconditionally; an env
+    var escape hatch would be a lie (the bucket refuses deletes regardless of env state).
+    """
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +179,6 @@ async def _anchor_stream(
     stream_id: str,
     s3_client: Any,
     bucket: str,
-    use_object_lock: bool,
 ) -> bool:
     """Attempt to anchor one stream.  Returns True if a new anchor was written."""
 
@@ -248,11 +283,11 @@ async def _anchor_stream(
     try:
         await loop.run_in_executor(
             None,
-            lambda: _put_r2_object(s3_client, bucket, r2_key, r2_body, use_object_lock),
+            lambda: _put_r2_object(s3_client, bucket, r2_key, r2_body),
         )
         logger.info(
-            "audit_anchor: uploaded stream=%s seq=%d key=%s lock=%s",
-            stream_id, latest_seq, r2_key, use_object_lock,
+            "audit_anchor: uploaded stream=%s seq=%d key=%s",
+            stream_id, latest_seq, r2_key,
         )
     except Exception as exc:
         logger.error(
@@ -278,14 +313,28 @@ async def run_once() -> dict[str, Any]:
     """
     pool = await _get_pool()
 
-    bucket = os.getenv("AUDIT_R2_BUCKET", "sos-audit-worm")
-    use_object_lock = os.getenv("AUDIT_R2_OBJECT_LOCK", "true").lower() != "false"
+    # ADV-G51-WARN-4: no fallback default — fail loud if AUDIT_R2_BUCKET is unset
+    bucket = os.environ.get("AUDIT_R2_BUCKET")
+    if not bucket:
+        raise RuntimeError(
+            "AUDIT_R2_BUCKET is required — no default allowed. "
+            "Set to a bucket created with Object Lock enabled at creation."
+        )
 
-    # Build S3 client lazily — fail loud if env missing
+    # Build S3 client — fail loud if env missing
     try:
         s3_client = await asyncio.get_event_loop().run_in_executor(None, _build_s3_client)
     except Exception as exc:
         logger.error("audit_anchor: cannot build R2 client: %s", exc)
+        return {"ok": False, "error": str(exc), "anchored_streams": 0}
+
+    # ADV-G51-WARN-1: verify bucket has Object Lock COMPLIANCE mode before writing
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _verify_bucket_object_lock(s3_client, bucket)
+        )
+    except RuntimeError as exc:
+        logger.error("audit_anchor: bucket Object Lock verification failed: %s", exc)
         return {"ok": False, "error": str(exc), "anchored_streams": 0}
 
     async with pool.acquire() as conn:
@@ -298,7 +347,7 @@ async def run_once() -> dict[str, Any]:
     results: dict[str, bool] = {}
     for stream_id in streams:
         async with pool.acquire() as conn:
-            anchored = await _anchor_stream(conn, stream_id, s3_client, bucket, use_object_lock)
+            anchored = await _anchor_stream(conn, stream_id, s3_client, bucket)
             results[stream_id] = anchored
 
     total = len(results)
@@ -543,7 +592,10 @@ async def run_with_quorum() -> dict[str, Any]:
             return result
 
         # Verifier path
-        bucket = os.getenv("AUDIT_R2_BUCKET", "sos-audit-worm")
+        # ADV-G51-WARN-4: no fallback default
+        bucket = os.environ.get("AUDIT_R2_BUCKET")
+        if not bucket:
+            raise RuntimeError("AUDIT_R2_BUCKET is required — no default allowed")
         try:
             s3_client = await asyncio.get_event_loop().run_in_executor(None, _build_s3_client)
         except Exception as exc:
