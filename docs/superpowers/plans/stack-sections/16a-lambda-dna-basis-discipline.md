@@ -54,9 +54,17 @@ basis fix.
 ### 2.1 The single basis
 
 There is one and only one canonical 16D vector space in the substrate:
-**lambda_dna**. Its dimensions are defined in `lambda_tensor.py`
-(mirror) — they encode the citizen's position across the dimensions
-that §15 Glicko-2 reputation projects from.
+**lambda_dna**. Its 16 axis labels are defined canonically in
+`/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Torivers.16D.001
+section — Group A/B/C/D). They encode the citizen's position across
+the dimensions that §15 Glicko-2 reputation projects from.
+
+**Critical navigation note for the implementer:** *do not* source axis
+labels from `mirror/lambda_tensor.py` (that file is an avatar
+generator) or from `sos/contracts/quest_vectors.py:named_dims` (that
+is the work-skills taxonomy this section is replacing). Use the
+canonical kb path. Encoding the wrong basis re-creates the F-A4b bug
+in a new shape.
 
 Every vector that participates in a cosine similarity, dot product,
 or linear combination MUST be expressed in this basis. No exceptions.
@@ -165,8 +173,14 @@ change).
    classifier's noise floor. (Not identical; the basis change is
    the *point*. But not random — same quest should rank the same
    citizens roughly the same.)
-4. `lambda_tensor.py` documentation updated with the basis discipline
-   rule (single canonical 16D space; all vectors must conform).
+4. `lambda_tensor.py` gets a module-level docstring that names the 16D
+   basis and states the basis discipline rule (single canonical 16D
+   space; all vectors must conform). One paragraph — makes the file a
+   canonical pointer rather than leaving the discipline implicit. The
+   *axis labels themselves* live canonically at
+   `/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Torivers.16D.001
+   section — Group A/B/C/D); the docstring should reference that path,
+   not duplicate the labels.
 5. No regression on §15 reputation tests or §16 matchmaking tests.
 
 ---
