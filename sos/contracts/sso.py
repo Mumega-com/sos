@@ -39,6 +39,7 @@ from typing import Literal
 from urllib.parse import urlencode
 
 import psycopg2
+import psycopg2.extensions
 import psycopg2.extras
 import psycopg2.pool
 import pyotp
@@ -683,10 +684,14 @@ def _saml_id_looks_predictable(assertion_id: str) -> bool:
     # Short: insufficient entropy
     if len(assertion_id) < 16:
         return True
-    # UUID v1 — time + MAC, structurally predictable
+    # UUID v1/v3/v5 — all deterministic from known inputs:
+    #   v1 = timestamp + MAC address
+    #   v3 = MD5(namespace, name) — deterministic from public inputs
+    #   v5 = SHA-1(namespace, name) — deterministic from public inputs
+    # v4 (random) is the only UUID version considered non-predictable here.
     try:
         u = uuid.UUID(assertion_id)
-        if u.version == 1:
+        if u.version in (1, 3, 5):
             return True
     except ValueError:
         pass
@@ -746,8 +751,19 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
     not_on_or_after = min(not_on_or_after, max_expiry)
 
     # G63: use pooled connection for INSERT — avoids per-login connection setup cost.
+    # FIND-001 fix: getconn() blocks indefinitely when pool is exhausted (no timeout
+    # parameter in psycopg2 ThreadedConnectionPool). Catch PoolError and fail fast —
+    # better to return a transient 503 than to stall all worker threads permanently.
     pool = _get_saml_pool()
-    conn = pool.getconn()
+    try:
+        conn = pool.getconn()
+    except psycopg2.pool.PoolError as exc:
+        log.error(
+            'SAML assertion pool exhausted — rejecting login for idp_id=%s: %s',
+            idp_id, exc,
+        )
+        raise ValueError('SAML replay ledger temporarily unavailable') from exc
+
     try:
         with conn:
             with conn.cursor() as cur:
@@ -792,6 +808,14 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
         log.error('SAML replay ledger INSERT failed: %s', exc)
         raise ValueError('SAML replay ledger unavailable — login rejected') from exc
     finally:
+        # FIND-002 fix: rollback any aborted transaction before returning the
+        # connection to the pool. A connection left in INTRANS_INERROR state
+        # poisons the pool — the next caller's INSERT fails immediately.
+        try:
+            if conn.status == psycopg2.extensions.STATUS_IN_TRANSACTION:
+                conn.rollback()
+        except Exception:
+            pass
         pool.putconn(conn)
 
 

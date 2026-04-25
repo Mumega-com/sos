@@ -1335,6 +1335,19 @@ class TestSamlHardening:
         uuid_v1 = '550e8400-e29b-11d4-a716-446655440000'
         assert _saml_id_looks_predictable(uuid_v1) is True
 
+    def test_tc_g63a_uuid_v3_is_predictable(self) -> None:
+        """TC-G63a: UUID v3 (MD5 of namespace+name) is flagged as predictable."""
+        # uuid.uuid3(NAMESPACE_DNS, 'example.com')
+        import uuid as uuid_mod
+        uuid_v3 = str(uuid_mod.uuid3(uuid_mod.NAMESPACE_DNS, 'example.com'))
+        assert _saml_id_looks_predictable(uuid_v3) is True
+
+    def test_tc_g63a_uuid_v5_is_predictable(self) -> None:
+        """TC-G63a: UUID v5 (SHA-1 of namespace+name) is flagged as predictable."""
+        import uuid as uuid_mod
+        uuid_v5 = str(uuid_mod.uuid5(uuid_mod.NAMESPACE_URL, 'https://example.com/user'))
+        assert _saml_id_looks_predictable(uuid_v5) is True
+
     def test_tc_g63b_uuid_v4_is_not_predictable(self) -> None:
         """TC-G63b: UUID v4 (random) is not flagged as predictable."""
         import uuid as uuid_mod
@@ -1383,3 +1396,23 @@ class TestSamlHardening:
         mock_direct_connect.assert_not_called()
         # Connection must be returned to pool
         mock_pool.putconn.assert_called_once_with(mock_conn)
+
+    def test_tc_g63c_pool_exhaustion_raises_value_error(self) -> None:
+        """TC-G63c FIND-001: pool exhaustion fails fast — no indefinite block."""
+        from unittest.mock import MagicMock, patch
+        import psycopg2.pool
+
+        mock_pool = MagicMock()
+        mock_pool.getconn.side_effect = psycopg2.pool.PoolError('pool exhausted')
+
+        mock_saml_auth = MagicMock()
+        mock_saml_auth.get_last_assertion_id.return_value = str(uuid.uuid4())
+        mock_saml_auth.get_session_expiration.return_value = None
+
+        from sos.contracts.sso import _record_saml_assertion
+        with patch('sos.contracts.sso._get_saml_pool', return_value=mock_pool):
+            with pytest.raises(ValueError, match='temporarily unavailable'):
+                _record_saml_assertion(saml_auth=mock_saml_auth, idp_id='idp-test')
+
+        # putconn must NOT be called — getconn() failed before conn was acquired
+        mock_pool.putconn.assert_not_called()
