@@ -27,6 +27,7 @@ from sos.services.saas.marketplace import Marketplace
 from sos.services.saas.notifications import get_router as get_notification_router
 from sos.services.saas.pairing import router as pairing_router
 from sos.services.saas.sso_routes import router as sso_router
+from sos.services.saas.onboard_routes import router as onboard_router
 from sos.services.saas.rate_limiter import check_rate_limit as _check_rate_limit
 from sos.services.saas.registry import TenantRegistry
 from sos.kernel.health import health_response
@@ -44,6 +45,7 @@ app = FastAPI(title="Mumega SaaS Service", version="0.1.0")
 instrument_fastapi(app)
 app.include_router(pairing_router)
 app.include_router(sso_router)
+app.include_router(onboard_router)
 _START_TIME = time.time()
 registry = TenantRegistry()
 billing = SaaSBilling(registry)
