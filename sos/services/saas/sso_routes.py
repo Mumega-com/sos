@@ -449,6 +449,15 @@ def _resolve_principal_id(x_principal_id: str | None, tenant_slug: str) -> str:
 
     Pre-DISP-001: accept the header directly (admin-trusted in v1).
     Sprint 004: replace with DISP-001 session token decode.
+
+    TODO(B.7/G62-P1): With header-supplied identity, a caller within the same
+    tenant can submit requests claiming any valid principal_id. For MFA endpoints
+    specifically, this means a caller could submit TOTP verify requests against
+    another user's principal_id slot. In practice, the flood quota (G62) can only
+    be incremented by valid TOTP codes — which require the target's TOTP secret —
+    so quota DoS against a victim without their secret is NOT possible. However,
+    the broader identity impersonation gap (any action gated on principal_id)
+    remains real until DISP-001 ships. Track as Sprint 006 B.7.
     """
     if not x_principal_id:
         raise HTTPException(

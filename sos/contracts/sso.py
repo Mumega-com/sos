@@ -1272,9 +1272,16 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
     #
     # G62: flood quota check runs in the same DB round-trip as the INSERT to
     # avoid an extra connection. We count this principal's existing rows in the
-    # last 5 minutes before inserting. A marginal TOCTOU race (two concurrent
-    # requests both read quota-19) is acceptable — the window is tiny and the
-    # goal is unbounded-table prevention, not strict per-request rate limiting.
+    # last 5 minutes before inserting.
+    #
+    # TOCTOU bound: concurrent requests that both read count=N-1 will both pass
+    # and both insert, giving count=N+threads-1. The practical ceiling is bounded
+    # by valid TOTP codes: the INSERT PK is (principal_id, code_hash), and
+    # code_hash includes the 30-sec time window. Within any concurrent burst,
+    # the attacker can produce at most ~3 unique valid codes (±1 window step).
+    # So worst-case over-quota is N + ~3, not N + unbounded threads.
+    # Goal is unbounded-table prevention; strict per-request enforcement is not
+    # required (quota is not a brute-force gate — the TOTP secret itself is).
     code_hash = _totp_code_hash(principal_id, code, time_window_start)
     try:
         with _connect() as conn:
