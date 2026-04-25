@@ -349,10 +349,12 @@ def run_tick() -> dict:
 
     Sprint 006 A.1 (G50) — leader election:
       Acquire a session-level PG advisory lock before any reads or writes.
-      If another instance already holds the lock, return immediately as an
-      observer (leader_acquired=False, all counts zero).  The lock is held
-      for the full duration of the tick and released in the finally block
-      (connection close), including on kill -9 (PG auto-releases on disconnect).
+      If another instance holds the lock, run as observer: the full pipeline
+      (fetch → matrix → Hungarian) executes with write suppression behind
+      is_leader; leader_acquired=False; dispatched=0; skipped=N_assignments.
+      The lock is held for the full tick duration and released in the finally
+      block (connection close), including on kill -9 (PG auto-releases on
+      disconnect).
 
     Phase 0: Process any pending match_history outcomes via the A.6 learning loop
              so this tick operates on the freshest reputation state.
