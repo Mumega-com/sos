@@ -775,7 +775,7 @@ def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
                         """,
                         (assertion_id, idp_id, not_on_or_after),
                     )
-                    conn.commit()
+                    # `with conn:` commits on normal exit — no explicit conn.commit() needed.
                 except psycopg2.errors.UniqueViolation:
                     # F2 fix: rollback, then query used_at age to distinguish
                     # concurrent-retry race (< 5s) from replay attack (>= 5s)
