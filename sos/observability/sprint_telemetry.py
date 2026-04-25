@@ -399,6 +399,46 @@ def emit_leader_election(
     return payload
 
 
+def emit_mirror_health(
+    instance_id: str,
+    prev_status: str,
+    new_status: str,
+    db_reachable_ms: float,
+    emitted_by: str = "mirror",
+) -> dict[str, Any]:
+    """Emit a mirror_health_transition event — fires only on status change (Sprint 006 A.2 / G71).
+
+    prev_status / new_status: 'healthy' | 'unhealthy'
+    Transition-only: callers must only invoke when prev_status != new_status.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "instance_id": instance_id,
+        "prev_status": prev_status,
+        "new_status": new_status,
+        "db_reachable_ms": db_reachable_ms,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="mirror",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="mirror_health_transition",
+            resource=f"instance:{instance_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        (marker_dir / f"mirror_health_{instance_id}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def drain_sprint_markers(dry_run: bool = False) -> dict[str, Any]:
     """C.6: Drain .sprint_markers/*.json into audit_events when DB reachable.
 
