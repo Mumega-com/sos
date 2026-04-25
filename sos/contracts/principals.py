@@ -227,6 +227,12 @@ def set_principal_status(
     *,
     updated_by: str,
 ) -> None:
+    # TODO(B.7/G_session_revoke): DISP-001 session token infrastructure is not yet
+    # implemented (sso_routes.py still uses placeholder X-Principal-Id header, Sprint 004
+    # deferred). When DISP-001 ships, add session revocation here for status='deprovisioned'
+    # and status='suspended' — e.g., delete Redis key session:{principal_id}:* or CF KV
+    # invalidation. Until then, the DB status change is the only mechanism and deprovisioned
+    # users retain live sessions until natural TTL expiry. Tracked as Sprint 006 B.7.
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
