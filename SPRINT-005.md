@@ -27,7 +27,9 @@ The 4 deferred P0 ops items + 3 SCIM soft notes + dimension reshape + live-flip 
 | A.1 | F-02b: superuser migration to REVOKE INSERT FROM mirror on `reputation_events` | Athena (schema gate) + Kasra (build) | 0.25d | G19 |
 | A.2 | F-01b + P0-2b: superuser migration for `frc_verdicts` REVOKE EXECUTE FROM PUBLIC + GRANT to classifier_role; backfill existing `mirror_engrams.classifier_run_log` rows into `frc_verdicts` (fail-open transition) | Athena + Kasra | 0.5d | G20 |
 | A.3 | F-11b: signature enforcement in `audit_to_reputation` once `AUDIT_SIGNING_KEY` distributed (HSM or kernel keystore) | Kasra | 0.25d | G21 |
-| A.4 | 3 SCIM soft notes — unknown-tier default, scim_deprovision dead param, add_group_role_map tenant hardening | Kasra | 0.25d | SCIM gate amend |
+| A.4a | SCIM soft note: unknown-tier `-1 → 999` default → reject explicitly | Kasra | 0.1d | SCIM gate amend |
+| A.4b | SCIM soft note: dead `tenant_id` parameter in `scim_deprovision_user` (already derived from idp_id; remove dead param) | Kasra | 0.1d | SCIM gate amend |
+| A.4c | SCIM soft note: pre-existing high-tier `idp_group_role_map` rows audit query — surface any current entries that exceed an IdP's `max_grantable_tier` so coordinator can reconcile | Kasra | 0.25d | SCIM gate amend |
 | A.5 | **G_A4b** A.4 quest_vectors rewrite to `lambda_dna` dimensions; demote work-skills 16-dim taxonomy to §14 Inventory `capability_kind='work_skill'` discrete tags (per Athena retro call) | Kasra (build) + Loom (spec amend if needed) | 1d | G_A4b |
 | A.6 | E2E test execution against substrate post-A.1-A.5; three-way sign-off (Athena correctness / Kasra implementation / Loom observability) | All three | 0.25d | live-flip auth |
 | A.7 | matchmaker.service flip DRY_RUN → live (single env var change) | Kasra | 5min | none |
@@ -82,10 +84,10 @@ Codify the lessons learned from Sprint 003+004 retro.
 
 | # | Task | Owner | Effort |
 |---|---|---|---|
-| D.1 | Codify adversarial-as-parallel-gate in CLAUDE.md + `~/.claude/rules/agent-comms.md` | Loom | 0.25d |
-| D.2 | Update brief templates with literal-verb trigger order (`drafts → triggers → gates → builds`); store template at `agents/loom/briefs/_template.md` | Loom | 0.25d |
+| D.1 | ✅ DONE 2026-04-25 — adversarial-as-parallel-gate codified in `~/.claude/rules/agent-comms.md` (CLAUDE.md inherits via rules) | Loom | 0.25d |
+| D.2 | ✅ DONE 2026-04-25 — `agents/loom/briefs/_template.md` shipped with literal-verb trigger order + adversarial parallel section + emit-not-parse telemetry rule | Loom | 0.25d |
 | D.3 | Sprint 003+004 retro: Kasra read sign-off (Athena already signed) | Kasra | 5min |
-| D.4 | Mirror /Archive cleanup (X.9 carry from Sprint 003) — Project_Chimera, Scratchpad alphas inflating graph noise | Loom | 0.5d |
+| D.4 | Mirror /Archive cleanup (X.9 carry from Sprint 003) — **HELD pending Hadi OK**: 48 git-tracked files (14 .py) in Project_Chimera + Scratchpad. Rewriting Mirror history is hard-to-reverse; deferring autonomous execution. Recommended path: git-mv Archive/ → `/home/mumega/research-archive/mirror/` (preserves history, removes graph noise). Awaiting explicit OK. | Loom | 0.5d |
 
 ---
 
