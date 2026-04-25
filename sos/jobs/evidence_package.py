@@ -13,9 +13,9 @@ Collects four evidence streams and writes a self-contained JSON artifact to
    R2_SECRET_ACCESS_KEY in environment.
 4. **test_run_summary** — pytest exit code + pass/skip/fail counts for the
    three key test suites:
-   - ``tests/contracts/test_sso.py``   (MFA / SSO / SCIM)
-   - ``tests/contracts/test_dek.py``   (DEK envelope + Vault cache)
-   - ``tests/contracts/test_scim.py``  (SCIM provisioning)
+   - ``tests/contracts/test_sso.py``        (MFA / SSO / SCIM)
+   - ``tests/contracts/test_dek.py``        (DEK envelope + Vault cache)
+   - ``tests/contracts/test_principals.py`` (RBAC principal + role assignment)
 
 Usage
 -----
@@ -69,10 +69,13 @@ async def _collect_chain_integrity() -> dict[str, Any]:
     """Run verify_chain --all and return structured result."""
     from sos.kernel.audit_chain import verify_chain
 
-    db_url = os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/postgres",
-    )
+    db_url = os.environ.get("DATABASE_URL") or os.environ.get("MIRROR_DATABASE_URL")
+    if not db_url:
+        return {
+            "ok": False,
+            "error": "DATABASE_URL / MIRROR_DATABASE_URL not set — source .env.supabase before running",
+            "results": [],
+        }
 
     import asyncpg
 
@@ -112,10 +115,10 @@ async def _collect_chain_integrity() -> dict[str, Any]:
 
 async def _collect_chain_samples() -> list[dict[str, Any]]:
     """Return last _SAMPLES_PER_STREAM events per active stream."""
-    db_url = os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/postgres",
-    )
+    db_url = os.environ.get("DATABASE_URL") or os.environ.get("MIRROR_DATABASE_URL")
+    if not db_url:
+        logger.warning("chain_samples: DATABASE_URL / MIRROR_DATABASE_URL not set — skipped")
+        return []
 
     import asyncpg
 
