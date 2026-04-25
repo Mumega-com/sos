@@ -1088,6 +1088,14 @@ def scim_provision_user(
         log.info('SCIM deprovisioned principal %s', principal.id)
         return principal.id
 
+    # WARN-5 fix: re-provision of a deprovisioned principal must re-activate them.
+    # upsert_principal ON CONFLICT only updates display_name + updated_at — it does NOT
+    # touch status. Without this, a user deprovisioned then re-provisioned stays
+    # status='deprovisioned' silently (will matter when DISP-001 enforces status checks).
+    if principal.status == 'deprovisioned':
+        set_principal_status(principal.id, 'active', updated_by=f'scim:{idp_id}')
+        log.info('SCIM re-activated previously deprovisioned principal %s', principal.id)
+
     # Apply group → role mappings, capped at IdP's tier ceiling (F-15)
     # BLOCK-2 fix: same resilient loop as login path — unknown-tier role in DB
     # must not crash SCIM provision with an unhandled ValueError.

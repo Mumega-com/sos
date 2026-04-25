@@ -1158,3 +1158,39 @@ class TestScimSoftNotes:
         assert len(result) == 1
         assert result[0]['violation'] == 'unknown_ceiling'
         assert result[0]['idp_ceiling'] == 'superadmin'
+
+    def test_g_warn5_reprovision_reactivates_deprovisioned(self) -> None:
+        """WARN-5: re-provision of deprovisioned principal re-activates status to 'active'."""
+        from unittest.mock import patch, MagicMock, call
+        from sos.contracts.sso import scim_provision_user
+
+        mock_idp = MagicMock()
+        mock_idp.tenant_id = 'tenant-1'
+        mock_idp.max_grantable_tier = 'worker'
+        mock_idp.id = 'idp-1'
+
+        mock_principal = MagicMock()
+        mock_principal.id = 'pid-1'
+        mock_principal.status = 'deprovisioned'  # previously deprovisioned
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch('sos.contracts.sso.get_idp', return_value=mock_idp), \
+             patch('sos.contracts.sso.upsert_principal', return_value=mock_principal), \
+             patch('sos.contracts.sso._connect', return_value=mock_conn), \
+             patch('sos.contracts.sso.get_roles_for_groups', return_value=[]), \
+             patch('sos.contracts.sso.set_principal_status') as mock_set_status:
+            scim_provision_user(
+                idp_id='idp-1',
+                external_id='ext-123',
+                email='user@example.com',
+                active=True,
+            )
+
+        # set_principal_status('active') must be called for re-provisioned deprovisioned user
+        mock_set_status.assert_called_once_with('pid-1', 'active', updated_by='scim:idp-1')
