@@ -527,6 +527,9 @@ def process_saml_response(
     if not name_id:
         raise ValueError('SAML Assertion missing NameID after validation')
 
+    # F-20 (G34): SAML assertion replay prevention
+    _record_saml_assertion(saml_auth=saml_auth, idp_id=idp.id)
+
     attrs = saml_auth.get_attributes()
     email = _first_attr(attrs, ['email', 'emailAddress', 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'])
     display_name = _first_attr(attrs, ['displayName', 'name', 'http://schemas.microsoft.com/identity/claims/displayname'])
@@ -541,6 +544,92 @@ def process_saml_response(
         groups=groups,
         tenant_id=tenant_id,
     )
+
+
+def _record_saml_assertion(saml_auth: object, idp_id: str) -> None:
+    """
+    F-20 (G34): Insert the assertion into saml_used_assertions to prevent replay.
+
+    Fails closed: any INSERT failure (including UniqueViolation) raises ValueError.
+    The caller must NOT proceed to _complete_sso_login if this raises.
+
+    Security notes:
+    - not_on_or_after is captured for the cleanup job only; it is NOT the replay guard.
+      The PRIMARY KEY (assertion_id, idp_id) is the load-bearing replay guard.
+      python3-saml strict=True validates NotOnOrAfter before this function is called.
+    - not_on_or_after is capped at 24h from now (F1 adversarial fix) to prevent
+      pre-poisoning attacks using far-future timestamps that survive cleanup indefinitely.
+    - UniqueViolation handler queries used_at to distinguish concurrent-retry race
+      from replay attack in logs (F2 adversarial fix).
+    - Missing assertion_id fails closed (F6): python3-saml strict mode rejects
+      EncryptedAssertion without SP decryption key at process_response(), so None
+      here indicates a genuinely malformed or unsigned assertion that slipped past.
+    """
+    assertion_id: str | None = saml_auth.get_last_assertion_id()  # type: ignore[attr-defined]
+    if not assertion_id:
+        raise ValueError(
+            'SAML Assertion missing assertion_id — cannot prevent replay. '
+            'Possible causes: assertion not yet decrypted (EncryptedAssertion without SP key), '
+            'or assertion element absent from response.'
+        )
+
+    # not_on_or_after: cleanup job anchor; fallback to now()+5min if unavailable
+    # F1 fix: cap at 24h to block pre-poisoning with attacker-controlled far-future timestamps
+    try:
+        raw_expiry = saml_auth.get_session_expiration()  # type: ignore[attr-defined]
+        if raw_expiry:
+            not_on_or_after = datetime.fromtimestamp(int(raw_expiry), tz=timezone.utc)
+        else:
+            not_on_or_after = datetime.fromtimestamp(time.time() + 300, tz=timezone.utc)
+    except Exception:
+        log.warning('SAML get_session_expiration() raised unexpectedly — using 5-min fallback for idp_id=%s', idp_id)
+        not_on_or_after = datetime.fromtimestamp(time.time() + 300, tz=timezone.utc)
+    max_expiry = datetime.fromtimestamp(time.time() + 86400, tz=timezone.utc)
+    not_on_or_after = min(not_on_or_after, max_expiry)
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO saml_used_assertions (assertion_id, idp_id, not_on_or_after)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (assertion_id, idp_id, not_on_or_after),
+                    )
+                    conn.commit()
+                except psycopg2.errors.UniqueViolation:
+                    # F2 fix: rollback, then query used_at age to distinguish
+                    # concurrent-retry race (< 5s) from replay attack (>= 5s)
+                    conn.rollback()
+                    age_ms: int | None = None
+                    try:
+                        cur.execute(
+                            'SELECT EXTRACT(EPOCH FROM (now() - used_at)) * 1000 '
+                            'FROM saml_used_assertions WHERE assertion_id=%s AND idp_id=%s',
+                            (assertion_id, idp_id),
+                        )
+                        row = cur.fetchone()
+                        age_ms = int(row[0]) if row else None
+                    except Exception:
+                        pass
+                    if age_ms is not None and age_ms < 5000:
+                        log.debug(
+                            'SAML concurrent-retry race (not attack): assertion_id=%s idp_id=%s age_ms=%d',
+                            assertion_id, idp_id, age_ms,
+                        )
+                    else:
+                        log.warning(
+                            'SAML replay rejected: assertion_id=%s idp_id=%s age_ms=%s',
+                            assertion_id, idp_id, age_ms,
+                        )
+                    raise ValueError('SAML assertion replay detected')
+    except ValueError:
+        raise
+    except psycopg2.Error as exc:
+        log.error('SAML replay ledger INSERT failed: %s', exc)
+        raise ValueError('SAML replay ledger unavailable — login rejected') from exc
 
 
 def _host_from_url(url: str) -> str:

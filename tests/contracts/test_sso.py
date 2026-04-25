@@ -797,3 +797,206 @@ class TestTierEnforcement:
             group_claim_path='groups', enabled=True, created_at=now,
         )
         assert idp.max_grantable_tier == 'worker'
+
+
+# ── Integration: F-20 SAML assertion replay ledger (G34) ──────────────────────
+
+
+class TestSamlReplayLedger:
+    """TC-G34: saml_used_assertions — replay prevention for SAML SSO."""
+
+    def _make_mock_saml_auth(self, assertion_id: str, expiry_offset: int = 300) -> object:
+        """Return a mock python3-saml Auth object with the needed methods."""
+        from unittest.mock import MagicMock
+        import time as _time
+        m = MagicMock()
+        m.get_last_assertion_id.return_value = assertion_id
+        m.get_session_expiration.return_value = int(_time.time()) + expiry_offset
+        return m
+
+    @db
+    def test_tc_g34a_first_assertion_accepted(self) -> None:
+        """TC-G34a: First use of an assertion_id is inserted and accepted."""
+        import psycopg2
+        import os
+        from sos.contracts.sso import _record_saml_assertion
+
+        idp_id = _uid('idp')
+        assertion_id = _uid('assert')
+
+        # Create the IdP row so FK constraint is satisfied
+        url = os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL')
+        conn = psycopg2.connect(url)
+        now = datetime.now(timezone.utc)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO idp_configurations
+                       (id, tenant_id, protocol, display_name, metadata_url, entity_id,
+                        acs_url, client_id, client_secret_ref, authorization_url, token_url,
+                        userinfo_url, jwks_url, group_claim_path, enabled, created_at)
+                       VALUES (%s,'default','saml',%s,NULL,NULL,NULL,NULL,NULL,
+                               NULL,NULL,NULL,NULL,'groups',TRUE,%s)
+                    """,
+                    (idp_id, f'Test IdP {idp_id}', now),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        mock_auth = self._make_mock_saml_auth(assertion_id)
+        # Must not raise
+        _record_saml_assertion(saml_auth=mock_auth, idp_id=idp_id)
+
+        # Verify row exists
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'SELECT assertion_id FROM saml_used_assertions WHERE assertion_id=%s AND idp_id=%s',
+                    (assertion_id, idp_id),
+                )
+                assert cur.fetchone() is not None
+        finally:
+            conn.close()
+
+    @db
+    def test_tc_g34a_replay_rejected(self) -> None:
+        """TC-G34a (replay): Second use of same assertion_id raises ValueError."""
+        import psycopg2
+        import os
+        from sos.contracts.sso import _record_saml_assertion
+
+        idp_id = _uid('idp')
+        assertion_id = _uid('assert')
+
+        url = os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL')
+        conn = psycopg2.connect(url)
+        now = datetime.now(timezone.utc)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO idp_configurations
+                       (id, tenant_id, protocol, display_name, metadata_url, entity_id,
+                        acs_url, client_id, client_secret_ref, authorization_url, token_url,
+                        userinfo_url, jwks_url, group_claim_path, enabled, created_at)
+                       VALUES (%s,'default','saml',%s,NULL,NULL,NULL,NULL,NULL,
+                               NULL,NULL,NULL,NULL,'groups',TRUE,%s)
+                    """,
+                    (idp_id, f'Test IdP {idp_id}', now),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        mock_auth = self._make_mock_saml_auth(assertion_id)
+        _record_saml_assertion(saml_auth=mock_auth, idp_id=idp_id)  # first — OK
+
+        mock_auth2 = self._make_mock_saml_auth(assertion_id)
+        with pytest.raises(ValueError, match='replay'):
+            _record_saml_assertion(saml_auth=mock_auth2, idp_id=idp_id)  # replay
+
+    @db
+    def test_tc_g34b_different_idps_same_assertion_id_both_accepted(self) -> None:
+        """TC-G34b: Same assertion_id from two different IdPs is not a replay."""
+        import psycopg2
+        import os
+        from sos.contracts.sso import _record_saml_assertion
+
+        assertion_id = _uid('assert')
+        idp_a = _uid('idp')
+        idp_b = _uid('idp')
+
+        url = os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL')
+        conn = psycopg2.connect(url)
+        now = datetime.now(timezone.utc)
+        try:
+            with conn.cursor() as cur:
+                for idp_id in (idp_a, idp_b):
+                    cur.execute(
+                        """INSERT INTO idp_configurations
+                           (id, tenant_id, protocol, display_name, metadata_url, entity_id,
+                            acs_url, client_id, client_secret_ref, authorization_url, token_url,
+                            userinfo_url, jwks_url, group_claim_path, enabled, created_at)
+                           VALUES (%s,'default','saml',%s,NULL,NULL,NULL,NULL,NULL,
+                                   NULL,NULL,NULL,NULL,'groups',TRUE,%s)
+                        """,
+                        (idp_id, f'Test IdP {idp_id}', now),
+                    )
+                conn.commit()
+        finally:
+            conn.close()
+
+        # Same assertion_id, different IdPs — both should succeed
+        _record_saml_assertion(saml_auth=self._make_mock_saml_auth(assertion_id), idp_id=idp_a)
+        _record_saml_assertion(saml_auth=self._make_mock_saml_auth(assertion_id), idp_id=idp_b)
+
+    @db
+    def test_tc_g34c_missing_assertion_id_rejected(self) -> None:
+        """TC-G34c: Assertion with no assertion_id is rejected (fails closed)."""
+        from unittest.mock import MagicMock
+        from sos.contracts.sso import _record_saml_assertion
+
+        mock_auth = MagicMock()
+        mock_auth.get_last_assertion_id.return_value = None
+
+        with pytest.raises(ValueError, match='assertion_id'):
+            _record_saml_assertion(saml_auth=mock_auth, idp_id='any-idp')
+
+    @db
+    def test_tc_g34d_cleanup_removes_expired_assertions(self) -> None:
+        """TC-G34d: Cleanup DELETE removes assertions past not_on_or_after + 1h."""
+        import psycopg2
+        import os
+        from sos.contracts.sso import _record_saml_assertion
+
+        idp_id = _uid('idp')
+        assertion_id = _uid('assert')
+
+        url = os.getenv('MIRROR_DATABASE_URL') or os.getenv('DATABASE_URL')
+        conn = psycopg2.connect(url)
+        now = datetime.now(timezone.utc)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO idp_configurations
+                       (id, tenant_id, protocol, display_name, metadata_url, entity_id,
+                        acs_url, client_id, client_secret_ref, authorization_url, token_url,
+                        userinfo_url, jwks_url, group_claim_path, enabled, created_at)
+                       VALUES (%s,'default','saml',%s,NULL,NULL,NULL,NULL,NULL,
+                               NULL,NULL,NULL,NULL,'groups',TRUE,%s)
+                    """,
+                    (idp_id, f'Test IdP {idp_id}', now),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        mock_auth = self._make_mock_saml_auth(assertion_id)
+        _record_saml_assertion(saml_auth=mock_auth, idp_id=idp_id)
+
+        # Backdate not_on_or_after to 2h ago
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE saml_used_assertions SET not_on_or_after = now() - interval '2 hours' "
+                    'WHERE assertion_id=%s AND idp_id=%s',
+                    (assertion_id, idp_id),
+                )
+                conn.commit()
+
+                # Cleanup job: remove assertions expired > 1h ago
+                cur.execute(
+                    "DELETE FROM saml_used_assertions WHERE not_on_or_after < now() - interval '1 hour'"
+                )
+                conn.commit()
+
+                cur.execute(
+                    'SELECT COUNT(*) FROM saml_used_assertions WHERE assertion_id=%s',
+                    (assertion_id,),
+                )
+                count = cur.fetchone()[0]
+            assert count == 0
+        finally:
+            conn.close()
