@@ -146,24 +146,28 @@ def load_guild_members(conn) -> None:
 
 
 def load_inventory_grants(conn) -> None:
-    # (holder_id, capability_kind, capability_ref)
+    # (holder_id, capability_ref)
+    # capability_kind='tool' — valid CHECK value and matches quest required_capabilities.kind='tool'
+    # assert_capability() builds grant_id = f'inv:{kind}:{holder_id}:{ref_hash8}'
+    # quest JSONB uses {'kind':'tool','ref':'cap:audit','action':'use'} → same grant_id
     grants = [
         # cap:audit
-        ('cit:03', 'capability', 'cap:audit'),
-        ('cit:04', 'capability', 'cap:audit'),
-        ('cit:05', 'capability', 'cap:audit'),
-        ('cit:06', 'capability', 'cap:audit'),
-        ('cit:07', 'capability', 'cap:audit'),
-        ('cit:10', 'capability', 'cap:audit'),
+        ('cit:03', 'cap:audit'),
+        ('cit:04', 'cap:audit'),
+        ('cit:05', 'cap:audit'),
+        ('cit:06', 'cap:audit'),
+        ('cit:07', 'cap:audit'),
+        ('cit:10', 'cap:audit'),
         # cap:review
-        ('cit:04', 'capability', 'cap:review'),
-        ('cit:05', 'capability', 'cap:review'),
-        ('cit:08', 'capability', 'cap:review'),
+        ('cit:04', 'cap:review'),
+        ('cit:05', 'cap:review'),
+        ('cit:08', 'cap:review'),
         # cap:sign
-        ('cit:05', 'capability', 'cap:sign'),
+        ('cit:05', 'cap:sign'),
     ]
+    kind = 'tool'
     with conn.cursor() as cur:
-        for holder_id, kind, ref in grants:
+        for holder_id, ref in grants:
             gid = _grant_id(holder_id, kind, ref)
             cur.execute(
                 """INSERT INTO inventory_grants
@@ -192,23 +196,25 @@ def load_citizen_vectors(conn) -> None:
 
 
 def load_frc_verdicts(conn) -> None:
-    """Synthetic classifier_run_log entries in mirror_engrams for FRC Stage 2 test."""
+    """
+    Synthetic FRC verdicts for cit:06 (failed) and cit:07 (degraded).
+
+    F-01 fix: uses frc_verdicts table via frc_emit_verdict() — NOT mirror_engrams.
+    coherence_check_v1() / get_recent_verdicts() now reads frc_verdicts exclusively.
+    """
     verdicts = [
-        # (owner_id, content, confidence, days_ago)
-        ('cit:06', 'synthetic-e2e-frc-failed',   0.30, 5),
-        ('cit:07', 'synthetic-e2e-frc-degraded',  0.60, 5),
+        # (engram_id,         holder_id, verdict,    issued_by)
+        ('e2e-engram-cit06',  'cit:06',  'failed',   'e2e-fixture'),
+        ('e2e-engram-cit07',  'cit:07',  'degraded', 'e2e-fixture'),
     ]
     with conn.cursor() as cur:
-        for owner_id, content, confidence, days_ago in verdicts:
-            run_log = json.dumps([{'pass_number': 1, 'confidence': confidence, 'parse_error': False}])
+        for engram_id, holder_id, verdict, issued_by in verdicts:
             cur.execute(
-                """INSERT INTO mirror_engrams (owner_id, owner_type, content, timestamp, classifier_run_log)
-                   VALUES (%s, 'human', %s, now() - (%s || ' days')::interval, %s::jsonb)
-                   ON CONFLICT DO NOTHING""",
-                (owner_id, content, str(days_ago), run_log),
+                'SELECT frc_emit_verdict(%s, %s, %s, %s)',
+                (engram_id, holder_id, verdict, issued_by),
             )
     conn.commit()
-    print(f'  mirror_engrams (FRC verdicts): {len(verdicts)} rows loaded')
+    print(f'  frc_verdicts: {len(verdicts)} rows loaded via frc_emit_verdict()')
 
 
 def load_quests(conn) -> None:
@@ -217,34 +223,36 @@ def load_quests(conn) -> None:
         ('q:t1-global-01', 'T1 Global Quest 01', 'T1', None,          []),
         ('q:t1-global-02', 'T1 Global Quest 02', 'T1', None,          []),
         ('q:t1-alpha-01',  'T1 Alpha Quest 01',  'T1', 'guild:alpha',  []),
-        ('q:t1-alpha-02',  'T1 Alpha Quest 02',  'T1', 'guild:alpha',  [{'kind':'capability','ref':'cap:audit','action':'use'}]),
-        ('q:t1-global-03', 'T1 Global Quest 03', 'T1', None,          [{'kind':'capability','ref':'cap:audit','action':'use'}]),
+        ('q:t1-alpha-02',  'T1 Alpha Quest 02',  'T1', 'guild:alpha',  [{'kind':'tool','ref':'cap:audit','action':'use'}]),
+        ('q:t1-global-03', 'T1 Global Quest 03', 'T1', None,          [{'kind':'tool','ref':'cap:audit','action':'use'}]),
         ('q:t2-global-01', 'T2 Global Quest 01', 'T2', None,          []),
-        ('q:t2-global-02', 'T2 Global Quest 02', 'T2', None,          [{'kind':'capability','ref':'cap:audit','action':'use'}]),
+        ('q:t2-global-02', 'T2 Global Quest 02', 'T2', None,          [{'kind':'tool','ref':'cap:audit','action':'use'}]),
         ('q:t2-beta-01',   'T2 Beta Quest 01',   'T2', 'guild:beta',   []),
-        ('q:t2-beta-02',   'T2 Beta Quest 02',   'T2', 'guild:beta',   [{'kind':'capability','ref':'cap:audit','action':'use'}]),
-        ('q:t2-global-03', 'T2 Global Quest 03', 'T2', None,          [{'kind':'capability','ref':'cap:review','action':'use'}]),
+        ('q:t2-beta-02',   'T2 Beta Quest 02',   'T2', 'guild:beta',   [{'kind':'tool','ref':'cap:audit','action':'use'}]),
+        ('q:t2-global-03', 'T2 Global Quest 03', 'T2', None,          [{'kind':'tool','ref':'cap:review','action':'use'}]),
         ('q:t3-global-01', 'T3 Global Quest 01', 'T3', None,          []),
-        ('q:t3-global-02', 'T3 Global Quest 02', 'T3', None,          [{'kind':'capability','ref':'cap:audit','action':'use'}]),
+        ('q:t3-global-02', 'T3 Global Quest 02', 'T3', None,          [{'kind':'tool','ref':'cap:audit','action':'use'}]),
         ('q:t3-alpha-01',  'T3 Alpha Quest 01',  'T3', 'guild:alpha',  []),
-        ('q:t3-alpha-02',  'T3 Alpha Quest 02',  'T3', 'guild:alpha',  [{'kind':'capability','ref':'cap:audit','action':'use'},
-                                                                         {'kind':'capability','ref':'cap:review','action':'use'}]),
-        ('q:t3-global-03', 'T3 Global Quest 03', 'T3', None,          [{'kind':'capability','ref':'cap:review','action':'use'}]),
+        ('q:t3-alpha-02',  'T3 Alpha Quest 02',  'T3', 'guild:alpha',  [{'kind':'tool','ref':'cap:audit','action':'use'},
+                                                                         {'kind':'tool','ref':'cap:review','action':'use'}]),
+        ('q:t3-global-03', 'T3 Global Quest 03', 'T3', None,          [{'kind':'tool','ref':'cap:review','action':'use'}]),
         ('q:t4-global-01', 'T4 Global Quest 01', 'T4', None,          []),
-        ('q:t4-global-02', 'T4 Global Quest 02', 'T4', None,          [{'kind':'capability','ref':'cap:sign','action':'use'}]),
-        ('q:t4-alpha-01',  'T4 Alpha Quest 01',  'T4', 'guild:alpha',  [{'kind':'capability','ref':'cap:sign','action':'use'}]),
+        ('q:t4-global-02', 'T4 Global Quest 02', 'T4', None,          [{'kind':'tool','ref':'cap:sign','action':'use'}]),
+        ('q:t4-alpha-01',  'T4 Alpha Quest 01',  'T4', 'guild:alpha',  [{'kind':'tool','ref':'cap:sign','action':'use'}]),
         ('q:t4-global-03', 'T4 Global Quest 03', 'T4', None,          []),
         ('q:t4-global-04', 'T4 Global Quest 04', 'T4', None,          []),
     ]
     with conn.cursor() as cur:
         for qid, title, tier, guild_scope, req_caps in quests:
             cur.execute(
+                # created_by = qid so each "creator" has 1 quest
+                # → avoids migration 035 rate limit (max 10 per creator per 24h)
                 """INSERT INTO quests (id, title, tier, guild_scope, required_capabilities, status, created_by)
-                   VALUES (%s, %s, %s, %s, %s::jsonb, 'open', 'e2e-fixture')
+                   VALUES (%s, %s, %s, %s, %s::jsonb, 'open', %s)
                    ON CONFLICT (id) DO UPDATE SET
                        title=%s, tier=%s, guild_scope=%s,
                        required_capabilities=%s::jsonb, status='open'""",
-                (qid, title, tier, guild_scope, json.dumps(req_caps),
+                (qid, title, tier, guild_scope, json.dumps(req_caps), qid,
                  title, tier, guild_scope, json.dumps(req_caps)),
             )
     conn.commit()
@@ -256,7 +264,7 @@ def load_quest_vectors(conn) -> None:
         for quest_id, vector in QUEST_VECTORS.items():
             cur.execute(
                 """INSERT INTO quest_vectors (quest_id, vector, named_dims, source, extracted_at)
-                   VALUES (%s, %s, NULL, 'e2e-fixture', now())
+                   VALUES (%s, %s, NULL, 'manual', now())
                    ON CONFLICT (quest_id) DO UPDATE SET vector=%s, extracted_at=now()""",
                 (quest_id, vector, vector),
             )
@@ -281,18 +289,40 @@ def load_prior_offers(conn) -> None:
             return
 
         cur.execute(
-            """INSERT INTO match_history (quest_id, candidate_id, composite_score, offer_count, outcome, outcome_at)
+            """INSERT INTO match_history
+                   (quest_id, candidate_id, composite_score, offer_count, outcome, outcome_at, reputation_processed_at)
                VALUES
-                 ('q:t1-global-01', 'cit:10', 0.5, 1, 'abandoned', now() - interval '10 days'),
-                 ('q:t1-global-01', 'cit:10', 0.5, 2, 'rejected',  now() - interval '5 days')""",
+                 ('q:t1-global-01', 'cit:10', 0.5, 1, 'abandoned',
+                  now() - interval '10 days', now() - interval '10 days'),
+                 ('q:t1-global-01', 'cit:10', 0.5, 2, 'rejected',
+                  now() - interval '5 days',  now() - interval '5 days')""",
         )
     conn.commit()
     print('  match_history (prior offers): 2 rows loaded')
 
 
+def cleanup_e2e_state(conn) -> None:
+    """
+    Delete all accumulated E2E state for test citizens (cit:01..cit:10).
+
+    This ensures each test run starts from a clean slate regardless of prior runs.
+    Tables cleaned: match_history, reputation_events, reputation_state, citizen_vectors.
+    Guild memberships, inventory grants, quests, and quest_vectors are idempotent
+    (ON CONFLICT DO UPDATE) so they don't need explicit cleanup.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM match_history WHERE candidate_id LIKE 'cit:%%'")
+        cur.execute("DELETE FROM reputation_events WHERE holder_id LIKE 'cit:%%'")
+        cur.execute("DELETE FROM reputation_state WHERE holder_id LIKE 'cit:%%'")
+        cur.execute("DELETE FROM citizen_vectors WHERE holder_id LIKE 'cit:%%'")
+    conn.commit()
+    print('  cleanup: match_history, reputation_events, reputation_state, citizen_vectors cleared for cit:*')
+
+
 def main() -> None:
     print('Sprint 004 E2E fixture setup starting...')
     with _connect() as conn:
+        cleanup_e2e_state(conn)
         load_guilds(conn)
         load_reputation_state(conn)
         load_guild_members(conn)

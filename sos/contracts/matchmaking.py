@@ -213,8 +213,10 @@ def _stage1_eligibility(
             return (False, f'missing capability {kind}:{ref}:{action}')
 
     # Reputation Glicko-2 LCB ≥ tier threshold
+    # Always use global (NULL-scoped) reputation for the tier gate.
+    # Guild-scope reputation is used for within-guild ranking, not eligibility.
     threshold = TIER_REP_THRESHOLDS.get(tier, 0.0)
-    state = get_state_raw(candidate_id, 'overall', guild_scope)
+    state = get_state_raw(candidate_id, 'overall', None)
     lcb = state.lcb if state else -float('inf')
     if lcb < threshold:
         return (False, f'reputation LCB {lcb:.3f} < tier {tier} threshold {threshold}')

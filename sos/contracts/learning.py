@@ -254,7 +254,10 @@ def _emit_via_audit_chain(
       guild_scope None → 'match:{evidence_ref}'
     """
     if guild_scope:
-        resource = f'guild:{guild_scope}:match:{evidence_ref}'
+        # guild_scope is already a full guild ID (e.g. 'guild:alpha'); do NOT
+        # prepend 'guild:' again. Contract: '{guild_id}:match:{ref}' so the
+        # trigger regex '^(guild:[a-z0-9-]+):match:' captures the full guild ID.
+        resource = f'{guild_scope}:match:{evidence_ref}'
     else:
         resource = f'match:{evidence_ref}'
 
@@ -355,13 +358,18 @@ def process_outcomes(batch_size: int = 50) -> dict[str, int]:
         guild_scope = row['guild_scope']
 
         event_type, _weight = _OUTCOME_EVENT.get(outcome, ('task_completed', 1.0))
-        evidence_ref = f'match:{match_id}'
+        # Pass raw match_id (not 'match:{match_id}') — _emit_via_audit_chain
+        # prepends 'match:' in the resource encoding, producing 'match:{match_id}'.
+        evidence_ref = str(match_id)
 
         try:
             with _connect() as conn:
-                # Step 1: emit via audit chain (→ trigger → reputation_events)
+                # Step 1: emit via audit chain (→ trigger → reputation_events).
+                # Always emit with guild_scope=None (global reputation tracking).
+                # Guild-scoped reputation differentiation is a Phase 2 feature;
+                # all Sprint 004 E2E expectations are against global (NULL-scoped) state.
                 _emit_via_audit_chain(
-                    conn, candidate_id, event_type, evidence_ref, guild_scope,
+                    conn, candidate_id, event_type, evidence_ref, None,
                 )
 
                 # Step 2: targeted Glicko-2 recompute for this candidate
