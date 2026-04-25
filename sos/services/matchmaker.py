@@ -201,12 +201,19 @@ def _dispatch_to_squad(quest: dict, candidate_id: str, composite_score: float) -
 
     Returns True on success, False on any HTTP error (fail-open; log and continue).
     """
+    import uuid as _uuid
+    task_id = str(_uuid.uuid4())
+    # Squad Service requires squad_id; use 'dev' as the default dispatch target.
+    # Guild-scoped routing to specific squads is a Sprint 005 feature.
+    squad_id = 'dev'
     task_payload = {
+        'id': task_id,
+        'squad_id': squad_id,
         'title': quest.get('title', quest['id']),
         'labels': [f'quest:{quest["id"]}', f'tier:{quest["tier"]}'],
         'priority': _tier_to_priority(quest['tier']),
         'assignee': candidate_id,
-        'metadata': {
+        'inputs': {
             'quest_id': quest['id'],
             'tier': quest['tier'],
             'composite_score': composite_score,
@@ -222,7 +229,10 @@ def _dispatch_to_squad(quest: dict, candidate_id: str, composite_score: float) -
             timeout=10,
         )
         r.raise_for_status()
-        task_id = r.json().get('id') or r.json().get('task_id')
+        # task_id already set above; response may confirm it
+        resp_id = r.json().get('id') or r.json().get('task_id')
+        if resp_id:
+            task_id = resp_id
     except Exception as exc:
         log.warning('matchmaker: failed to create Squad task for quest=%s: %s', quest['id'], exc)
         return False
@@ -231,7 +241,7 @@ def _dispatch_to_squad(quest: dict, candidate_id: str, composite_score: float) -
     try:
         r = requests.post(
             f'{SQUAD_SERVICE_URL}/tasks/{task_id}/claim',
-            json={'assignee': candidate_id, 'attempt': 1},
+            json={'assignee': candidate_id, 'attempt': 0},
             headers=_HEADERS,
             timeout=10,
         )
@@ -244,7 +254,8 @@ def _dispatch_to_squad(quest: dict, candidate_id: str, composite_score: float) -
 
 
 def _tier_to_priority(tier: str) -> str:
-    return {'T1': 'low', 'T2': 'normal', 'T3': 'high', 'T4': 'critical'}.get(tier, 'normal')
+    # Squad Service priority enum: low / medium / high / critical
+    return {'T1': 'low', 'T2': 'medium', 'T3': 'high', 'T4': 'critical'}.get(tier, 'medium')
 
 
 # ── Main tick ─────────────────────────────────────────────────────────────────
