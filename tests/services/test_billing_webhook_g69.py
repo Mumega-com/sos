@@ -72,6 +72,7 @@ def _make_contract_row(
         "cause_statement": cause,
         "status": "sent",
         "project": project,  # BLOCK-2: authoritative project source
+        "knight_id": None,   # None = no prior mint; pre-mint guard passes through
     }
 
 

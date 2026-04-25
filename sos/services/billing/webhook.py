@@ -238,7 +238,7 @@ async def handle_payment_intent_succeeded(
             # ── 2. Contract verification (BLOCK-2: stripe_customer_id from pi.customer) ──
             contract = await conn.fetchrow(
                 "SELECT id, principal_id, tenant_slug, stripe_customer_id, "
-                "cause_statement, status, project "
+                "cause_statement, status, project, knight_id "
                 "FROM contracts WHERE stripe_customer_id = $1 ORDER BY created_at DESC LIMIT 1",
                 stripe_customer_id,
             )
@@ -258,6 +258,29 @@ async def handle_payment_intent_succeeded(
                     f"stripe_customer={stripe_customer_id} but no contracts row found."
                 )
                 return {"ok": False, "reason": "no_contract", "stripe_customer_id": stripe_customer_id}
+
+            # ── 2b. Pre-mint guard: contract.knight_id already set → previously minted ──
+            # Closes the edge case where the idempotency row was lost after commit but
+            # contracts.knight_id was persisted. Without this, the fallback knight_name
+            # generation (payment_intent_id[-8:]) could produce a second knight for the
+            # same customer. (Athena pre-gate action, G69 v0.3 conditional GREEN.)
+            if contract["knight_id"]:
+                log.info(
+                    "payment_intent.succeeded: knight_already_minted contract_id=%s knight=%s — "
+                    "idempotency gap closed",
+                    contract["id"], contract["knight_id"],
+                )
+                await conn.execute(
+                    "UPDATE stripe_webhook_processed SET status='processed', "
+                    "resulting_knight_id=$1, completed_at=now() WHERE id=$2",
+                    contract["knight_id"], webhook_id,
+                )
+                emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "replay_skipped")
+                return {
+                    "ok": True,
+                    "reason": "knight_already_minted",
+                    "knight_id": contract["knight_id"],
+                }
 
             # ── 3. Project scope guard (BLOCK-2: authoritative source is contracts.project) ──
             project = (contract["project"] or "mumega").strip()
