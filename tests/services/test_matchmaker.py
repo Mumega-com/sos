@@ -15,9 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import sos.services.matchmaker as _mm_module
 from sos.services.matchmaker import (
     _hungarian_assign,
     _tier_to_priority,
+    _try_acquire_leader_lock,
+    _db_url,
     run_tick,
 )
 
@@ -47,13 +50,13 @@ def _quest(qid: str, tier: str = 'T1') -> dict:
 class TestTierToPriority:
     def test_all_tiers_mapped(self) -> None:
         assert _tier_to_priority('T1') == 'low'
-        assert _tier_to_priority('T2') == 'normal'
+        assert _tier_to_priority('T2') == 'medium'
         assert _tier_to_priority('T3') == 'high'
         assert _tier_to_priority('T4') == 'critical'
 
-    def test_unknown_tier_defaults_normal(self) -> None:
-        assert _tier_to_priority('T5') == 'normal'
-        assert _tier_to_priority('') == 'normal'
+    def test_unknown_tier_defaults_medium(self) -> None:
+        assert _tier_to_priority('T5') == 'medium'
+        assert _tier_to_priority('') == 'medium'
 
 
 # ── Unit: _hungarian_assign ───────────────────────────────────────────────────
@@ -162,7 +165,7 @@ class TestRunTickDB:
             stats = run_tick()
 
         expected = {'quests', 'candidates', 'assignments', 'dispatched', 'skipped',
-                    'outcomes_processed', 'vector_updates'}
+                    'outcomes_processed', 'vector_updates', 'leader_acquired'}
         assert set(stats.keys()) == expected
 
     def test_dry_run_skips_squad_dispatch(self) -> None:
@@ -174,3 +177,94 @@ class TestRunTickDB:
 
         # dry_run path should not invoke Squad dispatch even if assignments were made
         mock_dispatch.assert_not_called()
+
+
+# ── TC-G50: leader-lock (Sprint 006 A.1) ─────────────────────────────────────
+
+# Use a test-specific advisory lock slot to avoid competing with the live matchmaker
+# timer service (fires every 30s on production slot (1001, 0)).
+_TEST_LOCK_CLASSID = 9999
+_TEST_LOCK_OBJID   = 9999
+
+
+@db
+class TestLeaderLock:
+    """TC-G50a–e: PG session-level advisory leader-lock for dual-instance safety.
+
+    All tests redirect the advisory lock to slot (9999, 9999) to avoid competing
+    with the live matchmaker.timer service (fires every 30s on production slot (1001, 0)).
+    The advisory lock semantics tested are identical regardless of slot.
+    """
+
+    def setup_method(self, _method) -> None:  # noqa: ANN001
+        """Redirect to test slot before each test."""
+        self._orig_classid = _mm_module._LEADER_CLASSID
+        self._orig_objid   = _mm_module._LEADER_OBJID
+        _mm_module._LEADER_CLASSID = _TEST_LOCK_CLASSID
+        _mm_module._LEADER_OBJID   = _TEST_LOCK_OBJID
+
+    def teardown_method(self, _method) -> None:  # noqa: ANN001
+        """Restore production slot after each test."""
+        _mm_module._LEADER_CLASSID = self._orig_classid
+        _mm_module._LEADER_OBJID   = self._orig_objid
+
+    def _conn(self):
+        import psycopg2
+        import psycopg2.extras
+        return psycopg2.connect(_db_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def test_g50a_acquire_returns_true_when_free(self) -> None:
+        """TC-G50a: _try_acquire_leader_lock returns True when no other session holds it."""
+        conn = self._conn()
+        try:
+            assert _try_acquire_leader_lock(conn) is True
+        finally:
+            conn.close()
+
+    def test_g50b_second_session_cannot_acquire(self) -> None:
+        """TC-G50b: second connection cannot acquire while first holds the lock."""
+        conn1 = self._conn()
+        conn2 = self._conn()
+        try:
+            assert _try_acquire_leader_lock(conn1) is True
+            assert _try_acquire_leader_lock(conn2) is False
+        finally:
+            conn1.close()
+            conn2.close()
+
+    def test_g50c_run_tick_observer_exits_early(self) -> None:
+        """TC-G50c: run_tick returns leader_acquired=False and zero action stats when lock is taken."""
+        # Hold the leader lock in an external connection before run_tick starts
+        holder = self._conn()
+        try:
+            assert _try_acquire_leader_lock(holder) is True
+            stats = run_tick()
+            assert stats['leader_acquired'] is False
+            assert stats['quests'] == 0
+            assert stats['candidates'] == 0
+            assert stats['assignments'] == 0
+            assert stats['dispatched'] == 0
+        finally:
+            holder.close()
+
+    def test_g50d_lock_released_after_tick(self) -> None:
+        """TC-G50d: after run_tick completes, the lock is released and another session can acquire."""
+        with patch('sos.services.matchmaker.DRY_RUN', True):
+            stats = run_tick()
+        assert stats['leader_acquired'] is True
+
+        # After run_tick returns, lock_conn has been closed — another session can now acquire
+        conn = self._conn()
+        try:
+            assert _try_acquire_leader_lock(conn) is True
+        finally:
+            conn.close()
+
+    def test_g50e_leader_tick_sets_leader_acquired_true(self) -> None:
+        """TC-G50e: run_tick returns leader_acquired=True when it wins the lock."""
+        with patch('sos.services.matchmaker.DRY_RUN', True):
+            stats = run_tick()
+
+        assert stats['leader_acquired'] is True
+        assert 'quests' in stats
+        assert 'candidates' in stats

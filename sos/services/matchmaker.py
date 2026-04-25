@@ -1,15 +1,19 @@
 """
-§16 Matchmaker — Hungarian Assignment Tick (Sprint 004 A.5).
+§16 Matchmaker — Hungarian Assignment Tick (Sprint 004 A.5 / Sprint 006 A.1).
 
 Runs as a systemd one-shot service on a 30-second timer.
 Each tick:
-  1. Fetches all open quests from Mirror DB.
-  2. Builds candidate pool from active citizens (recent reputation_state or citizen_vectors).
-  3. Runs rank_candidates() per quest (five-stage pipeline from A.3).
-  4. Builds composite_score matrix (quests × candidates).
-  5. Applies scipy.optimize.linear_sum_assignment on negated matrix (max→min transform).
-  6. Records each assignment in match_history via matchmaking.record_assignment().
-  7. Emits assignment tasks to Squad Service (:8060) via POST /tasks + /claim.
+  1. Acquires a PG session-level advisory leader lock (Sprint 006 A.1 / G50).
+     If another instance holds the lock, this process exits immediately as an
+     observer (zero writes).  The lock is released automatically when the
+     process exits — including kill -9 (PG drops the session lock on disconnect).
+  2. Fetches all open quests from Mirror DB.
+  3. Builds candidate pool from active citizens (recent reputation_state or citizen_vectors).
+  4. Runs rank_candidates() per quest (five-stage pipeline from A.3).
+  5. Builds composite_score matrix (quests × candidates).
+  6. Applies scipy.optimize.linear_sum_assignment on negated matrix (max→min transform).
+  7. Records each assignment in match_history via matchmaking.record_assignment().
+  8. Emits assignment tasks to Squad Service (:8060) via POST /tasks + /claim.
 
 Candidate pool strategy (v1):
   Active citizens = union of:
@@ -23,11 +27,12 @@ Cost discipline:
   If a quest has no vector yet, Stage 3 returns neutral 0.5 (cold-start path).
 
 Env vars:
-  SQUAD_SERVICE_URL   — default http://localhost:8060
-  SOS_SYSTEM_TOKEN    — auth token for Squad Service API calls
+  SQUAD_SERVICE_URL        — default http://localhost:8060
+  SOS_SYSTEM_TOKEN         — auth token for Squad Service API calls
   MIRROR_DATABASE_URL or DATABASE_URL — Mirror DB
-  MAX_POOL_SIZE       — candidate pool cap (default 200)
-  MATCHMAKER_LIVE     — set to '1' to enable Squad Service dispatch; default is dry-run
+  MAX_POOL_SIZE            — candidate pool cap (default 200)
+  MATCHMAKER_LIVE          — set to '1' to enable Squad Service dispatch; default is dry-run
+  MATCHMAKER_INSTANCE_ID   — optional label for this instance in log lines (default 'default')
 """
 from __future__ import annotations
 
@@ -59,6 +64,10 @@ MAX_QUESTS_PER_TICK  = int(os.environ.get('MAX_QUESTS_PER_TICK', '100'))
 MATRIX_TIMEOUT_S     = int(os.environ.get('MATCHMAKER_MATRIX_TIMEOUT', '25'))
 _LIVE                = os.environ.get('MATCHMAKER_LIVE', '') == '1'
 DRY_RUN              = not _LIVE
+# Sprint 006 A.1 (G50): dual-instance leader election via PG advisory lock
+INSTANCE_ID          = os.environ.get('MATCHMAKER_INSTANCE_ID', 'default')
+_LEADER_CLASSID      = 1001   # G23 matchmaker advisory lock namespace
+_LEADER_OBJID        = 0      # leader sentinel (objid=0 reserved for leader election)
 
 _HEADERS = {
     'Authorization': f'Bearer {SOS_SYSTEM_TOKEN}',
@@ -78,6 +87,32 @@ def _db_url() -> str:
 
 def _connect():
     return psycopg2.connect(_db_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def _try_acquire_leader_lock(conn) -> bool:
+    """Try to acquire the matchmaker leader advisory lock (session-level, non-blocking).
+
+    Uses pg_try_advisory_lock(classid, objid) — 2-arg form to avoid namespace
+    collision with other advisory locks elsewhere in the system.
+
+    classid=1001 : matchmaker namespace (established in G23).
+    objid=0      : leader sentinel — one instance may hold this at a time.
+
+    Session-level semantics: the lock is held for the lifetime of *conn*, not
+    just a transaction.  It is automatically released when the connection is
+    closed or dropped — including kill -9 (PG drops the backend session and
+    releases all its session-level advisory locks).
+
+    Returns True if this instance won the lock, False if another holds it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            'SELECT pg_try_advisory_lock(%s, %s)',
+            (_LEADER_CLASSID, _LEADER_OBJID),
+        )
+        row = cur.fetchone()
+        # RealDictCursor returns a dict-like row; key is the function name
+        return bool(row['pg_try_advisory_lock'])
 
 
 def _fetch_open_quests(conn) -> list[dict]:
@@ -261,9 +296,16 @@ def _tier_to_priority(tier: str) -> str:
 # ── Main tick ─────────────────────────────────────────────────────────────────
 
 
-def run_tick() -> dict[str, int]:
+def run_tick() -> dict:
     """
     Execute one matchmaker assignment tick.
+
+    Sprint 006 A.1 (G50) — leader election:
+      Acquire a session-level PG advisory lock before any reads or writes.
+      If another instance already holds the lock, return immediately as an
+      observer (leader_acquired=False, all counts zero).  The lock is held
+      for the full duration of the tick and released in the finally block
+      (connection close), including on kill -9 (PG auto-releases on disconnect).
 
     Phase 0: Process any pending match_history outcomes via the A.6 learning loop
              so this tick operates on the freshest reputation state.
@@ -272,93 +314,114 @@ def run_tick() -> dict[str, int]:
     Phase 3: Record assignments in match_history + dispatch to Squad Service.
 
     Returns summary: {quests, candidates, assignments, dispatched, skipped,
-                      outcomes_processed, vector_updates}.
+                      outcomes_processed, vector_updates, leader_acquired}.
     """
     from sos.contracts.learning import process_outcomes
 
-    stats = {
+    stats: dict = {
         'quests': 0, 'candidates': 0, 'assignments': 0,
         'dispatched': 0, 'skipped': 0,
         'outcomes_processed': 0, 'vector_updates': 0,
+        'leader_acquired': False,
     }
 
-    # Phase 0: learning loop — process pending outcomes before assigning new quests
+    # ── Leader election (G50) ────────────────────────────────────────────────
+    # Separate connection so the session lock outlives individual transactions.
+    lock_conn = _connect()
     try:
-        lo_stats = process_outcomes()
-        stats['outcomes_processed'] = lo_stats['processed']
-        stats['vector_updates']     = lo_stats['vector_updates']
-    except Exception as exc:
-        log.warning('matchmaker: learning loop error (non-fatal): %s', exc)
+        if not _try_acquire_leader_lock(lock_conn):
+            log.info(
+                'matchmaker[%s]: observer — leader lock held by another instance, exiting',
+                INSTANCE_ID,
+            )
+            return stats
+        stats['leader_acquired'] = True
+        log.debug('matchmaker[%s]: leader lock acquired', INSTANCE_ID)
 
-    with _connect() as conn:
-        quests = _fetch_open_quests(conn)
-        candidates = _fetch_candidate_pool(conn)
+        # Phase 0: learning loop — process pending outcomes before assigning new quests
+        try:
+            lo_stats = process_outcomes()
+            stats['outcomes_processed'] = lo_stats['processed']
+            stats['vector_updates']     = lo_stats['vector_updates']
+        except Exception as exc:
+            log.warning('matchmaker: learning loop error (non-fatal): %s', exc)
 
-    stats['quests'] = len(quests)
-    stats['candidates'] = len(candidates)
+        with _connect() as conn:
+            quests = _fetch_open_quests(conn)
+            candidates = _fetch_candidate_pool(conn)
 
-    if not quests:
-        log.info('matchmaker: no open quests — tick complete')
-        return stats
-    if not candidates:
-        log.info('matchmaker: empty candidate pool — tick complete')
-        return stats
+        stats['quests'] = len(quests)
+        stats['candidates'] = len(candidates)
 
-    log.info('matchmaker: %d quests × %d candidates', len(quests), len(candidates))
+        if not quests:
+            log.info('matchmaker: no open quests — tick complete')
+            return stats
+        if not candidates:
+            log.info('matchmaker: empty candidate pool — tick complete')
+            return stats
 
-    # Build score matrix with deadline (F-05: prevents quest-flood DoS).
-    # rank_candidates() opens its own DB connections — thread-safe to run in executor.
-    # Do NOT use `with executor:` — its __exit__ calls shutdown(wait=True), which
-    # blocks until the thread finishes and defeats the purpose of the timeout.
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_build_matrix, quests, candidates)
-    try:
-        matrix = future.result(timeout=MATRIX_TIMEOUT_S)
-    except concurrent.futures.TimeoutError:
-        log.warning(
-            'matchmaker: matrix build exceeded %ds deadline — skipping tick '
-            '(quests=%d candidates=%d)',
-            MATRIX_TIMEOUT_S, len(quests), len(candidates),
-        )
-        stats['skipped'] = len(quests)
+        log.info('matchmaker: %d quests × %d candidates', len(quests), len(candidates))
+
+        # Build score matrix with deadline (F-05: prevents quest-flood DoS).
+        # rank_candidates() opens its own DB connections — thread-safe to run in executor.
+        # Do NOT use `with executor:` — its __exit__ calls shutdown(wait=True), which
+        # blocks until the thread finishes and defeats the purpose of the timeout.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_build_matrix, quests, candidates)
+        try:
+            matrix = future.result(timeout=MATRIX_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            log.warning(
+                'matchmaker: matrix build exceeded %ds deadline — skipping tick '
+                '(quests=%d candidates=%d)',
+                MATRIX_TIMEOUT_S, len(quests), len(candidates),
+            )
+            stats['skipped'] = len(quests)
+            executor.shutdown(wait=False)
+            return stats
         executor.shutdown(wait=False)
+
+        assignments = _hungarian_assign(quests, candidates, matrix)
+        stats['assignments'] = len(assignments)
+
+        for quest, candidate_id, composite_score in assignments:
+            quest_id = quest['id']
+
+            # Record in match_history
+            match_id = record_assignment(quest_id, candidate_id, composite_score)
+
+            if DRY_RUN:
+                log.info(
+                    'DRY_RUN: quest=%s → candidate=%s score=%.4f match_id=%d',
+                    quest_id, candidate_id, composite_score, match_id,
+                )
+                stats['dispatched'] += 1
+                continue
+
+            # Dispatch to Squad Service
+            ok = _dispatch_to_squad(quest, candidate_id, composite_score)
+            if ok:
+                stats['dispatched'] += 1
+                log.info(
+                    'matchmaker: assigned quest=%s → %s (score=%.4f)',
+                    quest_id, candidate_id, composite_score,
+                )
+            else:
+                stats['skipped'] += 1
+
+        log.info(
+            'matchmaker tick done: quests=%d candidates=%d assigned=%d dispatched=%d skipped=%d',
+            stats['quests'], stats['candidates'],
+            stats['assignments'], stats['dispatched'], stats['skipped'],
+        )
         return stats
-    executor.shutdown(wait=False)
 
-    assignments = _hungarian_assign(quests, candidates, matrix)
-    stats['assignments'] = len(assignments)
-
-    for quest, candidate_id, composite_score in assignments:
-        quest_id = quest['id']
-
-        # Record in match_history
-        match_id = record_assignment(quest_id, candidate_id, composite_score)
-
-        if DRY_RUN:
-            log.info(
-                'DRY_RUN: quest=%s → candidate=%s score=%.4f match_id=%d',
-                quest_id, candidate_id, composite_score, match_id,
-            )
-            stats['dispatched'] += 1
-            continue
-
-        # Dispatch to Squad Service
-        ok = _dispatch_to_squad(quest, candidate_id, composite_score)
-        if ok:
-            stats['dispatched'] += 1
-            log.info(
-                'matchmaker: assigned quest=%s → %s (score=%.4f)',
-                quest_id, candidate_id, composite_score,
-            )
-        else:
-            stats['skipped'] += 1
-
-    log.info(
-        'matchmaker tick done: quests=%d candidates=%d assigned=%d dispatched=%d skipped=%d',
-        stats['quests'], stats['candidates'],
-        stats['assignments'], stats['dispatched'], stats['skipped'],
-    )
-    return stats
+    finally:
+        # Close the lock connection — releases the session-level advisory lock.
+        # Guard against double-close: set to None after closing.
+        if lock_conn:
+            lock_conn.close()
+            lock_conn = None
 
 
 def main() -> None:
