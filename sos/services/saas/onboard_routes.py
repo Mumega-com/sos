@@ -406,16 +406,33 @@ async def _fetch_github_profile(access_token: str) -> dict[str, Any]:
 
     profile = user_resp.json()
 
-    # Always fetch /user/emails — use only primary+verified entry (ADV-G68-004).
-    # profile["email"] (unverified public field) is discarded even if non-null.
-    profile["email"] = None
+    # ADV-G68-004: always fetch /user/emails and prefer the primary+verified entry.
+    # profile["email"] is the *unverified* public field — any GitHub user can set it
+    # to an arbitrary address without owning it, enabling principal hijack.
+    # We use verified email → public email (with warning) → None, in that order.
+    public_email = profile.get("email")  # save before overwriting
+    verified_email: str | None = None
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         emails_resp = await client.get(_GITHUB_EMAILS_URL, headers=headers)
     if emails_resp.status_code == 200:
         for entry in emails_resp.json():
             if entry.get("primary") and entry.get("verified"):
-                profile["email"] = entry["email"]
+                verified_email = entry["email"]
                 break
+
+    if verified_email:
+        profile["email"] = verified_email
+    elif public_email:
+        log.warning(
+            "github profile: no verified primary email for login=%s — falling back to "
+            "unverified public email; principal will use synthetic address if email matches "
+            "an existing prospect (see ADV-G68-004)",
+            profile.get("login"),
+        )
+        profile["email"] = public_email
+    else:
+        profile["email"] = None
 
     return profile
 

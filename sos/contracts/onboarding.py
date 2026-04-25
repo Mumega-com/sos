@@ -344,16 +344,16 @@ def create_contract(
                        (principal_id, stripe_customer_id, stripe_quote_id, stripe_quote_url, status)
                    VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT (stripe_quote_id)
-                   -- ADV-G68-006: accepted/void contracts are immutable via upsert path;
-                   -- only draft/sent contracts can be re-sent.
-                   DO UPDATE SET status = EXCLUDED.status
-                   WHERE contracts.status NOT IN ('accepted', 'void')
+                   -- ADV-G68-006 (Athena WARN A): DO NOTHING on replay — idempotency only
+                   -- needs the row to exist and return contract_id; never mutate status
+                   -- via an upsert path (status transitions go through dedicated functions).
+                   DO NOTHING
                    RETURNING id""",
                 (principal_id, stripe_customer_id, stripe_quote_id, stripe_quote_url, status),
             )
             row = cur.fetchone()
             if row is None:
-                # UPDATE was blocked (contract already accepted/void) — fetch existing id
+                # Conflict — fetch the existing contract id (Stripe webhook replay path)
                 cur.execute(
                     "SELECT id FROM contracts WHERE stripe_quote_id = %s",
                     (stripe_quote_id,),
