@@ -1,12 +1,15 @@
 """
-Gemini adapter — wraps Google GenerativeAI SDK.
+Gemini adapter — wraps Google Gen AI SDK (google.genai).
 Tracks token usage and reports cost per call.
+
+Migrated from deprecated google.generativeai (B.6, Sprint 004).
 """
 import os
 from typing import Optional
 
-import google.generativeai as genai
-from google.api_core.exceptions import GoogleAPIError
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
 from sos.adapters.pricing import PricingEntry, PricingTable, ensure_entry
@@ -75,20 +78,20 @@ DEFAULT_MODEL = "gemini-2.0-flash"
 
 
 class GeminiAdapter(AgentAdapter):
-    """Google Gemini adapter."""
+    """Google Gemini adapter — uses google.genai SDK (formerly google.generativeai)."""
 
     provider = "google"
 
     def __init__(self, api_key: Optional[str] = None):
         self._api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
-        self._configured = False
+        self._client: Optional[genai.Client] = None
 
-    def _ensure_configured(self) -> None:
-        if not self._configured:
+    def _ensure_client(self) -> genai.Client:
+        if self._client is None:
             if not self._api_key:
                 raise RuntimeError("GOOGLE_API_KEY is not set")
-            genai.configure(api_key=self._api_key)
-            self._configured = True
+            self._client = genai.Client(api_key=self._api_key)
+        return self._client
 
     def estimate_cost(self, input_tokens: int, output_tokens: int, model: str, image_count: int = 0) -> int:
         """Return estimated cost in cents (integer, rounded up).
@@ -102,23 +105,21 @@ class GeminiAdapter(AgentAdapter):
 
     async def execute(self, ctx: ExecutionContext) -> ExecutionResult:
         model_name = ctx.model or DEFAULT_MODEL
-        self._ensure_configured()
+        client = self._ensure_client()
 
-        generation_config = genai.GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=ctx.temperature,
             max_output_tokens=ctx.max_tokens,
-        )
-
-        system_instruction = ctx.system_prompt if ctx.system_prompt else None
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            generation_config=generation_config,
-            system_instruction=system_instruction,
+            system_instruction=ctx.system_prompt or None,
         )
 
         try:
-            response = await model.generate_content_async(ctx.prompt)
-        except GoogleAPIError as exc:
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=ctx.prompt,
+                config=config,
+            )
+        except genai_errors.APIError as exc:
             log.error("Gemini API error", agent=ctx.agent_id, model=model_name, error=str(exc))
             return ExecutionResult(
                 text="",
@@ -169,9 +170,11 @@ class GeminiAdapter(AgentAdapter):
 
     async def health_check(self) -> bool:
         try:
-            self._ensure_configured()
-            model = genai.GenerativeModel("gemini-2.0-flash-lite")
-            await model.generate_content_async("ping")
+            client = self._ensure_client()
+            await client.aio.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                contents="ping",
+            )
             return True
         except Exception as exc:
             log.warning("Gemini health check failed", error=str(exc))

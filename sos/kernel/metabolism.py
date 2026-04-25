@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sos.kernel.identity import AgentDNA
-from sos.clients.engine import EngineClient
+from sos.clients.engine import AsyncEngineClient
 from sos.contracts.engine import ChatRequest
 
 logger = logging.getLogger("sos.metabolism")
@@ -18,7 +18,7 @@ class MetabolicLoop:
     """
     def __init__(self, agent_id: str = "agent:River"):
         self.agent_id = agent_id
-        self.engine = EngineClient(base_url="http://localhost:6060")
+        self.engine = AsyncEngineClient(base_url="http://localhost:6060")
         self.running = False
         self.cycle_count = 0
 

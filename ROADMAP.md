@@ -213,6 +213,19 @@ If we pursue the IDEaS 006 bid (deadline 2026-06-02), 9 technical deltas extend 
 
 **Outcome:** IDEaS 006 proposal credibility for Component 1a ($250K / 6 months / TRL 1-3). Defence + civilian substrate share 100% — every delta also improves civilian product.
 
+### Section 12 — sos-docs Microservice + Inkwell-Hive (📋 Specced 2026-04-24, **Burst 2 priority**)
+
+**Why:** the substrate-eating-its-own-dog-food gap. Tonight's audit found 9 file-tree silos with overlapping content because the documentation surface doesn't yet honor the 5-tier RBAC the architecture commits to. **Logos-like principle, not-yet-logos-like operation.**
+
+**Components:**
+- **§12 sos-docs microservice** — peer service alongside Mirror/Squad/Dispatcher. Owns the canonical doc-node graph (tier, entity_id, permitted_roles, relations). Exposes API for any Inkwell host to consume.
+- **Inkwell-Hive schema upgrade (IH-1)** — replace 3-tier `access` enum with full 5-tier Hive (`tier`, `entity_id`, `permitted_roles[]`).
+- **Render-time tier enforcement (IH-2)** — middleware that filters content collection by viewer's role token.
+- **Doc ingestion (IH-0)** — one-shot script to ingest tonight's 9 files as graph nodes with proper tier metadata, breaking the duplication immediately.
+- **Cross-host consumption (IH-3)** — mumega.com Inkwell + future Digid Internal Inkwell + future customer Inkwell forks all consume sos-docs and render their authorized slice.
+
+**Effort:** ~18 engineer-days total. Promoted to **Burst 2 priority** because (a) every other doc shipped going forward duplicates without it, and (b) the §11 profile primitive shares this rendering layer.
+
 ### Phase 7.5 — Digid → $1M → Exit → US (🎯 Strategic path, ~12-18 months)
 
 **Strategic context (separate from the substrate roadmap):**

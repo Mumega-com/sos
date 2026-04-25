@@ -55,6 +55,7 @@ from sos.services.engine.adapters import (
     LocalCodeAdapter,
     LocalReasoningAdapter,
     OpenRouterAdapter,
+    VertexGeminiAdapter,
     # Backward compatibility aliases
     MLXAdapter,
     MLXCodeAdapter,
@@ -92,15 +93,22 @@ class SOSEngine(EngineContract):
             "local": LocalAdapter(),
             "local-code": LocalCodeAdapter(),
             "local-reasoning": LocalReasoningAdapter(),
-            "phi4-mini": OpenRouterAdapter("microsoft/phi-4-mini-instruct:free"),
+            # Vertex ADC — no API key, ADC on mumega-com/us-central1 (confirmed live 2026-04-25)
+            # Model selection policy (Hadi directive 2026-04-25):
+            #   Lite > Flash > nothing. Pro disabled — ~10x cost, not worth it at substrate scale.
+            "vertex-gemini-lite":  VertexGeminiAdapter("gemini-2.5-flash-lite"),    # default
+            "vertex-gemini-flash": VertexGeminiAdapter("gemini-2.5-flash"),          # escalation only
         }
         self.default_model = "gemini-3-flash-preview"
 
-        # Fallback chain: try cloud first, fall back to local if rate-limited
+        # Fallback chain: try cloud first, fall back to local if rate-limited.
+        # Vertex Lite is second (Hadi directive: Lite > Flash > nothing, Pro disabled).
         self.fallback_chain = [
             "gemini-3-flash-preview",
+            "vertex-gemini-lite",    # Vertex ADC (Flash Lite — cheap, sustainable default)
+            "vertex-gemini-flash",   # Vertex Flash — escalation tier, use sparingly
             "grok-4-1-fast-reasoning",
-            "gpt-4o-mini",  # OpenAI fallback
+            "gpt-4o-mini",
             "local",
             "sos-mock-v1"
         ]

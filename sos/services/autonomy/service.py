@@ -7,6 +7,7 @@ Provides the autonomous heartbeat for SOS agents:
 - Dream synthesis on alpha drift
 - Avatar generation on significant events
 - Social automation for sharing insights
+- Reputation Dreamer: scheduled Glicko-2 batch recompute (§15 hook)
 """
 
 import os
@@ -17,6 +18,7 @@ from typing import Optional, Dict, Any, List, Callable
 
 from sos.kernel import Config
 from sos.kernel.dreams import DreamSynthesizer, DreamType, Dream
+from sos.kernel.reputation_dreamer import ReputationDreamer
 from sos.observability.logging import get_logger
 from sos.contracts.identity import UV16D
 from sos.clients.identity import AsyncIdentityClient
@@ -44,6 +46,7 @@ class AutonomyConfig:
     enable_avatar: bool = True
     enable_social: bool = False  # Disabled by default
     enable_metabolism: bool = True
+    enable_reputation_recompute: bool = True  # §15 Glicko-2 Dreamer hook
 
     # Gateway
     gateway_url: str = field(
@@ -113,6 +116,11 @@ class AutonomyService:
                 token=os.getenv("SOS_IDENTITY_TOKEN"),
             )
 
+        # §15 Reputation Dreamer — Glicko-2 scheduled recompute
+        self._reputation_dreamer: Optional[ReputationDreamer] = None
+        if self.config.enable_reputation_recompute:
+            self._reputation_dreamer = ReputationDreamer()
+
         # Memory client for ARF state
         self._memory_client = None
 
@@ -138,6 +146,21 @@ class AutonomyService:
         log.info(f"Autonomy heartbeat started for {self.agent_id}")
         await self._emit("autonomy_started", {"agent_id": self.agent_id})
 
+        tasks = [asyncio.create_task(self._pulse_loop())]
+
+        if self._reputation_dreamer is not None:
+            tasks.append(asyncio.create_task(self._reputation_dreamer.start()))
+
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+
+        await self._emit("autonomy_stopped", {"agent_id": self.agent_id})
+
+    async def _pulse_loop(self):
+        """Inner pulse loop extracted so it can run alongside sibling tasks."""
         while self.running:
             try:
                 await self.pulse()
@@ -147,8 +170,6 @@ class AutonomyService:
             except Exception as e:
                 log.error(f"Pulse error: {e}")
                 await asyncio.sleep(60)
-
-        await self._emit("autonomy_stopped", {"agent_id": self.agent_id})
 
     async def stop(self):
         """Stop the autonomy heartbeat."""
@@ -381,7 +402,13 @@ class AutonomyService:
                 "pulse_interval": self.config.pulse_interval_seconds,
                 "dreams_enabled": self.config.enable_dreams,
                 "avatar_enabled": self.config.enable_avatar,
-            }
+                "reputation_recompute_enabled": self.config.enable_reputation_recompute,
+            },
+            "reputation_dreamer": (
+                self._reputation_dreamer.health()
+                if self._reputation_dreamer is not None
+                else None
+            ),
         }
 
 

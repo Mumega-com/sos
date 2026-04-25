@@ -66,22 +66,49 @@ def _embed_vertex(text: str) -> list[float]:
 
 # ── Tier 2: Google AI Studio gemini-embedding-2-preview (1536d native) ────────
 
+import time as _time
+
+_GEMINI_KEY_POOL: list[str] = [
+    k for k in [
+        os.environ.get("GEMINI_API_KEY", ""),
+        os.environ.get("GEMINI_API_KEY_1", ""),
+        os.environ.get("GEMINI_API_KEY_2", ""),
+        os.environ.get("GEMINI_API_KEY_3", ""),
+        os.environ.get("GEMINI_API_KEY_4", ""),
+    ] if k
+]
+_GEMINI_KEY_EXHAUSTED_UNTIL: dict[str, float] = {}
+_GEMINI_QUOTA_COOLDOWN = 3600
+
 
 def _embed_gemini(text: str) -> list[float]:
     """
-    Google AI Studio Gemini Embedding 2 via GEMINI_API_KEY.
-    Produces native 1536-dimensional MRL vectors — no padding required.
+    Google AI Studio Gemini Embedding 2 via key rotation pool.
+    Tries each key in order; marks exhausted keys for 1 hour on 429.
     """
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
-    result = client.models.embed_content(
-        model="gemini-embedding-2-preview",
-        contents=text[:8192],
-        config=types.EmbedContentConfig(output_dimensionality=_DIMS),
-    )
-    return list(result.embeddings[0].values)
+    now = _time.time()
+    for key in _GEMINI_KEY_POOL:
+        if _GEMINI_KEY_EXHAUSTED_UNTIL.get(key, 0) >= now:
+            continue
+        try:
+            client = genai.Client(api_key=key)
+            result = client.models.embed_content(
+                model="gemini-embedding-2-preview",
+                contents=text[:8192],
+                config=types.EmbedContentConfig(output_dimensionality=_DIMS),
+            )
+            return list(result.embeddings[0].values)
+        except Exception as e:
+            err = str(e)
+            if any(kw in err.lower() for kw in ["quota", "429", "resource exhausted", "rate limit"]):
+                _GEMINI_KEY_EXHAUSTED_UNTIL[key] = now + _GEMINI_QUOTA_COOLDOWN
+                logger.warning("Gemini embedding key exhausted — rotating to next key")
+                continue
+            raise
+    raise EmbeddingError("All Gemini embedding keys exhausted")
 
 
 # ── Tier 3: Local ONNX via fastembed (384d → zero-padded to 1536d) ────────────

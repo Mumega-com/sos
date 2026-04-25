@@ -546,6 +546,77 @@ class OpenRouterAdapter(OpenAIAdapter):
             return f"OpenRouter Error: {str(e)}"
 
 
+class VertexGeminiAdapter(ModelAdapter):
+    """
+    Google Gemini via Vertex AI with Application Default Credentials (ADC).
+    No API key required — uses gcloud ADC configured on this server.
+    Replaces OpenRouter free-tier routing for sovereign inference.
+    """
+
+    def __init__(self, model: str = "gemini-2.5-flash-lite"):  # Hadi directive: Lite default
+        self.model = model
+        self.client = None
+        self._init_client()
+
+    def _init_client(self) -> None:
+        try:
+            from google import genai
+            project = os.getenv("GOOGLE_CLOUD_PROJECT", "mumega-com")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            self.client = genai.Client(vertexai=True, project=project, location=location)
+            log.info("VertexGeminiAdapter initialised (model=%s, project=%s)", self.model, project)
+        except ImportError:
+            log.warning("google-genai not installed — VertexGeminiAdapter unavailable")
+
+    def get_model_id(self) -> str:
+        return f"vertex-{self.model}"
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = None,
+        tools: List[Dict] = None,
+        user_id: str = "default",
+        history: List[Dict] = None,
+        **kwargs,
+    ) -> str:
+        if not self.client:
+            return "Error: Vertex Gemini client not initialised"
+        try:
+            from google.genai import types
+            cfg = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+            ) if system_prompt else None
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=cfg,
+            )
+            return response.text
+        except Exception as e:
+            log.error("Vertex Gemini generation failed: %s", e)
+            raise
+
+    async def generate_stream(
+        self, prompt: str, system_prompt: str = None, **kwargs
+    ) -> AsyncIterator[str]:
+        if not self.client:
+            yield "Error: Vertex Gemini client not initialised"
+            return
+        try:
+            response = self.client.models.generate_content_stream(
+                model=self.model,
+                contents=prompt,
+            )
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            log.error("Vertex Gemini stream failed: %s", e)
+            yield f"[Error: {e}]"
+
+
 # Backward compatibility alias
 MLXAdapter = LocalAdapter
 

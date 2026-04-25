@@ -42,6 +42,7 @@ from sos.services.squad import PipelineService, SquadService, SquadSkillService,
 from sos.services.squad.tasks import InsufficientFundsError, NotAllDoneError
 from sos.services.squad.kpis import KPISnapshot, calculate_kpis
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
+from sos.kernel.audit_chain import AuditChainEvent, emit_audit
 
 
 init_tracing("squad")
@@ -339,10 +340,20 @@ async def create_task(
 
     async def _do() -> dict[str, Any]:
         task = _to_task(payload)
-        return {
+        result = {
             "task": _json(task),
             "response": _json(tasks.create(task, tenant_id=auth.tenant_scope or "default")),
         }
+        asyncio.create_task(emit_audit(AuditChainEvent(
+            stream_id="squad",
+            actor_id=auth.identity.id,
+            actor_type="agent" if auth.identity.type.value == "agent" else "human",
+            action="created",
+            resource=f"task:{task.id}",
+            payload={"task_id": task.id, "squad_id": task.squad_id, "title": task.title,
+                     "status": task.status.value, "assignee": task.assignee},
+        )))
+        return result
 
     return await with_idempotency(
         key=idempotency_key,
@@ -501,6 +512,14 @@ async def claim_task(
         raise HTTPException(status_code=402, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    asyncio.create_task(emit_audit(AuditChainEvent(
+        stream_id="squad",
+        actor_id=payload.assignee,
+        actor_type="agent",
+        action="claimed",
+        resource=f"task:{task_id}",
+        payload={"task_id": task_id, "assignee": payload.assignee, "attempt": claim.attempt},
+    )))
     return _json(claim)
 
 
@@ -561,6 +580,15 @@ async def complete_task(
         if task.squad_id:
             from sos.services.squad.service import AchievementService
             AchievementService().check_and_award(task.squad_id)
+        asyncio.create_task(emit_audit(AuditChainEvent(
+            stream_id="squad",
+            actor_id=auth.identity.id,
+            actor_type="agent" if auth.identity.type.value == "agent" else "human",
+            action="completed",
+            resource=f"task:{task_id}",
+            payload={"task_id": task_id, "squad_id": task.squad_id,
+                     "assignee": task.assignee, "result_keys": list((payload.result or {}).keys())},
+        )))
         return _json(task)
 
     body = {"task_id": task_id, "payload": payload.model_dump()}

@@ -44,9 +44,46 @@ if _SOVEREIGN_DIR not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [WATCHDOG] %(message)s")
 logger = logging.getLogger("watchdog")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
+# Gemini key rotation pool — lazy-loaded on first use so dotenv has time to run.
+_GEMINI_KEY_POOL: list[str] = []
+_GEMINI_KEY_EXHAUSTED_UNTIL: dict[str, float] = {}  # key → unix timestamp
+
+
+def _gemini_key_pool() -> list[str]:
+    """Return the key pool, building it lazily from env on first call."""
+    global _GEMINI_KEY_POOL
+    if not _GEMINI_KEY_POOL:
+        _GEMINI_KEY_POOL = [
+            k for k in [
+                os.environ.get("GEMINI_API_KEY", ""),
+                os.environ.get("GEMINI_API_KEY_1", ""),
+                os.environ.get("GEMINI_API_KEY_2", ""),
+                os.environ.get("GEMINI_API_KEY_3", ""),
+                os.environ.get("GEMINI_API_KEY_4", ""),
+            ] if k
+        ]
+    return _GEMINI_KEY_POOL
+
+
+# Single key alias for backwards compat
+def _gemini_primary_key() -> str:
+    pool = _gemini_key_pool()
+    return pool[0] if pool else ""
+
+GEMINI_API_KEY = ""  # populated lazily via _gemini_primary_key()
+
+
+def _mark_gemini_key_exhausted(key: str) -> None:
+    pool = _gemini_key_pool()
+    _GEMINI_KEY_EXHAUSTED_UNTIL[key] = time.time() + QUOTA_COOLDOWN_SECS
+    idx = pool.index(key) if key in pool else -1
+    now = time.time()
+    next_key = next((k for k in pool if _GEMINI_KEY_EXHAUSTED_UNTIL.get(k, 0) < now), None)
+    next_idx = pool.index(next_key) if next_key else -1
+    logger.warning("Gemini key[%d] quota exhausted — rotated to key[%s]", idx, next_idx)
 
 STATE_FILE = Path("/home/mumega/.mumega/watchdog_state.json")
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -116,29 +153,44 @@ def check_source(name: str, test_fn, state: dict | None = None) -> dict:
         return {"available": False, "latency_ms": round(latency), "error": error[:100]}
 
 
-def test_gemma4() -> bool:
-    if not GEMINI_API_KEY:
-        return False
+def _gemini_generate(model: str, prompt: str = "Say OK") -> bool:
+    """Try each key in the pool until one works or all are exhausted."""
     from google import genai
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    r = client.models.generate_content(model="gemma-4-31b-it", contents="Say OK")
-    return bool(r.text)
+    now = time.time()
+    for key in _gemini_key_pool():
+        if _GEMINI_KEY_EXHAUSTED_UNTIL.get(key, 0) >= now:
+            continue
+        try:
+            client = genai.Client(api_key=key)
+            r = client.models.generate_content(model=model, contents=prompt)
+            return bool(r.text)
+        except Exception as e:
+            err = str(e)
+            if any(kw in err.lower() for kw in ["quota", "429", "resource exhausted", "rate limit"]):
+                _mark_gemini_key_exhausted(key)
+                continue  # try next key
+            raise  # non-quota error — propagate
+    raise Exception("All Gemini keys exhausted")
+
+
+def test_gemma4() -> bool:
+    if not _gemini_key_pool():
+        return False
+    return _gemini_generate("gemma-4-31b-it")
 
 
 def test_gemini_flash() -> bool:
-    if not GEMINI_API_KEY:
+    if not _gemini_key_pool():
         return False
-    from google import genai
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    r = client.models.generate_content(model="gemini-2.0-flash", contents="Say OK")
-    return bool(r.text)
+    return _gemini_generate("gemini-2.0-flash")
 
 
 def test_github_models() -> bool:
-    if not GITHUB_TOKEN:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
         return False
     from openai import OpenAI
-    client = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=GITHUB_TOKEN)
+    client = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=token)
     r = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": "Say OK"}],
@@ -148,16 +200,33 @@ def test_github_models() -> bool:
 
 
 def test_openrouter() -> bool:
-    if not OPENROUTER_API_KEY:
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
         return False
     from openai import OpenAI
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
     r = client.chat.completions.create(
         model="meta-llama/llama-3.2-3b-instruct:free",
         messages=[{"role": "user", "content": "Say OK"}],
         max_tokens=5,
     )
     return bool(r.choices[0].message.content)
+
+
+def test_vertex() -> bool:
+    """Test Vertex AI text-embedding-004 via ADC — no quota limits."""
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    if not project:
+        return False
+    try:
+        import vertexai
+        from vertexai.language_models import TextEmbeddingModel
+        vertexai.init(project=project, location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
+        model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+        result = model.get_embeddings(["OK"])
+        return bool(result and result[0].values)
+    except Exception:
+        return False
 
 
 def test_cloudflare() -> bool:
@@ -234,7 +303,10 @@ def run_check():
         "github_models": ("GitHub Models", test_github_models),
     }
 
-    if OPENROUTER_API_KEY:
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        sources["vertex"] = ("Vertex AI (ADC)", test_vertex)
+
+    if os.environ.get("OPENROUTER_API_KEY"):
         sources["openrouter"] = ("OpenRouter Free", test_openrouter)
 
     available_count = 0
@@ -314,8 +386,9 @@ def daemon():
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv("/home/mumega/.env.secrets")
-    load_dotenv("/home/mumega/therealmofpatterns/.env")
+    load_dotenv("/home/mumega/SOS/.env")                      # primary — 5 Gemini keys + SOS config
+    load_dotenv("/home/mumega/therealmofpatterns/.env")        # fallback values
+    load_dotenv("/home/mumega/.env.secrets", override=False)   # placeholders only — don't override
 
     if "--daemon" in sys.argv:
         daemon()
