@@ -94,7 +94,7 @@ def _verify_bucket_object_lock(s3_client: Any, bucket: str) -> None:
     unprotected bucket.
     """
     try:
-        resp = s3_client.get_bucket_object_lock_configuration(Bucket=bucket)
+        resp = s3_client.get_object_lock_configuration(Bucket=bucket)
         lock_cfg = resp.get("ObjectLockConfiguration", {})
         enabled = lock_cfg.get("ObjectLockEnabled", "") == "Enabled"
         rule = lock_cfg.get("Rule", {})
@@ -390,8 +390,9 @@ async def _try_acquire_anchor_lock() -> "asyncpg.Connection":  # type: ignore[na
         _ANCHOR_LOCK_CLASSID,
         _ANCHOR_LOCK_OBJID,
     )
-    conn._anchor_lock_acquired = acquired  # type: ignore[attr-defined]
-    return conn
+    # Return (conn, acquired) tuple — asyncpg Connection doesn't allow arbitrary
+    # attribute assignment, so we carry the bool alongside the connection.
+    return conn, acquired
 
 
 async def _verify_stream(
@@ -580,9 +581,8 @@ async def run_with_quorum() -> dict[str, Any]:
     If the primary instance is dead, the secondary acquires the lock on its
     next timer fire and becomes the writer for that cycle.
     """
-    lock_conn = await _try_acquire_anchor_lock()
+    lock_conn, writer = await _try_acquire_anchor_lock()
     try:
-        writer: bool = lock_conn._anchor_lock_acquired  # type: ignore[attr-defined]
         mode = "writer" if writer else "verifier"
         logger.info("audit_anchor: quorum mode=%s", mode)
 

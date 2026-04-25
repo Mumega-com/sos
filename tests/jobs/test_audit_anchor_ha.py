@@ -86,10 +86,10 @@ async def test_g55a_writer_acquires_lock_and_anchors() -> None:
 
     mock_conn = AsyncMock()
     mock_conn.fetchval = AsyncMock(return_value=True)  # lock acquired
-    mock_conn._anchor_lock_acquired = True
     mock_conn.close = AsyncMock()
 
-    with patch("sos.jobs.audit_anchor._try_acquire_anchor_lock", return_value=mock_conn):
+    # _try_acquire_anchor_lock now returns (conn, acquired) tuple
+    with patch("sos.jobs.audit_anchor._try_acquire_anchor_lock", return_value=(mock_conn, True)):
         with patch("sos.jobs.audit_anchor.run_once", new=AsyncMock(return_value={"ok": True, "anchors_written": 2})):
             result = await run_with_quorum()
 
@@ -109,7 +109,6 @@ async def test_g55b_verifier_path_when_lock_held() -> None:
     from sos.jobs.audit_anchor import run_with_quorum
 
     mock_conn = AsyncMock()
-    mock_conn._anchor_lock_acquired = False
     mock_conn.close = AsyncMock()
 
     # Pool + conn mock returning no streams
@@ -121,7 +120,8 @@ async def test_g55b_verifier_path_when_lock_held() -> None:
     mock_pool = AsyncMock()
     mock_pool.acquire = MagicMock(return_value=mock_pool_conn)
 
-    with patch("sos.jobs.audit_anchor._try_acquire_anchor_lock", return_value=mock_conn):
+    # _try_acquire_anchor_lock now returns (conn, acquired) tuple; acquired=False → verifier
+    with patch("sos.jobs.audit_anchor._try_acquire_anchor_lock", return_value=(mock_conn, False)):
         with patch("sos.jobs.audit_anchor._get_pool", new=AsyncMock(return_value=mock_pool)):
             with patch("sos.jobs.audit_anchor._build_s3_client", return_value=MagicMock()):
                 with patch.dict("os.environ", {"AUDIT_R2_BUCKET": "sos-audit-worm-v2"}):
