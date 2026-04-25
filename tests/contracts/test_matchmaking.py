@@ -333,24 +333,35 @@ class TestRankCandidatesDB:
     _inserted_qids: list
 
     def setup_method(self) -> None:
-        self._creator = f'test-{uuid.uuid4().hex[:12]}'
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        self._creator = f'pid-test-rank-{uuid.uuid4().hex[:8]}'
         self._inserted_qids = []
+        conn = _connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._creator, f'{self._creator}@test.local'),
+            )
+        conn.commit()
+        conn.close()
 
     def teardown_method(self) -> None:
-        if not self._inserted_qids:
-            return
         import psycopg2, psycopg2.extras
         from sos.contracts.matchmaking import _connect
         conn = _connect()
         with conn.cursor() as cur:
-            cur.execute(
-                'DELETE FROM match_history WHERE quest_id = ANY(%s)',
-                (self._inserted_qids,),
-            )
-            cur.execute(
-                'DELETE FROM quests WHERE id = ANY(%s)',
-                (self._inserted_qids,),
-            )
+            if self._inserted_qids:
+                cur.execute(
+                    'DELETE FROM match_history WHERE quest_id = ANY(%s)',
+                    (self._inserted_qids,),
+                )
+                cur.execute(
+                    'DELETE FROM quests WHERE id = ANY(%s)',
+                    (self._inserted_qids,),
+                )
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._creator,))
         conn.commit()
         conn.close()
 
@@ -416,3 +427,186 @@ class TestRankCandidatesDB:
     def test_record_outcome_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match='invalid outcome'):
             record_outcome(1, 'unknown_outcome')
+
+
+# ── Integration: F-04 advisory lock + G33 FK ─────────────────────────────────
+
+
+@db
+class TestRecordAssignmentConcurrency:
+    """TC-F04a, TC-F04b, TC-G33a, TC-G33b — advisory lock + created_by FK."""
+
+    _inserted_qids: list
+    _principal_id: str
+
+    def setup_method(self) -> None:
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        self._inserted_qids = []
+        # Fresh service principal per test — avoids the per-creator rate-limit trigger
+        self._principal_id = f'pid-test-conc-{uuid.uuid4().hex[:8]}'
+        conn = _connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (self._principal_id, f'{self._principal_id}@test.local'),
+            )
+        conn.commit()
+        conn.close()
+
+    def teardown_method(self) -> None:
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        with conn.cursor() as cur:
+            if self._inserted_qids:
+                cur.execute(
+                    'DELETE FROM match_history WHERE quest_id = ANY(%s)',
+                    (self._inserted_qids,),
+                )
+                cur.execute(
+                    'DELETE FROM quests WHERE id = ANY(%s)',
+                    (self._inserted_qids,),
+                )
+            cur.execute('DELETE FROM principals WHERE id = %s', (self._principal_id,))
+        conn.commit()
+        conn.close()
+
+    def _insert_quest(self) -> str:
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('Concurrency Test Quest', 'desc', 'T1', %s)
+                   RETURNING id""",
+                (self._principal_id,),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        conn.close()
+        self._inserted_qids.append(qid)
+        return qid
+
+    def test_tc_g33a_orphaned_created_by_raises(self) -> None:
+        """TC-G33a: INSERT with fake created_by → ForeignKeyViolation."""
+        import psycopg2
+        import psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        with pytest.raises(psycopg2.errors.ForeignKeyViolation):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO quests (title, description, tier, created_by)
+                       VALUES ('bad', 'desc', 'T1', 'fake-principal-id')""",
+                )
+            conn.commit()
+        conn.rollback()
+        conn.close()
+
+    def test_tc_g33b_delete_principal_with_quest_raises(self) -> None:
+        """TC-G33b: DELETE principal owning open quests → ForeignKeyViolation."""
+        import psycopg2
+        import psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        # Create a temporary principal
+        pid = f'pid-test-{uuid.uuid4().hex[:8]}'
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO principals (id, tenant_id, email, principal_type, status, mfa_required, created_at, updated_at)
+                   VALUES (%s, 'default', %s, 'service', 'active', false, now(), now())""",
+                (pid, f'{pid}@test.local'),
+            )
+            cur.execute(
+                """INSERT INTO quests (title, description, tier, created_by)
+                   VALUES ('FK test quest', 'desc', 'T1', %s)
+                   RETURNING id""",
+                (pid,),
+            )
+            qid = cur.fetchone()['id']
+        conn.commit()
+        self._inserted_qids.append(qid)
+        try:
+            with pytest.raises(psycopg2.errors.ForeignKeyViolation):
+                with conn.cursor() as cur:
+                    cur.execute('DELETE FROM principals WHERE id = %s', (pid,))
+                conn.commit()
+            conn.rollback()
+        finally:
+            # Cleanup
+            with conn.cursor() as cur:
+                cur.execute('DELETE FROM match_history WHERE quest_id = %s', (qid,))
+                cur.execute('DELETE FROM quests WHERE id = %s', (qid,))
+                cur.execute('DELETE FROM principals WHERE id = %s', (pid,))
+            conn.commit()
+            conn.close()
+
+    def test_tc_f04a_concurrent_record_assignment_serializes(self) -> None:
+        """TC-F04a: two threads record same (quest, candidate) concurrently → serialized.
+
+        offer_count is per (quest_id, candidate_id). If advisory lock serializes:
+          first insert sees COUNT=0 → offer_count=1
+          second insert sees COUNT=1 → offer_count=2
+        Without the lock both would see COUNT=0 → both offer_count=1 (skew).
+        """
+        import concurrent.futures
+        qid = self._insert_quest()
+        # Same candidate both times — this is the actual race scenario
+        candidate = _uid()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(record_assignment, qid, candidate, 0.8)
+            f2 = ex.submit(record_assignment, qid, candidate, 0.7)
+            id1 = f1.result(timeout=10)
+            id2 = f2.result(timeout=10)
+
+        # Both succeed, produce distinct rows
+        assert id1 != id2
+        assert id1 > 0 and id2 > 0
+
+        # offer_count values must be 1 and 2 (serialized) not both 1 (skew)
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT offer_count FROM match_history WHERE id = ANY(%s) ORDER BY offer_count',
+                ([id1, id2],),
+            )
+            counts = [r['offer_count'] for r in cur.fetchall()]
+        conn.close()
+        assert counts == [1, 2], f'Expected [1, 2] got {counts} — advisory lock may not be serializing'
+
+    def test_tc_f04b_100_concurrent_no_skew(self) -> None:
+        """TC-F04b: 100 concurrent offers to same (quest, candidate) → offer_counts 1..100.
+
+        Same candidate used every time. Without advisory lock, all 100 reads would
+        see COUNT=0 simultaneously → all get offer_count=1 (skew). With lock they
+        serialize → sequential counts 1..100.
+        """
+        import concurrent.futures
+        qid = self._insert_quest()
+        candidate = _uid()  # same candidate 100 times — tests serialization
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
+            futures = [ex.submit(record_assignment, qid, candidate, 0.5) for _ in range(100)]
+            results = [f.result(timeout=30) for f in futures]
+
+        assert len(results) == 100
+        assert len(set(results)) == 100  # all distinct match_history ids
+
+        import psycopg2, psycopg2.extras
+        from sos.contracts.matchmaking import _connect
+        conn = _connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT offer_count FROM match_history WHERE quest_id = %s ORDER BY offer_count',
+                (qid,),
+            )
+            counts = [r['offer_count'] for r in cur.fetchall()]
+        conn.close()
+        assert len(counts) == 100
+        assert counts == list(range(1, 101)), f'offer_counts are not 1..100: {counts[:10]}...'
