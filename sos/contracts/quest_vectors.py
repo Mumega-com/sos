@@ -51,9 +51,9 @@ import psycopg2.extras
 
 log = logging.getLogger(__name__)
 
-# ── Canonical 16D lambda_dna schema (Torivers.16D.001) ───────────────────────
+# ── Canonical 16D lambda_dna schema (Lambda.16D.001) ───────────────────────
 #
-# Source: /home/mumega/infra/shared-kb/frc/CANONICAL.md — Torivers.16D.001
+# Source: /home/mumega/infra/shared-kb/frc/CANONICAL.md — Lambda.16D.001
 # Group A (Structural Stability): stability, variance_control, recursion_depth, termination_certainty
 # Group B (Semantic Integrity):   internal_consistency, context_retention, constraint_adherence, error_containment
 # Group C (Functional Alignment): intent_alignment, structural_yield, dependency_discipline, action_justification
@@ -99,7 +99,7 @@ assert len(DIMENSION_NAMES) == 16, 'DIMENSION_NAMES must have exactly 16 entries
 
 _EXTRACTION_SYSTEM = """\
 You are a precision quest-alignment scorer for the SOS platform.
-You score quests on the 16 lambda_dna resonance dimensions of the Torivers.16D.001 vector space.
+You score quests on the 16 lambda_dna resonance dimensions of the Lambda.16D.001 vector space.
 Each dimension measures how much the quest REQUIRES that property of the person doing it.
 Each score is a float in [0.0, 1.0]: 0.0 = not required at all, 1.0 = essential.
 Be calibrated: most quests score 0.2–0.8; extremes (0.0 or 1.0) are rare.

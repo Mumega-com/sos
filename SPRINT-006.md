@@ -81,19 +81,36 @@ CSA STAR Level 1 is self-attest — we can file inside the sprint. ISO 27001 is 
 
 ---
 
-## Track E — ToRivers groundwork (~1d)
+## Track E — Customer onboarding flow + knight-mint hook (~1d)
 
-Hadi's strategic plan: Mumega Inc. (Delaware C-corp) holds the IP; ToRivers Ltd. (Canadian opco) holds the customer contracts; Digid Inc. (Canadian opco) holds Hadi's existing Digid customer base. ToRivers is the future revenue vehicle.
+> **Correction 2026-04-25:** the v0.3 brief mistakenly framed this track
+> as "ToRivers groundwork" with claims about a Canadian opco entity
+> structure. That framing was incorrect — ToRivers is an external
+> automated marketplace (`/home/torivers`, `/home/torivers-staging`)
+> with its own dev team. Mumega's only relationship to it is the
+> existing `sos/adapters/torivers/bridge.py` integration point
+> (workflows-as-marketplace-listings), which requires no Sprint 006
+> work. Track E is rewritten below to reflect the actual customer-
+> readiness work for Mumega's own tenant onboarding.
 
-This sprint = legal + technical groundwork only; not a customer-pitching sprint.
+Mumega's own tenant onboarding flow needs first-customer readiness:
+take an interested party from initial signal (Discord intake, web form,
+referral) through GitHub OAuth, Stripe quote, contract sign, and
+substrate provision, with a knight minted automatically on contract
+sign. This is foundational for any customer touching the substrate
+directly (vs. consuming via the marketplace bridge).
 
 | # | Task | Owner | Effort | Gate |
 |---|---|---|---|---|
-| E.1 | ToRivers Ltd. domain reservation + Cloudflare zone + DNS pointing to substrate | Loom | 0.25d | none |
-| E.2 | Tenant onboarding flow: Discord intake → GitHub OAuth → Stripe quote — adapt for ToRivers UX | Kasra | 0.5d | G68 |
-| E.3 | Per-customer agent knight minting hook — minted on contract sign | Loom (spec) + Kasra (build) | 0.25d | G69 |
+| E.1 | Tenant onboarding flow: Discord intake → GitHub OAuth → Stripe quote → contract artifact in `contracts` table | Kasra | 0.5d | G68 |
+| E.2 | Per-customer agent knight minting hook — minted on Stripe webhook (`payment_intent.succeeded` + contract record exists) | Loom (spec) + Kasra (build) | 0.25d | G69 |
+| E.3 | First-customer smoke test: synthetic customer end-to-end through E.1+E.2; verify knight QNFT lands in `qnft_registry`, customer profile renders at `/people/{slug}` (depends on §11 Phase 6 if shipped, else minimal placeholder) | Loom + Kasra | 0.25d | G70 |
 
-**Acceptance:** ToRivers domain live with substrate landing page. Tenant onboarding flow tested end-to-end with synthetic customer. Knight-minting hook fires on Stripe webhook.
+**Acceptance:** A new customer can be onboarded end-to-end via the
+flow in under 30 minutes from Discord signal to first knight minted.
+Synthetic test passes. Stripe webhook idempotent (handles replay per
+the F-09/F-20 ledger pattern). No manual database touches required
+for standard onboarding path.
 
 ---
 
@@ -118,7 +135,7 @@ These four migrations require Postgres superuser access (they touch role grants 
 - **Q1: Track A HA cost.** Streaming replica on second VPS adds Hetzner cost (~€20-40/mo per node). Confirm with Hadi before provisioning. If Hadi prefers single-instance + faster recovery via systemd auto-restart, A.4 RESHAPE.
 - **Q2: Which IdP for B.1?** Okta dev (free) recommended. Auth0 free tier is workable. Hadi confirms or RESHAPE.
 - **Q3: SOC 2 audit firm choice (C.4) is Hadi's call.** Loom can prep RFP comparison if helpful.
-- **Q4: ToRivers domain registration is a real-money + legal move.** Hadi authorizes specifically before E.1 fires.
+- ~~Q4: ToRivers domain registration~~ **REMOVED 2026-04-25** — Track E was misframed in v0.3; ToRivers is an external marketplace with its own devs. No domain registration on Mumega's side. See Track E correction note.
 - **Q5: Track F maintenance window timing.** Track F requires Hadi present. Schedule before sprint open or mid-sprint?
 
 ---
@@ -129,7 +146,7 @@ These four migrations require Postgres superuser access (they touch role grants 
 - **Track B:** First-customer IdP runbook handed to Loom-as-customer-proxy and works end-to-end; all 3 SCIM soft notes closed; G27/G34 hardening shipped.
 - **Track C:** SOC 2 Type I evidence package complete; firm engaged; sprint marker drain operational.
 - **Track D:** STAR Level 1 filed; SOA draft ready.
-- **Track E:** ToRivers domain live; onboarding flow smoke-tested.
+- **Track E:** Mumega tenant onboarding flow end-to-end (Discord → GitHub OAuth → Stripe quote → contract → knight mint) under 30 min; synthetic smoke test passes; Stripe webhook idempotent.
 - **Track F:** All 4 P0 superuser migrations enforcing; classifier_role-only on `frc_emit_verdict()`; audit chain Ed25519 signature validating.
 
 After Sprint 006 close: substrate is **production-ready for first paying customer.** Sprint 007 opens with first-customer onboarding (Ron O'Neil's PEI lead pipeline, Gavin's warm leads, Riipen student program — whichever lands first) plus Phase 5 metabolic-loop arc (§10 + §10a).
@@ -165,6 +182,7 @@ Per AGD discipline (Athena's protocol): tracks touching the four canonical sensi
 | v0.1 | 2026-04-25 | DRAFT on `loom` branch — Loom autonomous scoping post-Sprint 005 mandate. Pending Athena gate + Hadi review before merge to main. |
 | v0.2 | 2026-04-25 | Folds in Sprint 005 confirmed carries (Athena 17:40 UTC): A.1b R2 v2 bucket, B.4a/b/c SCIM soft notes, B.5 G27 follow-up, B.6 G34 follow-up, C.6 marker drain, Track F superuser migrations as separate maintenance-window scope. Adversarial-parallel surface coverage matrix added per AGD discipline. Awaits Athena structural gate before merge to main. |
 | v0.3 | 2026-04-25 | Athena gate fixes (BLOCK→GREEN same-turn): adversarial-parallel matrix gains E.2 (tenant onboarding auth path) + E.3 (Stripe webhook identity write) → 15 items requiring parallel review. Q6 removed (§10a decided to Sprint 007/008, not an opportunistic Sprint 006 fill). |
+| v0.4 | 2026-04-25 | Track E correction: v0.3 misframed Track E as "ToRivers groundwork" with claims about a Canadian opco entity structure. ToRivers is an external automated marketplace at /home/torivers with its own dev team — not a Mumega entity. Track E rewritten as Mumega's own tenant onboarding flow + knight-mint hook + first-customer smoke test. Q4 removed (no domain registration). Lambda.16D rename folded in: 17 canonical 16D docs renamed from Torivers.16D to Lambda.16D (matches FRC Λ-field primitive + lambda_dna code field). |
 
 ---
 

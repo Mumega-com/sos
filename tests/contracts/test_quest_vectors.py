@@ -63,7 +63,7 @@ class TestDimensionNames:
             assert ' ' not in name
 
     def test_canonical_names_present(self) -> None:
-        """G_A4b: dimensions are lambda_dna basis (Torivers.16D.001), not work-skills."""
+        """G_A4b: dimensions are lambda_dna basis (Lambda.16D.001), not work-skills."""
         for expected in ('stability', 'internal_consistency', 'intent_alignment', 'governance_compliance'):
             assert expected in DIMENSION_NAMES
 

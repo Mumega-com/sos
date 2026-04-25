@@ -55,7 +55,7 @@ basis fix.
 
 There is one and only one canonical 16D vector space in the substrate:
 **lambda_dna**. Its 16 axis labels are defined canonically in
-`/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Torivers.16D.001
+`/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Lambda.16D.001
 section — Group A/B/C/D). They encode the citizen's position across
 the dimensions that §15 Glicko-2 reputation projects from.
 
@@ -178,7 +178,7 @@ change).
    space; all vectors must conform). One paragraph — makes the file a
    canonical pointer rather than leaving the discipline implicit. The
    *axis labels themselves* live canonically at
-   `/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Torivers.16D.001
+   `/home/mumega/infra/shared-kb/frc/CANONICAL.md` (Lambda.16D.001
    section — Group A/B/C/D); the docstring should reference that path,
    not duplicate the labels.
 5. No regression on §15 reputation tests or §16 matchmaking tests.
