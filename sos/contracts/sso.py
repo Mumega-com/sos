@@ -1003,12 +1003,47 @@ def enroll_totp(
     return otpauth_uri, secret_ref
 
 
+def _totp_window_start(totp_obj: 'pyotp.TOTP', code: str) -> int | None:
+    """Return the time_window_start (Unix epoch, seconds) for which code is valid.
+
+    G27 (F-09): Iterates over the same ±1 window that totp.verify() uses.
+    Returns the start of the earliest matching window, or None if code is invalid.
+    Using the canonical window (not current clock time) ensures the hash is
+    identical on replay attempts within the same window boundary.
+    """
+    now = int(time.time())
+    interval = int(totp_obj.interval)
+    counter = now // interval
+    for offset in (-1, 0, 1):
+        candidate = counter + offset
+        candidate_time = candidate * interval
+        if totp_obj.at(candidate_time) == code:
+            return candidate_time
+    return None
+
+
+def _totp_code_hash(principal_id: str, code: str, time_window_start: int) -> bytes:
+    """sha256(principal_id:code:time_window_start) — full 32-byte digest.
+
+    G27 (F-09): Bound to principal (two users same 6-digit code never collide)
+    AND time window (same code in next window → different hash, not a false
+    positive). Full sha256 — no truncation; no birthday-bound collision risk.
+    """
+    raw = f'{principal_id}:{code}:{time_window_start}'.encode()
+    return hashlib.sha256(raw).digest()
+
+
 def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool:
     """
     Verify a TOTP code. Returns True on success, False otherwise.
     Updates last_used_at on success.
 
     Window=1 allows ±30 second drift per RFC 6238.
+
+    G27 (F-09): Replay ledger — records (principal_id, code_hash) on successful
+    verification. Duplicate INSERT raises UniqueViolation → replay rejected.
+    The code_hash ties the code to its canonical time window so cross-window
+    reuse (different window → different hash) is not a false positive.
     """
     secret_ref = _get_totp_secret_ref(principal_id, label)
     if not secret_ref:
@@ -1019,15 +1054,38 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
         return False
 
     totp = pyotp.TOTP(secret)
-    valid = totp.verify(code, valid_window=1)
 
-    if valid:
-        _update_mfa_last_used(principal_id, 'totp', label)
-        log.info('TOTP verified for principal %s', principal_id)
-    else:
+    # Determine the canonical time window this code is valid for.
+    # This must happen BEFORE recording in the ledger — the window determines
+    # the hash; using the current clock (not the canonical window) would let
+    # an attacker replay by waiting until the clock crosses a window boundary.
+    time_window_start = _totp_window_start(totp, code)
+    if time_window_start is None:
         log.warning('TOTP verification failed for principal %s', principal_id)
+        return False
 
-    return valid
+    # Replay ledger: INSERT with PK — duplicate fails atomically.
+    # The PK resolves the race between two concurrent requests with the same
+    # code: both can pass the time-window check, but only one INSERT wins.
+    code_hash = _totp_code_hash(principal_id, code, time_window_start)
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'INSERT INTO mfa_used_codes (principal_id, code_hash) VALUES (%s, %s)',
+                    (principal_id, psycopg2.Binary(code_hash)),
+                )
+            conn.commit()
+    except psycopg2.errors.UniqueViolation:
+        log.warning(
+            'TOTP replay attempt rejected for principal %s (window=%d)',
+            principal_id, time_window_start,
+        )
+        return False
+
+    _update_mfa_last_used(principal_id, 'totp', label)
+    log.info('TOTP verified for principal %s', principal_id)
+    return True
 
 
 def _vault_client() -> 'hvac.Client':
