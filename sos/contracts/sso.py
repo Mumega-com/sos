@@ -59,8 +59,14 @@ log = logging.getLogger(__name__)
 _LOCAL_TOTP_STORE: dict[str, str] = {}   # ref → base32 secret; in-process only
 
 # ── MFA flood-quota constants (G62) ───────────────────────────────────────────
-# Maximum number of mfa_used_codes INSERTs allowed per principal within the
-# 5-minute cleanup window. Real users submit ≤ 3 codes in any 5-min span
+# _MFA_USED_CODES_WINDOW: retention interval for mfa_used_codes rows.
+# Used in both the flood-quota COUNT and the cleanup DELETE so a future change
+# to the window only requires touching one place (WARN-2 Athena G62 gate).
+# Must be >= max TOTP replay window (90 sec = ±1 step). '5 minutes' is safe.
+_MFA_USED_CODES_WINDOW: str = '5 minutes'
+
+# Maximum number of mfa_used_codes INSERTs allowed per principal within
+# _MFA_USED_CODES_WINDOW. Real users submit ≤ 3 codes in any 5-min span
 # (one per 30-sec TOTP window). 20 is generous enough to survive test suites
 # but caps ledger exhaustion from an attacker who holds the shared secret.
 _MFA_FLOOD_QUOTA_PER_5MIN: int = 20
@@ -1290,8 +1296,8 @@ def verify_totp(principal_id: str, code: str, *, label: str = 'default') -> bool
                 cur.execute(
                     """SELECT COUNT(*) AS cnt FROM mfa_used_codes
                          WHERE principal_id = %s
-                           AND used_at > now() - interval '5 minutes'""",
-                    (principal_id,),
+                           AND used_at > now() - %s::interval""",
+                    (principal_id, _MFA_USED_CODES_WINDOW),
                 )
                 quota_row = cur.fetchone()
                 current_count = quota_row['cnt'] if quota_row else 0
@@ -1341,7 +1347,8 @@ def cleanup_mfa_used_codes() -> int:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM mfa_used_codes WHERE used_at < now() - interval '5 minutes'"
+                "DELETE FROM mfa_used_codes WHERE used_at < now() - %s::interval",
+                (_MFA_USED_CODES_WINDOW,),
             )
             deleted = cur.rowcount
         conn.commit()

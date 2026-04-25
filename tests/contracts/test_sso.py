@@ -1279,10 +1279,14 @@ class TestMfaFloodQuota:
             deleted = cleanup_mfa_used_codes()
 
         assert deleted == 7
-        # Verify the DELETE was sent
-        call_sql = mock_cur.execute.call_args[0][0]
+        # Verify the DELETE was sent with the shared window constant
+        call_args = mock_cur.execute.call_args
+        call_sql = call_args[0][0]
         assert 'DELETE FROM mfa_used_codes' in call_sql
-        assert '5 minutes' in call_sql
+        assert '::interval' in call_sql
+        # Parameter must be the module constant (not a hardcoded literal)
+        import sos.contracts.sso as sso_mod
+        assert call_args[0][1] == (sso_mod._MFA_USED_CODES_WINDOW,)
 
     def test_tc_g62d_cleanup_zero_returns_zero(self) -> None:
         """TC-G62d: cleanup_mfa_used_codes() returns 0 when nothing to delete."""
