@@ -48,6 +48,10 @@ logger = logging.getLogger("sos.jobs.audit_anchor")
 
 _RETENTION_YEARS = 7
 
+# Quorum / leader-election (Sprint 006 A.5 / G55)
+_ANCHOR_LOCK_CLASSID: int = 1002  # audit-anchor namespace (separate from matchmaker 1001)
+_ANCHOR_LOCK_OBJID: int = 0       # writer sentinel
+
 # ---------------------------------------------------------------------------
 # R2 / S3 client helpers
 # ---------------------------------------------------------------------------
@@ -285,15 +289,196 @@ async def run_once() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Quorum: advisory lock + verifier path (Sprint 006 A.5 / G55)
+# ---------------------------------------------------------------------------
+
+
+async def _try_acquire_anchor_lock() -> "asyncpg.Connection":  # type: ignore[name-defined]
+    """Open a dedicated asyncpg connection and try to acquire the writer lock.
+
+    Returns the connection.  Caller checks the returned ``acquired`` bool
+    (stored as an attribute set below).  Caller MUST close the connection
+    when done — closing it releases the session-level advisory lock.
+    """
+    import asyncpg  # type: ignore[import]
+
+    db_url = os.getenv(
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/postgres",
+    )
+    conn = await asyncpg.connect(db_url)
+    acquired: bool = await conn.fetchval(
+        "SELECT pg_try_advisory_lock($1, $2)",
+        _ANCHOR_LOCK_CLASSID,
+        _ANCHOR_LOCK_OBJID,
+    )
+    conn._anchor_lock_acquired = acquired  # type: ignore[attr-defined]
+    return conn
+
+
+async def _verify_stream(
+    conn: Any,
+    stream_id: str,
+    s3_client: Any,
+    bucket: str,
+) -> dict[str, Any]:
+    """Re-verify the most recent anchor for a stream.
+
+    Fetches the R2 object, recomputes SHA-256(prev_hash || canonical_anchor),
+    and compares with the stored ``anchor_hash``.
+
+    Returns {"stream_id": ..., "ok": bool, "reason": str, ...}.
+    """
+    anchor_row = await conn.fetchrow(
+        """
+        SELECT anchored_seq, anchor_hash, prev_anchor_hash, r2_object_key
+        FROM audit_anchors
+        WHERE stream_id = $1
+        ORDER BY anchored_seq DESC
+        LIMIT 1
+        """,
+        stream_id,
+    )
+    if not anchor_row:
+        return {"stream_id": stream_id, "ok": True, "reason": "no_anchors"}
+
+    r2_key: str = anchor_row["r2_object_key"]
+    loop = asyncio.get_event_loop()
+
+    # Fetch R2 object
+    try:
+        r2_obj = await loop.run_in_executor(
+            None,
+            lambda: s3_client.get_object(Bucket=bucket, Key=r2_key),
+        )
+        r2_bytes: bytes = await loop.run_in_executor(None, r2_obj["Body"].read)
+    except Exception as exc:
+        logger.error("audit_anchor: verify R2 fetch failed stream=%s key=%s: %s", stream_id, r2_key, exc)
+        return {"stream_id": stream_id, "ok": False, "reason": f"r2_fetch_failed: {exc}"}
+
+    try:
+        r2_data: dict[str, Any] = json.loads(r2_bytes)
+    except Exception as exc:
+        return {"stream_id": stream_id, "ok": False, "reason": f"r2_parse_failed: {exc}"}
+
+    stored_hash_hex: str | None = r2_data.get("anchor_hash")
+    if not stored_hash_hex:
+        return {"stream_id": stream_id, "ok": False, "reason": "anchor_hash_missing_in_r2"}
+
+    # Recompute: SHA-256(prev_anchor_hash_bytes || canonical_json(anchor_sans_hash_and_key))
+    anchor_obj = {k: v for k, v in r2_data.items() if k not in ("anchor_hash", "r2_key")}
+    anchor_canonical = _canonical_json(anchor_obj)
+
+    prev_hash_bytes: bytes | None = None
+    if r2_data.get("prev_anchor_hash"):
+        try:
+            prev_hash_bytes = bytes.fromhex(r2_data["prev_anchor_hash"])
+        except ValueError:
+            return {"stream_id": stream_id, "ok": False, "reason": "prev_anchor_hash_not_hex"}
+
+    h = hashlib.sha256()
+    if prev_hash_bytes:
+        h.update(prev_hash_bytes)
+    h.update(anchor_canonical)
+    expected_hex = h.hexdigest()
+
+    if expected_hex != stored_hash_hex:
+        logger.error(
+            "audit_anchor: CHAIN INTEGRITY FAILURE stream=%s seq=%d expected=%s stored=%s",
+            stream_id, anchor_row["anchored_seq"], expected_hex, stored_hash_hex,
+        )
+        return {
+            "stream_id": stream_id,
+            "ok": False,
+            "reason": "hash_mismatch",
+            "seq": anchor_row["anchored_seq"],
+            "expected": expected_hex,
+            "stored": stored_hash_hex,
+        }
+
+    return {
+        "stream_id": stream_id,
+        "ok": True,
+        "reason": "hash_verified",
+        "seq": anchor_row["anchored_seq"],
+    }
+
+
+async def run_with_quorum() -> dict[str, Any]:
+    """Run with PG advisory lock quorum: one writer, one verifier.
+
+    Acquires session-level advisory lock (1002, 0):
+    - WRITER (lock acquired): runs the existing anchor-write logic.
+    - VERIFIER (lock not acquired): re-reads last anchor per stream from R2
+      and verifies the hash chain.
+
+    If the primary instance is dead, the secondary acquires the lock on its
+    next timer fire and becomes the writer for that cycle.
+    """
+    lock_conn = await _try_acquire_anchor_lock()
+    try:
+        writer: bool = lock_conn._anchor_lock_acquired  # type: ignore[attr-defined]
+        mode = "writer" if writer else "verifier"
+        logger.info("audit_anchor: quorum mode=%s", mode)
+
+        if writer:
+            result = await run_once()
+            result["mode"] = "writer"
+            return result
+
+        # Verifier path
+        bucket = os.getenv("AUDIT_R2_BUCKET", "sos-audit-worm")
+        try:
+            s3_client = await asyncio.get_event_loop().run_in_executor(None, _build_s3_client)
+        except Exception as exc:
+            logger.error("audit_anchor: verifier cannot build R2 client: %s", exc)
+            return {"ok": False, "mode": "verifier", "error": str(exc)}
+
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT stream_id FROM audit_stream_seqs ORDER BY stream_id"
+            )
+            streams = [row["stream_id"] for row in rows]
+
+        verify_results: dict[str, Any] = {}
+        all_ok = True
+        for stream_id in streams:
+            async with pool.acquire() as conn:
+                vr = await _verify_stream(conn, stream_id, s3_client, bucket)
+            verify_results[stream_id] = vr
+            if not vr["ok"]:
+                all_ok = False
+
+        logger.info(
+            "audit_anchor: verify complete — %d streams, all_ok=%s",
+            len(streams), all_ok,
+        )
+        return {
+            "ok": all_ok,
+            "mode": "verifier",
+            "streams_verified": len(streams),
+            "detail": verify_results,
+        }
+    finally:
+        await lock_conn.close()  # closing releases the session-level advisory lock
+
+
 def main() -> None:
-    """CLI entry point: run anchor job once and exit."""
+    """CLI entry point: run anchor job once and exit.
+
+    Default: quorum mode (PG advisory lock, one writer + one verifier).
+    Pass --no-quorum to use the legacy single-instance run_once() directly
+    (useful for manual maintenance or first-time setup).
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description="SOS audit WORM anchor job")
     parser.add_argument(
         "--loop",
         action="store_true",
-        help="Run in a loop every 15 minutes instead of once",
+        help="Run in a loop every --interval seconds instead of once",
     )
     parser.add_argument(
         "--interval",
@@ -302,6 +487,12 @@ def main() -> None:
         metavar="SECONDS",
         help="Loop interval in seconds (default: 900 = 15 min)",
     )
+    parser.add_argument(
+        "--no-quorum",
+        action="store_true",
+        dest="no_quorum",
+        help="Bypass quorum lock — run run_once() directly (maintenance/test)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -309,15 +500,18 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    _runner = run_once if args.no_quorum else run_with_quorum
+
     async def _run() -> None:
         if args.loop:
-            logger.info("audit_anchor: starting loop, interval=%ds", args.interval)
+            logger.info("audit_anchor: starting loop, interval=%ds, quorum=%s",
+                        args.interval, not args.no_quorum)
             while True:
-                result = await run_once()
+                result = await _runner()
                 logger.info("audit_anchor: result=%s", result)
                 await asyncio.sleep(args.interval)
         else:
-            result = await run_once()
+            result = await _runner()
             print(json.dumps(result, indent=2))
 
     asyncio.run(_run())
