@@ -2,7 +2,7 @@
 
 **Author:** Loom
 **Date:** 2026-04-25
-**Version:** v1.2
+**Version:** v1.3
 **Scope:** The end-to-end architecture from what ships today to the fully realized organism. Consolidates Sections 01–16, Sprint 002/003/004 plans, the Defence Track (9 deltas), and the Phase 8 routing arc (§16 matchmaking + Glicko-2 reputation) into one navigable map.
 **Audience:** Hadi + team agents (Kasra, Athena, Codex, River) + future contributors + investor-facing architectural narrative.
 
@@ -10,6 +10,7 @@
 | v1.0 | 2026-04-23 | Initial roadmap through Phase 6 |
 | v1.1 | 2026-04-24 | Sprint 002 closure: §10 metabolic loop + §11 profile primitive + §12 sos-docs + Phase 7.5 strategic path |
 | v1.2 | 2026-04-25 | Sprint 003+004 closure: §13 Guild + §14 Inventory + §15 Reputation (Glicko-2) + §16 Matchmaking; identity layer formal (§1A SSO+SCIM+MFA); per-workspace DEK envelope encryption; audit chain WORM with R2 Object Lock; nullify+confiscate erasure; Vertex routing via ADC. Adversarial-review-as-parallel-gate-condition codified. Phase 8 routing live in DRY_RUN observation mode. |
+| v1.3 | 2026-04-25 | Phase 8 LIVE (matchmaker.service flipped, 13/13 first-tick clean dispatch). Sprint 005 mid-stream: G33 (F-19 quests.created_by FK) + G35 (brain source-signal idempotency, brain dedupe loop closed). §10a reputation metabolism extension drafted. Phase 5/6 sprint kickoff briefs drafted on `loom` branch. Mirror /Archive cleanup (D.4) closed. Three additional Track B briefs drafted (F-08/F-09/F-20). Sprint 006 v0.1 (customer-readiness arc) opened on `loom` branch. |
 
 ---
 
@@ -23,7 +24,7 @@ The system is being built in discrete **phases**, each one landing a specific or
 
 ---
 
-## 1. Current State (what's shipped, as of 2026-04-25 14:30 UTC)
+## 1. Current State (what's shipped, as of 2026-04-25 ~16:00 UTC)
 
 | Organ | Code home | Status |
 |---|---|---|
@@ -66,7 +67,21 @@ The system is being built in discrete **phases**, each one landing a specific or
 - 7 P0 BLOCK findings closed at code level in ~46 minutes (F-17, F-02+F-11, F-01, F-05, F-10+F-15)
 - 13 WARN/Low findings + 4 Sprint 005 deferred ops items (F-02b/F-01b/F-11b/P0-2b) carried
 - Architectural protocol change: adversarial review becomes parallel gate condition for security-critical contracts
-- Live-flip authorization: pending E2E sign-off, then matchmaker.service flips DRY_RUN → live
+
+**Phase 8 LIVE (2026-04-25 15:06 UTC):**
+- matchmaker.service flipped DRY_RUN → live with three-way sign-off (Athena correctness ✓ / Kasra implementation ✓ / Loom observability ✓)
+- First live tick (15:09 UTC): 13 assigned, 13 dispatched, 0 skipped — substrate dispatching real work
+- Three contract bugs caught at flip (silent fail-open in DRY_RUN): missing payload fields (422), claim attempt offset (409), key rename. All fixed in commit 2145744d
+- Sprint 005 mid-stream emergency: brain dedupe loop (TROP Arrow Dashboard 6× re-dispatch in 13 min). Mitigation applied (BRAIN_DEBOUNCE_SECONDS=1800). Structural fix specced as G35 brain source-signal idempotency, batch-gated with F-04 advisory lock.
+
+**Sprint 005 mid-stream additions (2026-04-25 PM):**
+- G33 — F-19 quests.created_by FK enforcement (brief drafted, awaits Kasra)
+- G35 — brain source-signal idempotency via `external_ref = sha256(goal_id + canonical_action_intent)[:12]` (brief drafted, awaits Kasra; batch with F-04)
+- §10a reputation metabolism extension drafted (apply §10 decay/inertia/reinforcement to Glicko-2 + lambda_dna; closes the over-responsiveness gap that produced the brain dedupe loop and silent fail-opens at flip)
+- D.4 Mirror /Archive cleanup closed (48 files moved to `/home/mumega/research-archive/`, code-review-graph noise reduced)
+- 3 additional Track B briefs drafted (F-08 Vault per-workspace cache, F-09 TOTP replay ledger, F-20 SAML assertion replay ledger)
+- Sprint 006 v0.1 (customer-readiness arc) opened on `loom` branch
+- Phase 5 (§10 + §10a) and Phase 6 (§11) sprint kickoff briefs drafted on `loom` branch — Sprint 007 / 008+009 candidates respectively
 
 **Shipped but incomplete:**
 - GAF customer signup path — was broken due to migration collision; Kasra fix pending deploy
@@ -191,19 +206,24 @@ Service module (peer to Mirror / Squad / Dispatcher — NOT kernel). Owns:
 **Dependencies:** §6 plugin contract v2 extension
 **Outcome:** a single landing strip for every external signal (GSC, Bing, GA4, Ads, GHL, Stripe, QBO, GitHub, etc.). The raw layer of the metabolism.
 
-### Phase 5 — Metabolic Loop (📋 Specced tonight, §10)
-The organism becomes alive. Five components:
+### Phase 5 — Metabolic Loop (📋 Specced + Sprint 007 brief drafted, §10 + §10a)
+**Sprint 007 candidate** (kickoff brief: `agents/loom/briefs/phase-5-metabolic-loop-kickoff.md`).
+
+The organism becomes alive. Five components plus reputation extension:
 - **5a — Intake Service (the gut):** webhook/poller → Haiku classifier → engrams FK'd to contacts. First source: Fireflies meeting transcripts. Target: your meetings auto-digest into each participant's profile within 60s.
 - **5b — Access-log + corroboration + decay:** Mirror schema gains `access_count`, `corroboration_count`, `last_accessed_at`, `weight (GENERATED)`. Useful facts strengthen. Unused facts fade. 30-day half-life.
 - **5c — Multi-source adapters:** Gmail, Drive, Discord, GHL, Stripe — each a plugin under `sos-datalake` that intake-service subscribes to.
 - **5d — Sporulation trigger + pattern primitive:** Dreamer gains event-trigger on `mirror.hot_store_threshold_exceeded`. Extracts patterns via Sonnet. Archives raw to R2. Patterns become `type=pattern` nodes (spores).
 - **5e — Retrieval upgrade:** queries prefer pattern nodes over raw-engram-flood. Agents get cheaper, more coherent recalls.
+- **5b' — Reputation metabolism (§10a, drafted 2026-04-25):** the same decay/inertia/reinforcement primitives extended to Glicko-2 reputation (§15) and lambda_dna position (§16). Closes the substrate's over-responsiveness gap (rapid bursts overwriting stable patterns — same shape as the brain dedupe loop). Athena gates whether to fold into Phase 5 scope or carry to Sprint 008. ~2.5 engineer-day equivalents.
 
-**Effort:** ~20 engineer-days (5a–5e)
+**Effort:** ~20 engineer-days (5a–5e) + ~2.5 if §10a folds in
 **Dependencies:** §8 datalake, §7 nodes, §6 plugin contract v2
 **Outcome:** system digests reality on its own. Every meeting, email, CRM event, payment auto-flows into the living graph. Agents retrieve patterns, not raw noise. The substrate has a metabolism.
 
-### Phase 6 — Profile Primitive (📋 Specced tonight, §11)
+### Phase 6 — Profile Primitive (📋 Specced + Sprint 008+009 brief drafted, §11)
+**Sprint 008+009 candidate** (kickoff brief: `agents/loom/briefs/phase-6-profile-primitive-kickoff.md`).
+
 Every person (human + agent + customer + partner + contractor) gets an Inkwell at `/people/{slug}`. Logs in via magic-link. Sees what the system knows at their RBAC tier. Self-serves:
 - NDA + T&C acceptance (e-sign → contract row)
 - Communication preferences (per-channel, per-category, frequency caps)

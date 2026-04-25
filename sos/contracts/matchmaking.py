@@ -543,10 +543,23 @@ def record_assignment(
     """
     Write a match_history row when a candidate is formally assigned.
 
+    F-04: acquires pg_advisory_xact_lock(1001, hashtext(quest_id)) as the
+    first statement in the transaction, serializing concurrent calls for the
+    same quest_id. Lock auto-releases at COMMIT/ROLLBACK.
+
+    Namespace key 1001 is the matchmaker namespace. Uses the 2-arg form to
+    avoid collision with audit_next_seq's 1-arg pg_advisory_xact_lock calls.
+
     Returns the new match_history.id.
     """
     with _connect() as conn:
         with conn.cursor() as cur:
+            # Acquire per-quest advisory lock before the read-modify-write.
+            # hashtext() returns int4; 2-arg form takes (int4, int4).
+            cur.execute(
+                'SELECT pg_advisory_xact_lock(1001, hashtext(%s))',
+                (quest_id,),
+            )
             cur.execute(
                 """INSERT INTO match_history (quest_id, candidate_id, composite_score, offer_count)
                    VALUES (%s, %s, %s,

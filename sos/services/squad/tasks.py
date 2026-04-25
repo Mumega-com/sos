@@ -445,6 +445,42 @@ class SquadTaskService:
         self.bus.emit("task.created", task.squad_id, actor, bus_payload)
         return Response(message_id=task.id, status=ResponseStatus.SUCCESS, data={"task": bus_payload})
 
+    def get_by_external_ref(
+        self,
+        external_ref: str,
+        ttl_seconds: int = 86400,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> SquadTask | None:
+        """Return the most recent active or recently-completed task for an external_ref.
+
+        Matches tasks where:
+          - status IN ('queued', 'claimed', 'in_flight'), OR
+          - status = 'completed' AND completed_at > now - ttl_seconds
+
+        Used by brain.motor_execute() for source-signal dedupe (G35).
+        Returns None if no match → safe to emit a new task.
+        """
+        query = """
+            SELECT * FROM squad_tasks
+            WHERE external_ref = ?
+              AND (
+                status IN ('queued', 'claimed', 'in_flight')
+                OR (status = 'completed'
+                    AND completed_at IS NOT NULL
+                    AND datetime(completed_at) > datetime('now', ? || ' seconds'))
+              )
+        """
+        neg_ttl = f"-{ttl_seconds}"
+        if tenant_id is not None:
+            query += " AND tenant_id = ?"
+            params: tuple = (external_ref, neg_ttl, tenant_id)
+        else:
+            params = (external_ref, neg_ttl)
+        query += " ORDER BY updated_at DESC LIMIT 1"
+        with self.db.connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return row_to_task(row) if row else None
+
     def get(self, task_id: str, tenant_id: str | None = DEFAULT_TENANT_ID) -> SquadTask | None:
         with self.db.connect() as conn:
             if tenant_id is None:
