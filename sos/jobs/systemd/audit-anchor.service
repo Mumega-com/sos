@@ -1,0 +1,10 @@
+[Unit]
+Description=SOS Audit WORM Anchor Job — hash-chain snapshot to R2
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/mumega/SOS
+Environment=PYTHONPATH=/home/mumega/SOS
+EnvironmentFile=-/home/mumega/.env.secrets
+EnvironmentFile=-/home/mumega/SOS/.env
+ExecStart=/usr/bin/python3 -m sos.jobs.audit_anchor

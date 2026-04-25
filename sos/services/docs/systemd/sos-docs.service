@@ -1,0 +1,18 @@
+[Unit]
+Description=SOS Docs Service — canonical doc-node graph with 5-tier RBAC
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mumega/SOS
+Environment=PYTHONPATH=/home/mumega/SOS
+Environment=SOS_DOCS_PORT=8085
+EnvironmentFile=-/home/mumega/.env.secrets
+EnvironmentFile=-/home/mumega/SOS/.env
+Environment=SOS_SYSTEM_TOKEN=sk-sos-system
+ExecStart=/usr/bin/python3 -m sos.services.docs.app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
