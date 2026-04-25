@@ -282,9 +282,13 @@ def _role_tier_name(role_id: str) -> str:
 def _role_within_ceiling(role_id: str, ceiling: str) -> bool:
     """Return True if role_id's tier is at or below ceiling.
 
-    G59 fix: unknown tier raises ValueError instead of silently defaulting to
-    -1 (which was ≤ all valid tier indices, so unknown tiers passed the ceiling
-    check unconditionally — a silent escalation path).
+    G59 fix: unknown role tier raises ValueError instead of silently defaulting
+    to -1 (which was <= all valid tier indices, so unknown tiers passed the
+    ceiling check unconditionally — a silent escalation path).
+
+    WARN-1 fix: unknown ceiling is validated symmetrically — raises
+    ValueError('ceiling_unrecognised') rather than silently using -1, which
+    would block all roles (blanket-deny that is hard to diagnose).
     """
     tier = _role_tier_name(role_id)
     if tier not in _TIER_ORDER:
@@ -292,7 +296,12 @@ def _role_within_ceiling(role_id: str, ceiling: str) -> bool:
             f'tier_unrecognised: role {role_id!r} has unknown tier {tier!r}; '
             f'valid tiers: {list(_TIER_ORDER)}'
         )
-    return _TIER_ORDER[tier] <= _TIER_ORDER.get(ceiling, -1)
+    if ceiling not in _TIER_ORDER:
+        raise ValueError(
+            f'ceiling_unrecognised: ceiling {ceiling!r} is not a valid tier; '
+            f'valid tiers: {list(_TIER_ORDER)}'
+        )
+    return _TIER_ORDER[tier] <= _TIER_ORDER[ceiling]
 
 
 # ── IdP group → role mapping ───────────────────────────────────────────────────
@@ -963,12 +972,21 @@ def _complete_sso_login(
     )
 
     # Apply group → role mappings, capped at IdP's tier ceiling (F-15)
+    # BLOCK-2 fix: explicit loop catches ValueError from _role_within_ceiling so a
+    # DB-level poison role (unknown tier, bypassing config-time guard) cannot crash
+    # the login path with an unhandled exception → 401 DoS for the whole IdP.
     raw_role_ids = get_roles_for_groups(idp.id, groups)
-    role_ids = [r for r in raw_role_ids if _role_within_ceiling(r, idp.max_grantable_tier)]
-    if len(role_ids) < len(raw_role_ids):
-        dropped = [r for r in raw_role_ids if r not in role_ids]
+    role_ids: list[str] = []
+    for r in raw_role_ids:
+        try:
+            if _role_within_ceiling(r, idp.max_grantable_tier):
+                role_ids.append(r)
+        except ValueError:
+            log.error('SSO login: skipping role %r with unrecognised tier (stream=%s)', r, idp.id)
+    dropped = [r for r in raw_role_ids if r not in role_ids]
+    if dropped:
         log.warning(
-            'SSO login: dropped %d role(s) exceeding IdP ceiling %r: %s',
+            'SSO login: dropped %d role(s) exceeding or unrecognised tier vs IdP ceiling %r: %s',
             len(dropped), idp.max_grantable_tier, dropped,
         )
     for role_id in role_ids:
@@ -1060,13 +1078,21 @@ def scim_provision_user(
         return principal.id
 
     # Apply group → role mappings, capped at IdP's tier ceiling (F-15)
+    # BLOCK-2 fix: same resilient loop as login path — unknown-tier role in DB
+    # must not crash SCIM provision with an unhandled ValueError.
     if groups is not None:
         raw_role_ids = get_roles_for_groups(idp_id, groups)
-        role_ids = [r for r in raw_role_ids if _role_within_ceiling(r, idp.max_grantable_tier)]
-        if len(role_ids) < len(raw_role_ids):
-            dropped = [r for r in raw_role_ids if r not in role_ids]
+        role_ids: list[str] = []
+        for r in raw_role_ids:
+            try:
+                if _role_within_ceiling(r, idp.max_grantable_tier):
+                    role_ids.append(r)
+            except ValueError:
+                log.error('SCIM provision: skipping role %r with unrecognised tier (idp=%s)', r, idp_id)
+        dropped = [r for r in raw_role_ids if r not in role_ids]
+        if dropped:
             log.warning(
-                'SCIM provision: dropped %d role(s) exceeding IdP ceiling %r: %s',
+                'SCIM provision: dropped %d role(s) exceeding or unrecognised tier vs IdP ceiling %r: %s',
                 len(dropped), idp.max_grantable_tier, dropped,
             )
         for role_id in role_ids:
