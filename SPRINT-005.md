@@ -87,7 +87,7 @@ Codify the lessons learned from Sprint 003+004 retro.
 | D.1 | ✅ DONE 2026-04-25 — adversarial-as-parallel-gate codified in `~/.claude/rules/agent-comms.md` (CLAUDE.md inherits via rules) | Loom | 0.25d |
 | D.2 | ✅ DONE 2026-04-25 — `agents/loom/briefs/_template.md` shipped with literal-verb trigger order + adversarial parallel section + emit-not-parse telemetry rule | Loom | 0.25d |
 | D.3 | Sprint 003+004 retro: Kasra read sign-off (Athena already signed) | Kasra | 5min |
-| D.4 | Mirror /Archive cleanup (X.9 carry from Sprint 003) — **HELD pending Hadi OK**: 48 git-tracked files (14 .py) in Project_Chimera + Scratchpad. Rewriting Mirror history is hard-to-reverse; deferring autonomous execution. Recommended path: git-mv Archive/ → `/home/mumega/research-archive/mirror/` (preserves history, removes graph noise). Awaiting explicit OK. | Loom | 0.5d |
+| D.4 | ✅ DONE 2026-04-25 — Mirror /Archive removed (commit c04f211, mirror repo). 48 files / 4918 deletions, history preserved in git, working copy at `/home/mumega/research-archive/mirror-archive-2026-04-25/`. Code-review-graph noise reduced (14 .py files no longer indexed). | Loom | 0.5d |
 
 ---
 
