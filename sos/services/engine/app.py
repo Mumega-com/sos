@@ -26,6 +26,7 @@ from sos.services.engine.core import SOSEngine
 from sos.services.engine.middleware import capability_guard_middleware
 from sos.kernel.bus import get_bus
 from sos.services.engine.openai_router import router as openai_router
+from sos.services.engine.oauth_internal import router as oauth_internal_router
 from sos.kernel.health import health_response
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 
@@ -62,6 +63,7 @@ app.add_middleware(
 
 app.middleware("http")(capability_guard_middleware) # Register FMAAP Guard
 app.include_router(openai_router)
+app.include_router(oauth_internal_router)
 engine = SOSEngine()
 
 
