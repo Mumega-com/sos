@@ -68,8 +68,11 @@ def consume_first_hellos() -> list[dict]:
                                 _alert_first_hello_failure(fields)
                                 r.xdel(key, entry_id)
                             else:
-                                # Increment retry count (re-add with incremented counter)
-                                fields["_retries"] = str(retries + 1)
+                                # BLOCK-3 fix: remove + re-add with incremented counter
+                                r.xdel(key, entry_id)
+                                new_fields = dict(fields)
+                                new_fields["_retries"] = str(retries + 1)
+                                r.xadd(key, new_fields)
                                 log.warning(
                                     "first_hello: delivery failed for %s (retry %d/5)",
                                     fields.get("agent_name", "?"), retries + 1,
