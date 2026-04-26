@@ -410,7 +410,7 @@ async def _verify_stream(
     """
     anchor_row = await conn.fetchrow(
         """
-        SELECT anchored_seq, anchor_hash, prev_anchor_hash, r2_object_key
+        SELECT anchored_seq, anchor_hash, prev_anchor_hash, r2_object_key, anchored_at
         FROM audit_anchors
         WHERE stream_id = $1
         ORDER BY anchored_seq DESC
@@ -439,6 +439,26 @@ async def _verify_stream(
                 "event_count": event_count,
             }
         return {"stream_id": stream_id, "ok": True, "reason": "no_events"}
+
+    # G55-WARN2 (Sprint 007): skip anchors younger than 90s to avoid
+    # r2_fetch_failed false positives from R2 propagation delay.
+    # 15-min timer means a 90s skip never opens an integrity gap.
+    anchored_at = anchor_row["anchored_at"]
+    if anchored_at is not None:
+        anchored_at_utc = anchored_at.replace(tzinfo=timezone.utc) if anchored_at.tzinfo is None else anchored_at
+        age_seconds = (datetime.now(timezone.utc) - anchored_at_utc).total_seconds()
+        if age_seconds < 90:
+            logger.info(
+                "audit_anchor: skipping recent anchor stream=%s anchored_at=%s age=%.1fs",
+                stream_id, anchored_at.isoformat(), age_seconds,
+            )
+            return {
+                "stream_id": stream_id,
+                "ok": True,
+                "reason": "skipped_recent_anchor",
+                "anchored_seq": anchor_row["anchored_seq"],
+                "skipped": True,
+            }
 
     r2_key: str = anchor_row["r2_object_key"]
     loop = asyncio.get_event_loop()
