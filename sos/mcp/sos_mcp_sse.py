@@ -2108,10 +2108,41 @@ def _request_bearer_token(request: Request) -> str:
     return ""
 
 
+_SOS_INTERNAL_TOKEN: str = os.environ.get("SOS_INTERNAL_TOKEN", "")
+
+
 def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
     candidate = (
         token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
     )
+
+    # LOCK-MCP-4 / S013 P0 BLOCK-1 fix (2026-04-26, Athena adversarial):
+    # Worker-proxied OAuth customer requests arrive with Bearer=SOS_INTERNAL_TOKEN
+    # AND tenant context injected as X-Tenant-Id / X-Agent-Name / X-Tier headers.
+    # Without this check, _resolve_token_context would match the internal token →
+    # is_system=True → customer gets system god-mode (all scope checks bypassed).
+    # Detect this path explicitly: internal token + tenant header = OAuth customer,
+    # NOT a system agent. Construct MCPAuthContext from headers; is_system stays False.
+    # DO NOT remove this check or merge the two paths — the Worker comment says exactly
+    # "VPS uses tenant headers not the OAuth JWT" and this is the VPS side of that contract.
+    if (
+        _SOS_INTERNAL_TOKEN
+        and candidate == _SOS_INTERNAL_TOKEN
+        and request.headers.get("X-Tenant-Id")
+    ):
+        tenant_id = request.headers.get("X-Tenant-Id", "")
+        agent_name = request.headers.get("X-Agent-Name", "")
+        tier = request.headers.get("X-Tier", "free")
+        return MCPAuthContext(
+            token=hashlib.sha256(candidate.encode()).hexdigest()[:16],  # never store raw
+            tenant_id=tenant_id,
+            is_system=False,
+            source="worker_oauth",
+            agent_name=agent_name,
+            scope="customer",
+            plan=tier,
+        )
+
     context = _resolve_token_context(candidate)
     if not context:
         raise HTTPException(status_code=401, detail="invalid token")
@@ -2120,65 +2151,42 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
 
 @app.get("/.well-known/oauth-authorization-server")
 async def oauth_discovery() -> JSONResponse:
-    """OAuth discovery for ChatGPT/external MCP clients."""
+    """OAuth discovery — advertises the Cloudflare Worker OAuth endpoints (not VPS stubs).
+
+    S013-B (2026-04-26): /authorize, /token, /register are handled by the
+    workers-oauth-provider in the mcp-dispatcher Worker, NOT by this VPS server.
+    Discovery document correctly points to those Worker-level paths.
+    """
     base = "https://mcp.mumega.com"
     return JSONResponse(
         {
             "issuer": base,
-            "authorization_endpoint": f"{base}/oauth/authorize",
-            "token_endpoint": f"{base}/oauth/token",
-            "registration_endpoint": f"{base}/oauth/register",
+            "authorization_endpoint": f"{base}/authorize",    # Worker: OAuthProvider
+            "token_endpoint": f"{base}/token",                # Worker: OAuthProvider
+            "registration_endpoint": f"{base}/register",      # Worker: DCR (LOCK-OAuth-D)
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],      # LOCK-OAuth-A: S256 only
+            "token_endpoint_auth_methods_supported": ["none"],
         }
     )
 
-
-@app.post("/oauth/register")
-async def oauth_register(request: Request) -> JSONResponse:
-    """Dynamic client registration — auto-approves any client."""
-    body = await request.json()
-    client_id = f"client-{uuid4().hex[:12]}"
-    return JSONResponse(
-        {
-            "client_id": client_id,
-            "client_secret": client_id,
-            "client_name": body.get("client_name", "unknown"),
-            "redirect_uris": body.get("redirect_uris", []),
-            "grant_types": ["authorization_code"],
-            "response_types": ["code"],
-            "token_endpoint_auth_method": "client_secret_post",
-        }
-    )
-
-
-@app.get("/oauth/authorize")
-async def oauth_authorize(request: Request) -> Response:
-    """OAuth authorize — auto-approves with token from query or generates one."""
-    redirect_uri = request.query_params.get("redirect_uri", "")
-    state = request.query_params.get("state", "")
-    if redirect_uri:
-        sep = "&" if "?" in redirect_uri else "?"
-        return Response(
-            status_code=302,
-            headers={"Location": f"{redirect_uri}{sep}code=mumega-auth-ok&state={state}"},
-        )
-    return JSONResponse({"code": "mumega-auth-ok"})
-
-
-@app.post("/oauth/token")
-async def oauth_token(request: Request) -> JSONResponse:
-    """OAuth token exchange — returns the system MCP access token."""
-    tokens = list(_system_tokens())
-    access_token = tokens[0] if tokens else "no-token-configured"
-    return JSONResponse(
-        {
-            "access_token": access_token,
-            "token_type": "Bearer",
-            "expires_in": 86400,
-        }
-    )
+# REMOVED 2026-04-26 (S013 P0 BLOCK-2, Athena adversarial): VPS stub OAuth endpoints.
+#
+# /oauth/register — auto-approved DCR: any caller got a valid client_id. Shodan-reachable.
+# /oauth/authorize — auto-approved auth: redirected with code=mumega-auth-ok to any URI.
+# /oauth/token — CRITICAL: leaked a live system MCP access token from _system_tokens() to
+#                any caller who reached the VPS (direct IP, DNS, misconfigured nginx).
+#
+# All three were prototype stubs that were never meant to reach production OAuth flow.
+# Real OAuth is handled entirely by the mcp-dispatcher Cloudflare Worker via
+# workers-oauth-provider (@cloudflare/workers-oauth-provider). The Worker's OAuthProvider
+# wraps /authorize, /token, /register — VPS never participates in the OAuth handshake.
+#
+# DO NOT restore these endpoints for "testing". Use the Worker dev environment instead:
+#   npx wrangler dev workers/mcp-dispatcher/
+# If you need a VPS-side stub for integration testing, add a TEST-only route gated by
+# os.environ.get("SOS_TEST_MODE") and stripped before production deploy.
 
 
 @app.get("/health")
