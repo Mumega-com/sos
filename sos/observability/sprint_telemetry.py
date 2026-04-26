@@ -641,6 +641,118 @@ def emit_stripe_webhook(
     return payload
 
 
+def emit_inactive_project_filtered(
+    project_id: str,
+    message_id: str,
+    reason: str = "not_in_active_set",
+    emitted_by: str = "brain",
+) -> dict[str, Any]:
+    """Emit inactive_project_filtered when brain skips dispatch for an inactive project.
+
+    Sprint 007 G64b. Non-blocking fire-and-forget.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "project_id": project_id,
+        "message_id": message_id,
+        "reason": reason,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="inactive_project_filtered",
+            resource=f"project:{project_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_pid = project_id.replace("/", "_").replace(":", "_")
+        (marker_dir / f"inactive_project_{safe_pid}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_project_id_stream_mismatch(
+    claimed_id: str,
+    actual_key: str,
+    message_id: str,
+    emitted_by: str = "brain",
+) -> dict[str, Any]:
+    """Emit project_id_stream_mismatch when metadata project_id doesn't match stream key.
+
+    Sprint 007 G64b BLOCK-1. Non-blocking fire-and-forget.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "claimed_id": claimed_id,
+        "actual_key": actual_key,
+        "message_id": message_id,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="project_id_stream_mismatch",
+            resource=f"project:{claimed_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_cid = claimed_id.replace("/", "_").replace(":", "_")
+        (marker_dir / f"stream_mismatch_{safe_cid}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
+def emit_missing_project_id(
+    message_id: str,
+    stream_key: str,
+    emitted_by: str = "brain",
+) -> dict[str, Any]:
+    """Emit missing_project_id when a task.created message lacks project field.
+
+    Sprint 007 G64b BLOCK-3. Non-blocking fire-and-forget.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "message_id": message_id,
+        "stream_key": stream_key,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="missing_project_id",
+            resource=f"stream:{stream_key}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_stream = stream_key.replace("/", "_").replace(":", "_")
+        (marker_dir / f"missing_project_id_{safe_stream}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def drain_sprint_markers(dry_run: bool = False) -> dict[str, Any]:
     """C.6: Drain .sprint_markers/*.json into audit_events when DB reachable.
 

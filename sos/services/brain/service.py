@@ -44,6 +44,11 @@ from sos.kernel.trace_context import get_current_trace_id, use_trace_id
 from sos.kernel.telemetry import init_tracing, span_under_current_trace
 from sos.services.brain.matrix import agent_load, select_agent  # noqa: F401
 from sos.services.brain.scoring import score_task
+from sos.services.brain.source_reader import (
+    MissingProjectIdError,
+    extract_project_from_stream,
+    is_active,
+)
 from sos.services.brain.state import BrainState, RoutingDecision
 
 if TYPE_CHECKING:
@@ -298,6 +303,24 @@ class BrainService:
                         ),
                     ):
                         await self._handle_event(stream, entry_id, fields)
+                except MissingProjectIdError:
+                    # BLOCK-3 (G64b): ACK + emit + log ERROR + continue.
+                    # Retrying won't fix a missing project_id — ACK to prevent
+                    # infinite re-delivery. Emit for observability.
+                    self._seen_ids.add(msg_id)
+                    assert self._redis is not None
+                    await self._redis.xack(stream, self._group_name, entry_id)
+                    try:
+                        from sos.observability.sprint_telemetry import emit_missing_project_id
+                        emit_missing_project_id(msg_id, stream)
+                    except Exception:
+                        pass  # non-blocking fire-and-forget (WARN-1)
+                    logger.error(
+                        "Missing project_id on stream=%s entry=%s; ACK'd + emitted",
+                        stream,
+                        entry_id,
+                    )
+                    continue
                 except Exception:
                     # Leave unacked — retry worker reclaims after backoff.
                     # Do NOT XACK, do NOT mark seen.
@@ -455,15 +478,59 @@ class BrainService:
     async def _on_task_created(self, msg: dict) -> None:
         """Score a newly-created task, enqueue it, and emit task.scored.
 
+        G64b project_id gate:
+        1. Extract project_id from message metadata (raises MissingProjectIdError)
+        2. Cross-check against stream key suffix (BLOCK-1)
+        3. Gate via is_active (emit + skip if inactive)
+
         Scoring uses defaults for any field missing on the incoming
         task.created payload:
             impact=5.0, urgency=<priority>|"medium", unblock_count=0, cost=1.0
         """
         task_id = msg.get("task_id") or msg.get("id", "unknown")
+        stream = msg.get("stream", "")
+        msg_id = msg.get("entry_id", task_id)
+
+        # --- G64b: project_id gate ----------------------------------------
+        project_id = msg.get("project") or msg.get("project_id")
+
+        if not project_id:
+            raise MissingProjectIdError(
+                f"task.created missing project field: task_id={task_id}, stream={stream}"
+            )
+
+        # BLOCK-1: cross-check project_id from metadata against stream key
+        stream_project = extract_project_from_stream(stream)
+        if stream_project is not None and stream_project != project_id:
+            try:
+                from sos.observability.sprint_telemetry import emit_project_id_stream_mismatch
+                emit_project_id_stream_mismatch(project_id, stream_project, msg_id)
+            except Exception:
+                pass  # non-blocking fire-and-forget (WARN-1)
+            logger.warning(
+                "[brain] project_id mismatch: claimed=%r stream_key=%r task_id=%s; skipping",
+                project_id, stream_project, task_id,
+            )
+            return
+
+        # Gate: is project active?
+        if not is_active(project_id):
+            try:
+                from sos.observability.sprint_telemetry import emit_inactive_project_filtered
+                emit_inactive_project_filtered(project_id, msg_id, reason="not_in_active_set")
+            except Exception:
+                pass  # non-blocking fire-and-forget (WARN-1)
+            logger.info(
+                "[brain] project_id=%r not in active set; skipping task_id=%s",
+                project_id, task_id,
+            )
+            return
+
         logger.info(
-            "[brain] task.created task_id=%s title=%r",
+            "[brain] task.created task_id=%s title=%r project=%s",
             task_id,
             msg.get("title", ""),
+            project_id,
         )
         self.state.tasks_in_flight.add(task_id)
 
