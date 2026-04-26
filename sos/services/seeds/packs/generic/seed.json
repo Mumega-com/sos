@@ -1,29 +1,15 @@
 {
   "theme_primary": "#6366F1",
   "theme_secondary": "#10B981",
-  "collections": [
-    "blog",
-    "team"
-  ],
+  "collections": ["blog", "team", "pages", "topics", "labs", "tools", "products"],
   "agent_role": "business operations coordinator",
   "agent_cause": "Coordinates your team, tracks your pipeline, and helps your business grow.",
   "ruliads_enabled": [
-    "first-hello",
-    "learn-rhythm",
-    "first-insight",
-    "earn-trust",
-    "new-contact-detected",
-    "relationship-mapped",
-    "stale-deal-nudge",
-    "hot-opportunity-flag",
-    "missing-action-alert",
-    "daily-priority-summary",
-    "milestone-celebrate",
-    "weekend-silence",
-    "comeback",
-    "gratitude"
+    "first-hello", "learn-rhythm", "first-insight", "earn-trust",
+    "new-contact-detected", "relationship-mapped",
+    "stale-deal-nudge", "hot-opportunity-flag", "missing-action-alert",
+    "daily-priority-summary", "milestone-celebrate",
+    "weekend-silence", "comeback", "gratitude"
   ],
-  "compliance": [
-    "PIPEDA"
-  ]
+  "compliance": ["PIPEDA"]
 }

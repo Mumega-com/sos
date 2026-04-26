@@ -119,6 +119,12 @@ def deploy_seed(
 ) -> dict:
     """Plant the seed. Returns deployment summary."""
 
+    # BLOCK-1 (LOCK-G): explicit validation, never silent fallback
+    available = _scan_available_verticals()
+    if vertical not in available:
+        raise ValueError(
+            f"Unknown vertical: {vertical!r}. Available: {available}"
+        )
     config = _load_vertical_config(vertical)
     agent_name = f"{slug}-agent"
     project_id = slug
@@ -208,13 +214,25 @@ def deploy_seed(
     except Exception as exc:
         results["steps"].append({"step": "create_seed_config", "ok": False, "error": str(exc)})
 
-    # ── Step 5: Schedule first-hello ──
+    # ── Step 5: Enqueue first-hello (BLOCK-2 fix: actually enqueue, no silent-lie) ──
     try:
-        from sos.observability.sprint_telemetry import emit_internal_knight_minted
-        results["steps"].append({"step": "schedule_first_hello", "ok": True,
-                                  "note": "First-hello ruliad fires within 1 hour of deploy"})
+        import redis as _redis
+        pw = os.environ.get("REDIS_PASSWORD", "")
+        r = _redis.Redis(host="localhost", port=6379, password=pw, decode_responses=True)
+        r.xadd(
+            f"sos:seed:first-hello:{project_id}",
+            {
+                "agent_name": agent_name,
+                "channel_id": discord_channel_id,
+                "vertical": vertical,
+                "cause": config.get("agent_cause", ""),
+                "deploy_time": now.isoformat(),
+            },
+        )
+        results["steps"].append({"step": "enqueue_first_hello", "ok": True,
+                                  "note": "Enqueued in Redis. Agent loop picks up and fires."})
     except Exception as exc:
-        results["steps"].append({"step": "schedule_first_hello", "ok": False, "error": str(exc)})
+        results["steps"].append({"step": "enqueue_first_hello", "ok": False, "error": str(exc)})
 
     # ── Summary ──
     ok_count = sum(1 for s in results["steps"] if s.get("ok"))

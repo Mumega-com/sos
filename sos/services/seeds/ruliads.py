@@ -467,6 +467,7 @@ def ruliad_burnout_detect(
                 "No pressure — just checking in."
             ),
             "state_class": "burnout_risk",
+            "expires_in_days": 30,
         }
     return None
 
