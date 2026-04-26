@@ -170,6 +170,10 @@ class OAuthAuditRequest(BaseModel):
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
+# NOTE: DcrRegisterRequest + /internal/oauth-dcr-register were drafted but removed.
+# The /v2/me pattern (sos_mcp_sse.py) is cleaner: server extracts tenant_id from the
+# validated JWT props (worker_oauth context), writes dcr_client_id + returns profile
+# in one call. No client-side tenant_id plumbing needed. — Kasra 2026-04-26
 
 @router.post("/oauth-tenant-provision")
 async def provision_tenant(
@@ -203,6 +207,50 @@ async def provision_tenant(
         "tier": tenant.get("tier", "free"),
         "agent_name": tenant.get("agent_name", f"{slug}-knight"),
     }
+
+
+@router.post("/oauth-dcr-register")
+async def dcr_register(
+    body: DcrRegisterRequest,
+    _: None = Depends(_require_internal_auth),
+) -> dict[str, str]:
+    """Persist DCR client_id to oauth_tenants.dcr_client_id after successful token exchange.
+
+    LOCK-AUDIT-1: one DCR client per tenant — UNIQUE(dcr_client_id) enforced in DB.
+    Called by the npm CLI (src/auth.ts login()) after code→token exchange succeeds.
+    Event-distinct from /oauth-tenant-provision: tenant lifecycle vs DCR housekeeping.
+
+    Idempotent: UPDATE WHERE dcr_client_id IS NULL OR dcr_client_id = %s — repeat
+    calls with the same client_id are no-ops; a different client_id hits the UNIQUE
+    constraint and returns 409 (tenant already has a DCR client registered).
+    """
+    try:
+        from mirror.kernel.db import get_db
+    except ImportError:
+        log.error("mirror.kernel.db not available")
+        raise HTTPException(status_code=503, detail="db_unavailable")
+
+    db = get_db()
+    try:
+        # Only write if this tenant has no DCR client yet (first-time) or same client (retry)
+        # UNIQUE(dcr_client_id) handles the conflict case at DB level
+        db.execute(  # type: ignore[attr-defined]
+            """
+            UPDATE oauth_tenants
+            SET dcr_client_id = %s, updated_at = NOW()
+            WHERE tenant_id = %s
+              AND (dcr_client_id IS NULL OR dcr_client_id = %s)
+            """,
+            body.client_id, body.tenant_id, body.client_id,
+        )
+    except Exception as exc:
+        # Unique constraint violation = tenant already has a different DCR client
+        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+            raise HTTPException(status_code=409, detail="dcr_client_already_registered")
+        log.error("dcr_register failed for tenant %s: %s", body.tenant_id, exc)
+        raise HTTPException(status_code=500, detail="dcr_register_error") from exc
+
+    return {"ok": "true"}
 
 
 @router.post("/oauth-audit")

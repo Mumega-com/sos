@@ -2251,6 +2251,52 @@ async def oauth_discovery() -> JSONResponse:
 # os.environ.get("SOS_TEST_MODE") and stripped before production deploy.
 
 
+@app.get("/me")
+async def me(
+    request: Request,
+    client_id: str | None = None,  # query param from npm CLI (W3)
+) -> JSONResponse:
+    """Tenant profile endpoint — called by @mumega/mcp after token exchange.
+
+    S013 v0.2: replaces the /dcr-bind + /internal/oauth-dcr-register pattern.
+    One call does three things:
+      1. Returns { tenant_id, tier, agent_name } from worker_oauth context
+      2. Persists dcr_client_id if client_id query param provided (W3 — LOCK-AUDIT-1)
+      3. Drives `npx @mumega/mcp status` — live tier from server, not cached stale value
+
+    LOCK-AUDIT-1: one DCR client per tenant enforced via UNIQUE(dcr_client_id).
+    Called as GET /v2/me?client_id=... → Worker validates OAuth token → here.
+    """
+    auth = _require_auth(request)
+    if auth.source != "worker_oauth" or not auth.tenant_id:
+        raise HTTPException(status_code=403, detail="worker_oauth_required")
+
+    # W3: persist DCR client_id if provided (fire-once, idempotent)
+    if client_id:
+        try:
+            from mirror.kernel.db import get_db
+            db = get_db()
+            db.execute(  # type: ignore[attr-defined]
+                """
+                UPDATE oauth_tenants
+                SET dcr_client_id = %s, updated_at = NOW()
+                WHERE tenant_id = %s
+                  AND (dcr_client_id IS NULL OR dcr_client_id = %s)
+                """,
+                client_id, auth.tenant_id, client_id,
+            )
+        except Exception as exc:
+            if "unique" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+                log.warning("dcr_client_id write failed for %s: %s", auth.tenant_id, exc)
+            # Non-fatal — dcr_client_id is telemetry, never block profile response
+
+    return JSONResponse({
+        "tenant_id": auth.tenant_id,
+        "tier": auth.plan or "free",
+        "agent_name": auth.agent_name or "",
+    })
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     r = _get_redis()
