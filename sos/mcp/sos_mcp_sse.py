@@ -49,6 +49,7 @@ from sos.mcp.customer_tools import (
     is_tool_allowed_for_role,
 )
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
+from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
 
 # ---------------------------------------------------------------------------
 # Mirror kernel — direct import (no HTTP to :8844)
@@ -525,9 +526,12 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
 def _require_same_tenant_agent(auth: MCPAuthContext, requested: str | None) -> str:
     if auth.is_system:
         return requested or AGENT_SELF
-    # Per-agent tokens can send to any agent (they have verified identity)
-    if auth.agent_name and requested:
-        return requested
+    # REMOVED 2026-04-26 (S013 P0 BLOCK-1, Athena adversarial): per-agent bypass.
+    # All non-system tokens MUST go through hmac.compare_digest(requested, tenant_agent).
+    # DO NOT re-add a presence-check shortcut. agent_name being truthy is a string
+    # check, not cryptographic binding. If cross-agent send becomes a legitimate
+    # requirement, add an explicit `scope = "cross_agent"` capability claim in the
+    # token, never an implicit bypass on agent_name. — Athena gate-keeper 2026-04-26
     tenant_agent = auth.agent_scope
     if requested and not hmac.compare_digest(requested, tenant_agent):
         raise HTTPException(status_code=403, detail="cross_tenant_agent_access")
@@ -1075,6 +1079,25 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
     # Log tool invocation
     await _publish_log("info", "mcp", f"tool:{name} by {agent_scope}", agent=agent_scope)
 
+    # WARN-3 fix (LOCK-MCP-4): emit to audit chain for all write tools.
+    # Read tools (inbox/peers/recall) excluded for volume; all WRITE_TOOLS emitted.
+    # Fire-and-forget — never blocks the tool call path.
+    _WRITE_TOOLS_AUDIT = {"send", "broadcast", "remember", "squad_remember",
+                          "task_create", "task_update", "request"}
+    if name in _WRITE_TOOLS_AUDIT:
+        asyncio.create_task(_emit_audit(AuditChainEvent(
+            stream_id="mcp",
+            actor_id=auth.agent_scope,
+            actor_type="agent" if not auth.is_customer else "human",
+            action=f"mcp.{name}",
+            resource=f"tool:{name}",
+            payload={
+                "tenant_id": auth.tenant_id,
+                "token_prefix": auth.token[:12] if auth.token else "",
+                "tool": name,
+            },
+        )))
+
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
     WRITE_TOOLS = {"send", "broadcast", "remember", "squad_remember", "task_create", "task_update", "request"}
@@ -1094,16 +1117,15 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # onboard tool handles its own mode check, but log the attempt
         pass
 
-    # Rate limit write operations more strictly for tenant tokens
+    # Rate limit write operations more strictly for tenant tokens.
+    # WARN-1 fix: Redis sliding window — process-local _token_windows dict was
+    # bypassable by concurrent connections (single-instance lucky today, latent at scale).
     if name in WRITE_TOOLS and not auth.is_system:
-        now = time.monotonic()
-        write_key = f"write:{auth.token}"
-        started_at, count = _token_windows.get(write_key, (now, 0))
-        if now - started_at >= 60:
-            started_at, count = now, 0
-        count += 1
-        _token_windows[write_key] = (started_at, count)
-        if count > 30:  # 30 writes/min for tenant tokens (vs 60 total)
+        write_rkey = f"sos:rate:write:{auth.token}"
+        write_count = await r.incr(write_rkey)
+        if write_count == 1:
+            await r.expire(write_rkey, 60)
+        if write_count > 30:  # 30 writes/min for tenant tokens
             await _publish_log(
                 "warn", "mcp", f"write rate limit hit by {agent_scope}", agent=agent_scope
             )
@@ -1373,7 +1395,9 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         elif name == "squad_remember":
             squad_id = args["squad_id"]
             text = args["text"]
-            agent_id = args.get("agent_id") or "squad"
+            # LOCK-MCP-2: bind to calling agent — caller-supplied agent_id is ignored.
+            # Cross-agent squad attribution requires an explicit squad membership check.
+            agent_id = auth.agent_scope
             context_id = f"squad:{squad_id}:{int(time.time())}"
             project = f"squad:{squad_id}"
             await loop.run_in_executor(
@@ -1971,7 +1995,10 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
 _sessions: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
 _session_auth: dict[str, MCPAuthContext] = {}
-_token_windows: dict[str, tuple[float, int]] = {}
+# REMOVED 2026-04-26 (S013 WARN-1, Athena adversarial): process-local rate-limit dict.
+# _token_windows was bypassable via concurrent connections (single INCR per-process,
+# multiple processes = no shared state). Replaced with Redis INCR + EXPIRE in both
+# _enforce_rate_limit and handle_tool write-rate path. — Kasra 2026-04-26
 
 
 def _token_label(token: str) -> str:
@@ -2008,14 +2035,17 @@ def _tool_result_failed(result: dict[str, Any]) -> bool:
 
 
 def _enforce_rate_limit(token: str) -> None:
+    # WARN-1 fix: Redis sliding window replaces in-memory _token_windows dict.
+    # Sync wrapper — called from sync _require_auth; Redis client is thread-safe.
+    import redis as _redis_sync
     if not token:
         raise HTTPException(status_code=401, detail="missing_token")
-    now = time.monotonic()
-    started_at, count = _token_windows.get(token, (now, 0))
-    if now - started_at >= 60:
-        started_at, count = now, 0
-    count += 1
-    _token_windows[token] = (started_at, count)
+    pw = os.environ.get("REDIS_PASSWORD", "")
+    r_sync = _redis_sync.Redis(host="localhost", port=6379, password=pw, decode_responses=True)
+    rkey = f"sos:rate:all:{token}"
+    count = r_sync.incr(rkey)
+    if count == 1:
+        r_sync.expire(rkey, 60)
     if count > RATE_LIMIT_PER_MINUTE:
         raise HTTPException(status_code=429, detail="rate_limit_exceeded")
 
