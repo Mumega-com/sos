@@ -43,11 +43,14 @@ TRUSTED_AGENTS = {
     "kasra", "athena", "codex", "mumega", "sol", "dandan", "worker",
     "river", "mizan", "mumcp", "cyrus", "antigravity", "hadi",
     "sos-mcp-sse", "gemini", "mumega-web", "spai",
+    "loom",  # canonical mint 2026-04-24 — coordinator
 }
 
 # System/test agents — ignore, don't challenge
+# Substrate components that register on bus but aren't real agents (services/modules)
 SYSTEM_AGENTS = {
     "e2e-customer", "test", "this-session", "sentinel",
+    "mirror", "memory", "engine", "registry", "sos-docs",
 }
 
 # Track state
