@@ -33,10 +33,10 @@ def main() -> None:
     if args.batch:
         # Batch mint: 4 initial reps (5th TBD)
         reps = [
-            {"name": "gavin", "role": "closer", "channel": "PLACEHOLDER_GAVIN"},
-            {"name": "lex", "role": "activator", "channel": "PLACEHOLDER_LEX"},
-            {"name": "noor", "role": "captain", "channel": "PLACEHOLDER_NOOR"},
-            {"name": "pricila", "role": "sourcer", "channel": "PLACEHOLDER_PRICILA"},
+            {"name": "gavin", "role": "closer", "channel": "1497796585990394037"},
+            {"name": "lex", "role": "activator", "channel": "1497796590830751766"},
+            {"name": "noor", "role": "captain", "channel": "1497796595146686565"},
+            {"name": "pricila", "role": "sourcer", "channel": "1497796599324213279"},
         ]
         for rep in reps:
             print(f"\n--- Minting {rep['name']}-knight ---")
