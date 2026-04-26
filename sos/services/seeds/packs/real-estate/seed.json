@@ -1,0 +1,42 @@
+{
+  "theme_primary": "#1B365D",
+  "theme_secondary": "#C5A572",
+  "collections": [
+    "listings",
+    "neighborhoods",
+    "blog",
+    "team"
+  ],
+  "agent_role": "operations coordinator",
+  "agent_cause": "Ensures no lead goes unfollowed, no deal goes stale, and the pipeline is always visible.",
+  "ruliads_enabled": [
+    "first-hello",
+    "learn-rhythm",
+    "first-insight",
+    "earn-trust",
+    "new-contact-detected",
+    "relationship-mapped",
+    "warm-intro-opportunity",
+    "anniversary-reminder",
+    "website-down",
+    "seo-drop",
+    "review-alert",
+    "stale-deal-nudge",
+    "hot-opportunity-flag",
+    "missing-action-alert",
+    "daily-priority-summary",
+    "content-gap",
+    "upsell-signal",
+    "seasonal-pattern",
+    "milestone-celebrate",
+    "weekend-silence",
+    "comeback",
+    "gratitude"
+  ],
+  "compliance": [
+    "RECO",
+    "REBBA",
+    "PIPEDA",
+    "FINTRAC"
+  ]
+}

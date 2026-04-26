@@ -39,74 +39,68 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Seed configuration per vertical
 # ---------------------------------------------------------------------------
 
-VERTICAL_CONFIGS = {
-    "real-estate": {
-        "theme_primary": "#1B365D",
-        "theme_secondary": "#C5A572",
-        "collections": ["listings", "neighborhoods", "blog", "team"],
-        "agent_role": "operations coordinator",
-        "agent_cause": "Ensures no lead goes unfollowed, no deal goes stale, "
-                       "and the pipeline is always visible.",
-        "ruliads_enabled": [
-            "first-hello", "learn-rhythm", "first-insight", "earn-trust",
-            "new-contact-detected", "relationship-mapped", "warm-intro-opportunity",
-            "anniversary-reminder", "website-down", "seo-drop", "review-alert",
-            "stale-deal-nudge", "hot-opportunity-flag", "missing-action-alert",
-            "daily-priority-summary", "content-gap", "upsell-signal",
-            "seasonal-pattern", "milestone-celebrate", "weekend-silence",
-            "burnout-detect", "comeback", "gratitude",
-        ],
-        "compliance": ["RECO", "REBBA", "PIPEDA", "FINTRAC"],
-    },
-    "dental": {
-        "theme_primary": "#0EA5E9",
-        "theme_secondary": "#10B981",
-        "collections": ["services", "team", "blog", "faq"],
-        "agent_role": "patient experience coordinator",
-        "agent_cause": "Ensures every patient feels welcomed, every appointment "
-                       "is remembered, and the practice grows steadily.",
-        "ruliads_enabled": [
-            "first-hello", "learn-rhythm", "first-insight", "earn-trust",
-            "new-contact-detected", "relationship-mapped", "anniversary-reminder",
-            "website-down", "review-alert", "daily-priority-summary",
-            "content-gap", "seasonal-pattern", "milestone-celebrate",
-            "weekend-silence", "comeback", "gratitude",
-        ],
-        "compliance": ["PHIPA", "PIPEDA"],
-    },
-    "grants": {
-        "theme_primary": "#D4A017",
-        "theme_secondary": "#06B6D4",
-        "collections": ["blog", "team", "programs"],
-        "agent_role": "grant pipeline coordinator",
-        "agent_cause": "Helps businesses find, apply for, and win government "
-                       "funding. Never misses a deadline.",
-        "ruliads_enabled": [
-            "first-hello", "learn-rhythm", "first-insight", "earn-trust",
-            "new-contact-detected", "relationship-mapped", "warm-intro-opportunity",
-            "stale-deal-nudge", "hot-opportunity-flag", "missing-action-alert",
-            "daily-priority-summary", "upsell-signal", "seasonal-pattern",
-            "milestone-celebrate", "weekend-silence", "comeback", "gratitude",
-        ],
-        "compliance": ["PIPEDA"],
-    },
-    "generic": {
-        "theme_primary": "#6366F1",
-        "theme_secondary": "#10B981",
-        "collections": ["blog", "team"],
-        "agent_role": "business operations coordinator",
-        "agent_cause": "Coordinates your team, tracks your pipeline, and "
-                       "helps your business grow.",
-        "ruliads_enabled": [
-            "first-hello", "learn-rhythm", "first-insight", "earn-trust",
-            "new-contact-detected", "relationship-mapped",
-            "stale-deal-nudge", "hot-opportunity-flag", "missing-action-alert",
-            "daily-priority-summary", "milestone-celebrate",
-            "weekend-silence", "comeback", "gratitude",
-        ],
-        "compliance": ["PIPEDA"],
-    },
+# ---------------------------------------------------------------------------
+# LOCK-J: Filesystem IS the registry. Scan packs from disk, not hardcoded dict.
+# Available verticals = directories under PACKS_DIR with a seed.json file.
+# Fallback defaults for packs that don't yet have seed.json (bootstrap period).
+# ---------------------------------------------------------------------------
+
+PACKS_DIR = Path(__file__).parent.parent / "sos" / "services" / "seeds" / "packs"
+INKWELL_EXAMPLES_DIR = Path("/home/mumega/inkwell/examples") if Path("/home/mumega/inkwell/examples").exists() else Path("/home/mumega/mumega.com/examples") if Path("/home/mumega/mumega.com/examples").exists() else None
+
+_FALLBACK_DEFAULTS = {
+    "theme_primary": "#6366F1",
+    "theme_secondary": "#10B981",
+    "collections": ["blog", "team"],
+    "agent_role": "business operations coordinator",
+    "agent_cause": "Coordinates your team, tracks your pipeline, and helps your business grow.",
+    "ruliads_enabled": [
+        "first-hello", "learn-rhythm", "first-insight", "earn-trust",
+        "new-contact-detected", "relationship-mapped",
+        "stale-deal-nudge", "hot-opportunity-flag", "missing-action-alert",
+        "daily-priority-summary", "milestone-celebrate",
+        "weekend-silence", "comeback", "gratitude",
+    ],
+    "compliance": ["PIPEDA"],
 }
+
+
+def _scan_available_verticals() -> list[str]:
+    """Scan filesystem for available vertical packs. LOCK-J: no DB, no JSON registry."""
+    verticals = []
+    # Scan SOS packs dir
+    if PACKS_DIR.exists():
+        for d in sorted(PACKS_DIR.iterdir()):
+            if d.is_dir() and not d.name.startswith("."):
+                verticals.append(d.name)
+    # Scan Inkwell examples dir
+    if INKWELL_EXAMPLES_DIR and INKWELL_EXAMPLES_DIR.exists():
+        for d in sorted(INKWELL_EXAMPLES_DIR.iterdir()):
+            if d.is_dir() and not d.name.startswith(".") and d.name not in verticals:
+                verticals.append(d.name)
+    # Always include generic as fallback
+    if "generic" not in verticals:
+        verticals.append("generic")
+    return verticals
+
+
+def _load_vertical_config(vertical: str) -> dict:
+    """Load vertical config from seed.json in pack dir, fallback to defaults."""
+    pack_seed = PACKS_DIR / vertical / "seed.json"
+    if pack_seed.exists():
+        try:
+            return json.loads(pack_seed.read_text())
+        except Exception:
+            pass
+    # Check Inkwell examples
+    if INKWELL_EXAMPLES_DIR:
+        inkwell_config = INKWELL_EXAMPLES_DIR / vertical / "seed.json"
+        if inkwell_config.exists():
+            try:
+                return json.loads(inkwell_config.read_text())
+            except Exception:
+                pass
+    return dict(_FALLBACK_DEFAULTS)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +119,7 @@ def deploy_seed(
 ) -> dict:
     """Plant the seed. Returns deployment summary."""
 
-    config = VERTICAL_CONFIGS.get(vertical, VERTICAL_CONFIGS["generic"])
+    config = _load_vertical_config(vertical)
     agent_name = f"{slug}-agent"
     project_id = slug
     now = datetime.now(timezone.utc)
@@ -242,9 +236,10 @@ def main():
     parser = argparse.ArgumentParser(description="Plant the Mumega seed in a new business")
     parser.add_argument("--business", required=True, help="Business name")
     parser.add_argument("--slug", required=True, help="URL-safe slug")
+    available = _scan_available_verticals()
     parser.add_argument("--vertical", default="generic",
-                        choices=list(VERTICAL_CONFIGS.keys()),
-                        help="Business vertical")
+                        choices=available,
+                        help=f"Business vertical (available: {', '.join(available)})")
     parser.add_argument("--contact-name", required=True, help="Primary contact name")
     parser.add_argument("--contact-email", required=True, help="Primary contact email")
     parser.add_argument("--discord-channel", required=True, help="Discord channel ID (snowflake)")
