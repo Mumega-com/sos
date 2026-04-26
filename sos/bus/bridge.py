@@ -341,33 +341,12 @@ class BusHandler(BaseHTTPRequestHandler):
                 "project": project,
             }
 
-            # OmniB BUS-DELIVERY: opt-in delivery confirmation via XPENDING poll
+            # OmniB BUS-DELIVERY V1: honest about limitation.
+            # XADD entry_id proves stream-write succeeded (catches bus-layer drops).
+            # True receiver-side delivery confirmation requires app-layer ACK (S010).
             if wait_for_delivery:
-                import time
-                deadline = time.monotonic() + 5.0  # 5s timeout
-                delivered = False
-                while time.monotonic() < deadline:
-                    try:
-                        # Check if any consumer group has pending entries for this stream
-                        groups = r.xinfo_groups(stream)
-                        for g in groups:
-                            pending = r.xpending(stream, g.get("name", ""))
-                            if pending and pending.get("pending", 0) > 0:
-                                # Entry was read by a consumer (pending = read but not ACK'd)
-                                delivered = True
-                                break
-                        if delivered:
-                            break
-                        # Also check if agent's last_seen updated (agent is alive + polling)
-                        reg_key = _registry_key(to_agent, project)
-                        if r.exists(reg_key):
-                            delivered = True
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(0.5)
-                result["delivered"] = delivered
-                result["status"] = "delivered" if delivered else "queued"
+                result["delivered"] = False
+                result["status"] = "queued"
 
             self._json(200, result)
 
