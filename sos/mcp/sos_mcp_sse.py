@@ -169,6 +169,24 @@ MIRROR_HEADERS = {
     "Content-Type": "application/json",
 }
 RATE_LIMIT_PER_MINUTE: int = int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60"))
+
+# WARN-S013-005 fix: single module-level constant (was duplicated in handle_tool body).
+# All write-path tools — rate-limited + audit-emitted.
+MCP_WRITE_TOOLS: frozenset[str] = frozenset({
+    "send", "broadcast", "remember", "squad_remember",
+    "task_create", "task_update", "request",
+})
+
+# WARN-S013-004 fix: module-level sync Redis client for _enforce_rate_limit.
+# Creating a new client per call was fine on localhost but pressure point at scale.
+import redis as _redis_sync_mod
+_sync_redis = _redis_sync_mod.Redis(
+    host="localhost",
+    port=6379,
+    password=REDIS_PASSWORD,
+    decode_responses=True,
+    socket_keepalive=True,
+)
 AUDIT_LOG_DIR = Path.home() / ".sos" / "logs"
 MCP_AUDIT_LOG = AUDIT_LOG_DIR / "mcp_audit.jsonl"
 BUS_TOKENS_PATH = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
@@ -1082,9 +1100,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
     # WARN-3 fix (LOCK-MCP-4): emit to audit chain for all write tools.
     # Read tools (inbox/peers/recall) excluded for volume; all WRITE_TOOLS emitted.
     # Fire-and-forget — never blocks the tool call path.
-    _WRITE_TOOLS_AUDIT = {"send", "broadcast", "remember", "squad_remember",
-                          "task_create", "task_update", "request"}
-    if name in _WRITE_TOOLS_AUDIT:
+    if name in MCP_WRITE_TOOLS:
         asyncio.create_task(_emit_audit(AuditChainEvent(
             stream_id="mcp",
             actor_id=auth.agent_scope,
@@ -1100,7 +1116,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
-    WRITE_TOOLS = {"send", "broadcast", "remember", "squad_remember", "task_create", "task_update", "request"}
+    WRITE_TOOLS = MCP_WRITE_TOOLS  # module-level constant (WARN-S013-005)
     # Tools classified as read-only — kept as a documented contract, even
     # though flow below only branches on SYSTEM_ONLY_TOOLS/WRITE_TOOLS.
     READ_TOOLS = {  # noqa: F841
@@ -2035,17 +2051,13 @@ def _tool_result_failed(result: dict[str, Any]) -> bool:
 
 
 def _enforce_rate_limit(token: str) -> None:
-    # WARN-1 fix: Redis sliding window replaces in-memory _token_windows dict.
-    # Sync wrapper — called from sync _require_auth; Redis client is thread-safe.
-    import redis as _redis_sync
+    # WARN-1 fix: Redis sliding window (module-level client, WARN-S013-004 fix).
     if not token:
         raise HTTPException(status_code=401, detail="missing_token")
-    pw = os.environ.get("REDIS_PASSWORD", "")
-    r_sync = _redis_sync.Redis(host="localhost", port=6379, password=pw, decode_responses=True)
     rkey = f"sos:rate:all:{token}"
-    count = r_sync.incr(rkey)
+    count = _sync_redis.incr(rkey)
     if count == 1:
-        r_sync.expire(rkey, 60)
+        _sync_redis.expire(rkey, 60)
     if count > RATE_LIMIT_PER_MINUTE:
         raise HTTPException(status_code=429, detail="rate_limit_exceeded")
 
