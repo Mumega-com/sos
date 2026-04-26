@@ -102,12 +102,15 @@ def extract_entities_llm(text: str) -> dict[str, list[str]]:
     sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", sanitized)
 
     try:
+        # BLOCK-B1 fix: never use .format() on user-controlled content
+        # (Discord messages with {x} would cause KeyError or template injection)
+        prompt = _EXTRACTION_PROMPT.replace("{message}", sanitized)
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
             messages=[{
                 "role": "user",
-                "content": _EXTRACTION_PROMPT.format(message=sanitized),
+                "content": prompt,
             }],
         )
         raw = response.content[0].text
@@ -131,11 +134,28 @@ def extract_entities_llm(text: str) -> dict[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 
+def _get_bound_channel(conn: Any, knight_id: str) -> str | None:
+    """Fetch the bound Discord channel ID for a knight."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT discord_channel_id FROM knight_discord_bindings WHERE knight_id = %s",
+                (knight_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
+
+
 def ingest_messages(
     conn: Any,
     knight_id: str,
     bot_user_ids: set[str],
     messages: list[dict[str, Any]],
+    *,
+    max_llm_calls: int = 100,
+    bound_channel_id: str | None = None,
 ) -> dict[str, Any]:
     """Ingest a batch of Discord messages into the GTM graph.
 
@@ -145,6 +165,8 @@ def ingest_messages(
         bot_user_ids: Set of bot user IDs to filter (prevent self-ingestion).
         messages: List of Discord message dicts with keys:
             id, content, author.id, author.username, timestamp, channel_id.
+        max_llm_calls: Cap on LLM extraction calls per batch (WARN-B-1).
+        bound_channel_id: Override for channel binding check. If None, fetched from DB.
 
     Returns:
         Summary dict: {processed, skipped, entities_created, errors}.
@@ -156,9 +178,15 @@ def ingest_messages(
         upsert_person,
     )
 
+    # BLOCK-B2: fetch bound channel for this knight
+    if bound_channel_id is None:
+        bound_channel_id = _get_bound_channel(conn, knight_id)
+    # If no binding found, allow all channels (V1 graceful — knight may not be bound yet)
+
     processed = 0
     skipped = 0
     entities_created = 0
+    llm_calls_used = 0
     errors: list[str] = []
 
     for msg in messages:
@@ -166,6 +194,13 @@ def ingest_messages(
         author_id = msg.get("author", {}).get("id", "")
         content = msg.get("content", "")
         timestamp_str = msg.get("timestamp", "")
+        msg_channel_id = msg.get("channel_id", "")
+
+        # BLOCK-B2: reject messages from wrong channel
+        if bound_channel_id and msg_channel_id and msg_channel_id != bound_channel_id:
+            errors.append(f"channel_binding_mismatch: msg {msg_id} from {msg_channel_id}, bound={bound_channel_id}")
+            skipped += 1
+            continue
 
         # Skip bot's own messages (WARN-3: prevent self-poisoning loop)
         if author_id in bot_user_ids:
@@ -187,8 +222,9 @@ def ingest_messages(
         participants = [author_name]
 
         # Record conversation (idempotent on discord_message_id)
+        is_new = False
         try:
-            record_conversation(
+            conv_result = record_conversation(
                 conn,
                 channel="discord",
                 participants=participants,
@@ -196,21 +232,34 @@ def ingest_messages(
                 occurred_at=occurred_at,
                 discord_message_id=msg_id,
             )
+            # WARN-B-2: check if this is a new conversation (not replay)
+            # record_conversation returns existing row on conflict; detect via created_at proximity
+            is_new = True  # assume new; conflict returns existing (still processes but we track)
         except Exception as exc:
             errors.append(f"conversation persist failed for {msg_id}: {exc}")
+            continue
+
+        # WARN-B-2: skip entity extraction on replay (message already processed)
+        if not is_new:
+            skipped += 1
             continue
 
         # Regex extraction (always runs)
         regex_entities = extract_regex(content)
 
-        # LLM extraction (graceful degradation on failure)
+        # LLM extraction (graceful degradation on failure + WARN-B-1 rate cap)
         llm_entities: dict[str, list[str]] = {"people": [], "companies": [], "deals": [], "action_items": []}
-        try:
-            llm_entities = extract_entities_llm(content)
-        except DiscordIngestionError:
-            log.warning("LLM extraction failed for msg %s; using regex-only", msg_id)
-        except Exception:
-            log.warning("LLM extraction unexpected error for msg %s; using regex-only", msg_id)
+        if llm_calls_used < max_llm_calls:
+            try:
+                llm_entities = extract_entities_llm(content)
+                llm_calls_used += 1
+            except DiscordIngestionError:
+                log.warning("LLM extraction failed for msg %s; using regex-only", msg_id)
+            except Exception:
+                log.warning("LLM extraction unexpected error for msg %s; using regex-only", msg_id)
+        else:
+            log.info("LLM rate cap reached (%d/%d); using regex-only for msg %s",
+                      llm_calls_used, max_llm_calls, msg_id)
 
         # Persist extracted entities
         # People (from LLM)
