@@ -108,7 +108,7 @@ def pull_deals_for_owner(
                 "ghl_opportunity_id": opp.get("id", ""),
                 "name": opp.get("name", ""),
                 "stage": opp.get("pipelineStageId", ""),
-                "value_cents": int(float(opp.get("monetaryValue", 0)) * 100),
+                "value_cents": round(float(opp.get("monetaryValue", 0)) * 100),
                 "contact_id": opp.get("contactId"),
                 "source": "ghl",
             })
@@ -256,6 +256,7 @@ def sync_deals_to_graph(
     owner_knight_id: str | None = None,
     ghl_user_id: str | None = None,
     location_id: str | None = None,
+    product: str = "gaf",
 ) -> dict[str, int]:
     """Pull GHL opportunities and upsert into gtm.deals."""
     from sos.services.gtm.graph import upsert_deal
@@ -268,7 +269,7 @@ def sync_deals_to_graph(
                 conn,
                 person_id=None,  # resolve via contact_id mapping in S009
                 company_id=None,
-                product="gaf",
+                product=product,
                 stage=d["stage"],
                 value_cents=d.get("value_cents"),
                 owner_knight_id=owner_knight_id,

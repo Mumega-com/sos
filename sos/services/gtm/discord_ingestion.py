@@ -66,12 +66,12 @@ _EXTRACTION_PROMPT = """Extract entities from this Discord message. Return JSON 
 Message: {message}
 
 Return this exact JSON structure (empty arrays if nothing found):
-{{
+{
   "people": ["person name 1", "person name 2"],
   "companies": ["company name 1"],
   "deals": ["deal description"],
   "action_items": ["action item 1"]
-}}
+}
 
 Rules:
 - Only extract entities explicitly mentioned
@@ -135,7 +135,11 @@ def extract_entities_llm(text: str) -> dict[str, list[str]]:
 
 
 def _get_bound_channel(conn: Any, knight_id: str) -> str | None:
-    """Fetch the bound Discord channel ID for a knight."""
+    """Fetch the bound Discord channel ID for a knight.
+
+    Returns None if no binding exists (knight not yet bound).
+    Raises DiscordIngestionError on DB failure (WARN-B-4: don't fail-open).
+    """
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -144,8 +148,10 @@ def _get_bound_channel(conn: Any, knight_id: str) -> str | None:
             )
             row = cur.fetchone()
             return row[0] if row else None
-    except Exception:
-        return None
+    except Exception as exc:
+        raise DiscordIngestionError(
+            f"Failed to fetch bound channel for {knight_id}: {exc}"
+        ) from exc
 
 
 def ingest_messages(
@@ -232,9 +238,18 @@ def ingest_messages(
                 occurred_at=occurred_at,
                 discord_message_id=msg_id,
             )
-            # WARN-B-2: check if this is a new conversation (not replay)
-            # record_conversation returns existing row on conflict; detect via created_at proximity
-            is_new = True  # assume new; conflict returns existing (still processes but we track)
+            # WARN-B-5 fix: detect new vs existing by checking if created_at is recent
+            # record_conversation ON CONFLICT DO NOTHING returns None from INSERT,
+            # then fetches existing. New rows have created_at within last 5s.
+            if conv_result and conv_result.get("created_at"):
+                created = conv_result["created_at"]
+                if hasattr(created, "tzinfo"):
+                    age = (datetime.now(timezone.utc) - created).total_seconds()
+                    is_new = age < 5.0  # created in last 5 seconds = new
+                else:
+                    is_new = True  # can't determine age, assume new
+            else:
+                is_new = True
         except Exception as exc:
             errors.append(f"conversation persist failed for {msg_id}: {exc}")
             continue

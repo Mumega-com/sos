@@ -50,12 +50,12 @@ def check_stale_deals(
                 LEFT JOIN gtm.companies c ON d.company_id = c.id
                 WHERE d.owner_knight_id = %s
                   AND d.stage NOT IN ('closed-won', 'closed-lost')
-                  AND d.last_action_at < now() - interval '%s days'
+                  AND d.last_action_at < now() - make_interval(days => %s)
                   AND d.deleted_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM gtm.actions a
                       WHERE a.target_id = d.id AND a.action_type = 'stale_deal_nudge'
-                        AND a.created_at > now() - interval '%s days'
+                        AND a.created_at > now() - make_interval(days => %s)
                   )
                 """,
                 (knight_id, stale_days, stale_days),
@@ -115,7 +115,7 @@ def check_hot_conversations(
                 """
                 SELECT cv.id, cv.summary, cv.participants, cv.occurred_at, cv.discord_message_id
                 FROM gtm.conversations cv
-                WHERE cv.occurred_at > now() - interval '%s hours'
+                WHERE cv.occurred_at > now() - make_interval(hours => %s)
                   AND NOT EXISTS (
                       SELECT 1 FROM gtm.actions a
                       WHERE a.target_id = cv.id AND a.action_type = 'hot_opportunity_flag'
@@ -164,7 +164,7 @@ def check_missing_actions(
                   AND a.action_type = 'followup'
                   AND a.completed_at IS NULL
                   AND a.status = 'pending'
-                  AND now() > a.due_at + interval '%s minutes'
+                  AND now() > a.due_at + make_interval(mins => %s)
                 """,
                 (knight_id, grace_minutes),
             )

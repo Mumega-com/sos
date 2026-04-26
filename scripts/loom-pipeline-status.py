@@ -166,20 +166,31 @@ def main() -> None:
         print(report)
         return
 
-    # Use Discord MCP or direct API
+    # Deliver via SOS bus bridge (direct HTTP, no dynamic import)
     try:
-        from pathlib import Path
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "bus_send", Path.home() / "scripts" / "bus-send.py"
+        import urllib.request
+        bridge_url = os.environ.get("SOS_BRIDGE_URL", "http://localhost:6380")
+        token = os.environ.get("SOS_PIPELINE_TOKEN", "")
+        payload = json.dumps({
+            "to": "loom",
+            "text": f"[pipeline-status]\n{report}",
+            "source": "pipeline-status",
+        }).encode()
+        req = urllib.request.Request(
+            f"{bridge_url}/send",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            method="POST",
         )
-        if spec and spec.loader:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            mod.send(to="loom", text=f"[pipeline-status]\n{report}", source="pipeline-status")
-            print("Report delivered to Loom via bus.")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                print("Report delivered to Loom via bus bridge.")
+            else:
+                raise PipelineStatusDeliveryError(f"Bridge returned HTTP {resp.status}")
+    except PipelineStatusDeliveryError:
+        raise
     except Exception as exc:
-        raise PipelineStatusDeliveryError(f"Discord delivery failed: {exc}") from exc
+        raise PipelineStatusDeliveryError(f"Bus bridge delivery failed: {exc}") from exc
 
 
 if __name__ == "__main__":

@@ -278,7 +278,8 @@ def add_edge(
             raise GraphPersistError("add_edge returned no row")
     except Exception as exc:
         conn.rollback()
-        if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+        from psycopg2.errors import UniqueViolation
+        if isinstance(exc, UniqueViolation) or "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
             raise EdgeAlreadyExistsError(
                 f"Edge {from_type}:{from_id} → {to_type}:{to_id} ({edge_type}) already exists"
             ) from exc

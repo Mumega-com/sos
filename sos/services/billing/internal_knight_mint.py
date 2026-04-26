@@ -193,8 +193,6 @@ def mint_internal_knight(
         with open(_TOKENS_PATH, "r+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
-                tokens = json.loads(f.read()) if f.read else []
-                f.seek(0)
                 content = f.read()
                 tokens = json.loads(content) if content.strip() else []
             except json.JSONDecodeError:
