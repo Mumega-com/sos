@@ -518,43 +518,49 @@ async def handle_subscription_created(subscription: dict[str, Any]) -> dict[str,
         log.warning("subscription.created: no slug in metadata, sub=%s", stripe_sub_id)
         return {"ok": False, "reason": "no_slug"}
 
-    # LOCK-E: idempotency check — don't double-deploy on Stripe retries
     db_url = os.environ.get("MIRROR_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if db_url:
-        try:
-            conn = await asyncpg.connect(db_url)
-            try:
-                existing = await conn.fetchrow(
-                    "SELECT id FROM stripe_webhook_processed WHERE payment_intent_id = $1",
-                    f"sub:{stripe_sub_id}",
-                )
-                if existing:
-                    log.info("subscription.created: idempotent skip sub=%s", stripe_sub_id)
-                    return {"ok": True, "reason": "idempotent_skip", "subscription_id": stripe_sub_id}
+    if not db_url:
+        log.error("subscription.created: DATABASE_URL not set")
+        return {"ok": False, "reason": "db_not_configured"}
 
-                # Mark as processing
+    idempotency_id = f"sub:{stripe_sub_id}"
+    webhook_id = str(_uuid.uuid4())
+    conn = await asyncpg.connect(db_url)
+    try:
+        # ── LOCK-E: idempotency via savepoint (mirrors G69 pattern exactly) ──
+        try:
+            async with conn.transaction():  # SAVEPOINT
                 await conn.execute(
                     "INSERT INTO stripe_webhook_processed (id, payment_intent_id, status) "
                     "VALUES ($1, $2, 'processing')",
-                    str(_uuid.uuid4()), f"sub:{stripe_sub_id}",
+                    webhook_id, idempotency_id,
                 )
-            finally:
-                await conn.close()
-        except Exception as exc:
-            log.warning("subscription.created: idempotency check failed (proceeding): %s", exc)
+        except asyncpg.UniqueViolationError:
+            existing = await conn.fetchrow(
+                "SELECT id, status FROM stripe_webhook_processed WHERE payment_intent_id = $1",
+                idempotency_id,
+            )
+            status = existing["status"] if existing else "unknown"
+            if status == "processed":
+                log.info("subscription.created: idempotent skip sub=%s", stripe_sub_id)
+                return {"ok": True, "reason": "idempotent_skip", "subscription_id": stripe_sub_id}
+            elif status == "processing":
+                log.warning("subscription.created: concurrent retry in-flight sub=%s", stripe_sub_id)
+                return {"ok": False, "reason": "retry_in_flight", "subscription_id": stripe_sub_id}
+            else:
+                _alert_athena(f"subscription.created prior_attempt_failed sub={stripe_sub_id}")
+                return {"ok": False, "reason": "prior_attempt_failed", "subscription_id": stripe_sub_id}
 
-    # Deploy seed
-    log.info(
-        "subscription.created: deploying seed slug=%s vertical=%s sub=%s",
-        slug, vertical, stripe_sub_id,
-    )
+        # ── Deploy seed ──
+        log.info(
+            "subscription.created: deploying seed slug=%s vertical=%s sub=%s",
+            slug, vertical, stripe_sub_id,
+        )
 
-    try:
         import sys
         sys.path.insert(0, str(Path.home() / "SOS"))
         from scripts import deploy_seed  # type: ignore
 
-        # LOCK-F: deploy_seed handles atomic tenant + principal
         os.environ["AUDIT_INTERNAL_MINT_MODE"] = "1"
         result = deploy_seed.deploy_seed(
             business_name=metadata.get("business_name", slug),
@@ -565,33 +571,40 @@ async def handle_subscription_created(subscription: dict[str, Any]) -> dict[str,
             discord_channel_id=discord_channel_id or "00000000000000000",
             signer="stripe-subscription",
         )
+
+        # BLOCK-2 fix: gate on deploy status BEFORE marking processed
+        if result.get("status") != "seed_planted":
+            raise RuntimeError(f"Partial seed deploy for {slug}: {result.get('summary')}")
+
+        # Mark as processed (only on full success)
+        await conn.execute(
+            "UPDATE stripe_webhook_processed SET status='processed', completed_at=now() "
+            "WHERE id=$1",
+            webhook_id,
+        )
+
         log.info("subscription.created: seed deployed for %s: %s", slug, result.get("summary"))
+        return {
+            "ok": True,
+            "reason": "seed_deployed",
+            "slug": slug,
+            "vertical": vertical,
+            "subscription_id": stripe_sub_id,
+        }
+
+    except RuntimeError as exc:
+        if "Partial seed deploy" in str(exc):
+            log.error("subscription.created: partial deploy, Stripe will retry: %s", exc)
+            # Don't mark processed — Stripe retries. deploy_seed per-step idempotent.
+            return {"ok": False, "reason": "partial_deploy", "error": str(exc)}
+        raise
+
     except Exception as exc:
-        log.error("subscription.created: seed deploy failed for %s: %s", slug, exc)
-        return {"ok": False, "reason": "seed_deploy_failed", "error": str(exc)}
+        log.error("subscription.created: unexpected error sub=%s: %s", stripe_sub_id, exc)
+        return {"ok": False, "reason": "unexpected_error", "error": str(exc)}
 
-    # Mark as processed
-    if db_url:
-        try:
-            conn = await asyncpg.connect(db_url)
-            try:
-                await conn.execute(
-                    "UPDATE stripe_webhook_processed SET status='processed', completed_at=now() "
-                    "WHERE payment_intent_id = $1",
-                    f"sub:{stripe_sub_id}",
-                )
-            finally:
-                await conn.close()
-        except Exception:
-            pass
-
-    return {
-        "ok": True,
-        "reason": "seed_deployed",
-        "slug": slug,
-        "vertical": vertical,
-        "subscription_id": stripe_sub_id,
-    }
+    finally:
+        await conn.close()
 
 
 async def stripe_webhook_handler(request: Request) -> JSONResponse:
