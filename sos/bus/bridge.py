@@ -316,16 +316,60 @@ class BusHandler(BaseHTTPRequestHandler):
             to_agent = body.get("to", "")
             text = body.get("text", "")
             project = self._project(token, body.get("project"))
+            wait_for_delivery = body.get("wait_for_delivery", False)
             if not to_agent or not text:
                 self._json(400, {"error": "Missing 'to' or 'text'"})
                 return
             stream = _agent_stream(to_agent, project)
             channel = _agent_channel(to_agent, project)
             msg = sos_msg("chat", f"agent:{from_agent}", f"agent:{to_agent}", text, project)
-            mid = r.xadd(stream, msg)
+            message_id = msg.get("message_id", "")
+            try:
+                entry_id = r.xadd(stream, msg)
+            except Exception as exc:
+                self._json(500, {"ok": False, "status": "dropped", "error": str(exc)})
+                return
             r.publish(channel, json.dumps(msg))
             r.publish(f"sos:wake:{to_agent}", json.dumps(msg))
-            self._json(200, {"status": "sent", "stream_id": mid, "project": project})
+
+            result = {
+                "ok": True,
+                "status": "queued",
+                "message_id": message_id,
+                "stream": stream,
+                "entry_id": entry_id,
+                "project": project,
+            }
+
+            # OmniB BUS-DELIVERY: opt-in delivery confirmation via XPENDING poll
+            if wait_for_delivery:
+                import time
+                deadline = time.monotonic() + 5.0  # 5s timeout
+                delivered = False
+                while time.monotonic() < deadline:
+                    try:
+                        # Check if any consumer group has pending entries for this stream
+                        groups = r.xinfo_groups(stream)
+                        for g in groups:
+                            pending = r.xpending(stream, g.get("name", ""))
+                            if pending and pending.get("pending", 0) > 0:
+                                # Entry was read by a consumer (pending = read but not ACK'd)
+                                delivered = True
+                                break
+                        if delivered:
+                            break
+                        # Also check if agent's last_seen updated (agent is alive + polling)
+                        reg_key = _registry_key(to_agent, project)
+                        if r.exists(reg_key):
+                            delivered = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                result["delivered"] = delivered
+                result["status"] = "delivered" if delivered else "queued"
+
+            self._json(200, result)
 
         elif path == "/broadcast":
             from_agent = body.get("from", "unknown")

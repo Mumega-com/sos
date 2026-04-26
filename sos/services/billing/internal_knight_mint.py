@@ -286,10 +286,13 @@ def mint_internal_knight(
             try:
                 with audit_conn:
                     with audit_conn.cursor() as cur:
+                        # Allocate seq via PG function (same as audit_chain.py)
+                        cur.execute("SELECT audit_next_seq(%s)", ("kernel",))
+                        seq = cur.fetchone()[0]
                         cur.execute(
-                            "INSERT INTO audit_events (stream_id, actor_id, actor_type, action, resource, payload) "
-                            "VALUES (%s, %s, %s, %s, %s, %s)",
-                            ("kernel", "billing", "service", "internal_knight_minted",
+                            "INSERT INTO audit_events (stream_id, seq, actor_id, actor_type, action, resource, payload) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                            ("kernel", seq, "billing", "service", "internal_knight_minted",
                              f"knight:{knight_id}", json.dumps(audit_payload)),
                         )
             finally:
