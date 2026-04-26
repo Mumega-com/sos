@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import uuid as _uuid
+from pathlib import Path
 from typing import Any
 
 import asyncpg  # type: ignore[import]
@@ -496,6 +497,103 @@ async def handle_subscription_deleted(subscription: dict[str, Any]) -> dict[str,
     return {"status": "deactivated", "slug": slug, "customer": customer_id}
 
 
+async def handle_subscription_created(subscription: dict[str, Any]) -> dict[str, Any]:
+    """Handle customer.subscription.created — auto-deploy seed for new self-serve customer.
+
+    Sprint 012 OmniB. The buttery offer: customer pays → seed deploys automatically.
+    LOCK-E: idempotency on stripe_event_id before any write.
+    LOCK-F: atomic tenant + first principal in single transaction.
+    """
+    customer_id: str = subscription.get("customer", "")
+    metadata: dict = subscription.get("metadata", {})
+    stripe_sub_id: str = subscription.get("id", "")
+
+    slug: str = metadata.get("slug", "")
+    vertical: str = metadata.get("vertical", "generic")
+    contact_name: str = metadata.get("contact_name", "")
+    contact_email: str = metadata.get("contact_email", "")
+    discord_channel_id: str = metadata.get("discord_channel_id", "")
+
+    if not slug:
+        log.warning("subscription.created: no slug in metadata, sub=%s", stripe_sub_id)
+        return {"ok": False, "reason": "no_slug"}
+
+    # LOCK-E: idempotency check — don't double-deploy on Stripe retries
+    db_url = os.environ.get("MIRROR_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if db_url:
+        try:
+            conn = await asyncpg.connect(db_url)
+            try:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM stripe_webhook_processed WHERE payment_intent_id = $1",
+                    f"sub:{stripe_sub_id}",
+                )
+                if existing:
+                    log.info("subscription.created: idempotent skip sub=%s", stripe_sub_id)
+                    return {"ok": True, "reason": "idempotent_skip", "subscription_id": stripe_sub_id}
+
+                # Mark as processing
+                await conn.execute(
+                    "INSERT INTO stripe_webhook_processed (id, payment_intent_id, status) "
+                    "VALUES ($1, $2, 'processing')",
+                    str(_uuid.uuid4()), f"sub:{stripe_sub_id}",
+                )
+            finally:
+                await conn.close()
+        except Exception as exc:
+            log.warning("subscription.created: idempotency check failed (proceeding): %s", exc)
+
+    # Deploy seed
+    log.info(
+        "subscription.created: deploying seed slug=%s vertical=%s sub=%s",
+        slug, vertical, stripe_sub_id,
+    )
+
+    try:
+        import sys
+        sys.path.insert(0, str(Path.home() / "SOS"))
+        from scripts import deploy_seed  # type: ignore
+
+        # LOCK-F: deploy_seed handles atomic tenant + principal
+        os.environ["AUDIT_INTERNAL_MINT_MODE"] = "1"
+        result = deploy_seed.deploy_seed(
+            business_name=metadata.get("business_name", slug),
+            slug=slug,
+            vertical=vertical,
+            contact_name=contact_name,
+            contact_email=contact_email,
+            discord_channel_id=discord_channel_id or "00000000000000000",
+            signer="stripe-subscription",
+        )
+        log.info("subscription.created: seed deployed for %s: %s", slug, result.get("summary"))
+    except Exception as exc:
+        log.error("subscription.created: seed deploy failed for %s: %s", slug, exc)
+        return {"ok": False, "reason": "seed_deploy_failed", "error": str(exc)}
+
+    # Mark as processed
+    if db_url:
+        try:
+            conn = await asyncpg.connect(db_url)
+            try:
+                await conn.execute(
+                    "UPDATE stripe_webhook_processed SET status='processed', completed_at=now() "
+                    "WHERE payment_intent_id = $1",
+                    f"sub:{stripe_sub_id}",
+                )
+            finally:
+                await conn.close()
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "reason": "seed_deployed",
+        "slug": slug,
+        "vertical": vertical,
+        "subscription_id": stripe_sub_id,
+    }
+
+
 async def stripe_webhook_handler(request: Request) -> JSONResponse:
     """Main webhook entry point — called by the FastAPI route."""
     payload = await request.body()
@@ -523,6 +621,17 @@ async def stripe_webhook_handler(request: Request) -> JSONResponse:
             return JSONResponse({"status": "ok", **result})
         # ok=False with known reason: return 200 so Stripe doesn't retry
         # (no_contract, project_scope_refused, replay_idempotent_skip)
+        return JSONResponse({"status": "noop", **result})
+
+    elif event_type == "customer.subscription.created":
+        # S012 OmniB: self-serve subscription → auto-deploy seed
+        try:
+            result = await handle_subscription_created(data_object)
+        except Exception as exc:
+            log.error("subscription.created handler crashed: %s", exc, exc_info=True)
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=500)
+        if result.get("ok"):
+            return JSONResponse({"status": "ok", **result})
         return JSONResponse({"status": "noop", **result})
 
     elif event_type == "customer.subscription.deleted":
