@@ -641,6 +641,44 @@ def emit_stripe_webhook(
     return payload
 
 
+def emit_internal_knight_minted(
+    knight_id: str,
+    signer: str,
+    discord_channel_id: str,
+    emitted_by: str = "billing",
+) -> dict[str, Any]:
+    """Emit internal_knight_minted on successful internal (non-Stripe) knight mint.
+
+    Sprint 008 S008-A / G76.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "knight_id": knight_id,
+        "signer": signer,
+        "discord_channel_id": discord_channel_id,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="internal_knight_minted",
+            resource=f"knight:{knight_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_kid = knight_id.replace("/", "_").replace(":", "_")
+        (marker_dir / f"internal_knight_minted_{safe_kid}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def emit_qnft_r2_upload_failed(
     principal_id: str,
     key: str,
