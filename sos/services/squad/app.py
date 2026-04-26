@@ -246,12 +246,19 @@ async def health() -> JSONResponse:
         reason = str(exc)
     db_reachable_ms = round((time.perf_counter() - t0) * 1000, 2)
 
-    new_status = "healthy" if db_reachable else "unhealthy"
+    # G71: pool exhaustion detection — check if DB responds within budget
+    pool_healthy = db_reachable and db_reachable_ms < 500  # 500ms budget
+    new_status = "healthy" if pool_healthy else "unhealthy"
     body: dict[str, Any] = {
         "status": new_status,
         "db_reachable": db_reachable,
         "instance_id": SQUAD_INSTANCE_ID,
         "db_reachable_ms": db_reachable_ms,
+        "pool_stats": {
+            "healthy": pool_healthy,
+            "latency_budget_ms": 500,
+            "actual_ms": db_reachable_ms,
+        },
     }
     if reason:
         body["reason"] = reason

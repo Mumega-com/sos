@@ -119,6 +119,22 @@ def _verify_bucket_object_lock(s3_client: Any, bucket: str) -> None:
         ) from exc
 
 
+def _verify_r2_read_access(s3_client: Any, bucket: str) -> None:
+    """G55 WARN-4: startup smoke-check for R2 read access.
+
+    Calls list_objects(MaxKeys=1) to distinguish "no access" from transient
+    failure. If the token lacks read access, the verifier path would falsely
+    report r2_fetch_failed on every anchor — misleading.
+    """
+    try:
+        s3_client.list_objects_v2(Bucket=bucket, MaxKeys=1)
+    except Exception as exc:
+        raise RuntimeError(
+            f"R2 read-access smoke-check failed for bucket {bucket!r}: {exc}. "
+            "Verifier cannot read R2 objects — check R2_ACCESS_KEY_ID permissions."
+        ) from exc
+
+
 def _put_r2_object(s3_client: Any, bucket: str, key: str, body: bytes) -> None:
     """Upload body to R2 under the bucket's COMPLIANCE Object Lock retention rule.
 
@@ -582,6 +598,46 @@ async def _verify_stream(
                 "actual_prev": prev_db_hash_hex,
             }
 
+    # G55 WARN-5: coverage-gap detection — check for missing seq values
+    # between first and last anchor. Currently only one-depth chain check;
+    # this adds full seq range coverage verification.
+    try:
+        gap_rows = await conn.fetch(
+            """
+            WITH seq_range AS (
+                SELECT anchored_seq FROM audit_anchors
+                WHERE stream_id = $1
+                ORDER BY anchored_seq
+            ),
+            expected AS (
+                SELECT generate_series(
+                    (SELECT MIN(anchored_seq) FROM seq_range),
+                    (SELECT MAX(anchored_seq) FROM seq_range)
+                ) AS seq
+            )
+            SELECT e.seq FROM expected e
+            LEFT JOIN seq_range s ON e.seq = s.anchored_seq
+            WHERE s.anchored_seq IS NULL
+            LIMIT 10
+            """,
+            stream_id,
+        )
+        if gap_rows:
+            gap_seqs = [row["seq"] for row in gap_rows]
+            logger.warning(
+                "audit_anchor: COVERAGE GAP stream=%s missing_seqs=%s",
+                stream_id, gap_seqs,
+            )
+            return {
+                "stream_id": stream_id,
+                "ok": False,
+                "reason": "coverage_gap",
+                "gap_seqs": gap_seqs,
+                "seq": anchor_row["anchored_seq"],
+            }
+    except Exception as exc:
+        logger.warning("audit_anchor: coverage-gap check failed (non-fatal): %s", exc)
+
     return {
         "stream_id": stream_id,
         "ok": True,
@@ -618,8 +674,12 @@ async def run_with_quorum() -> dict[str, Any]:
             raise RuntimeError("AUDIT_R2_BUCKET is required — no default allowed")
         try:
             s3_client = await asyncio.get_event_loop().run_in_executor(None, _build_s3_client)
+            # G55 WARN-4: startup smoke-check for R2 read access
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _verify_r2_read_access(s3_client, bucket)
+            )
         except Exception as exc:
-            logger.error("audit_anchor: verifier cannot build R2 client: %s", exc)
+            logger.error("audit_anchor: verifier cannot build/verify R2 client: %s", exc)
             return {"ok": False, "mode": "verifier", "error": str(exc)}
 
         pool = await _get_pool()
@@ -711,13 +771,34 @@ def main() -> None:
 
     _runner = run_once if args.no_quorum else run_with_quorum
 
+    def _sd_notify(status: str) -> None:
+        """G70: systemd watchdog integration (sd_notify)."""
+        try:
+            import socket
+            addr = os.environ.get("NOTIFY_SOCKET")
+            if not addr:
+                return
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                sock.connect(addr)
+                sock.sendall(status.encode())
+            finally:
+                sock.close()
+        except Exception:
+            pass
+
     async def _run() -> None:
         if args.loop:
             logger.info("audit_anchor: starting loop, interval=%ds, quorum=%s",
                         args.interval, not args.no_quorum)
+            _sd_notify("READY=1")
             while True:
+                _sd_notify("WATCHDOG=1")
                 result = await _runner()
-                logger.info("audit_anchor: result=%s", result)
+                # G70: log transition_reason
+                mode = result.get("mode", "unknown")
+                transition = "acquired" if mode == "writer" else "observer"
+                logger.info("audit_anchor: result=%s transition_reason=%s", result, transition)
                 await asyncio.sleep(args.interval)
         else:
             result = await _runner()
