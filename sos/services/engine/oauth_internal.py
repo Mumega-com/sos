@@ -105,6 +105,7 @@ async def _upsert_tenant(
         idp_provider, sub,
     ) if hasattr(db, "fetchrow") else None
 
+    is_new_tenant = False
     if not existing:
         # This is a sync psycopg2 pool — wrap INSERT in executor at call site
         # For simplicity, use synchronous call here (MCP dispatcher calls are infrequent)
@@ -125,6 +126,21 @@ async def _upsert_tenant(
             "WHERE idp_provider = %s AND sub = %s",
             idp_provider, sub,
         )
+        is_new_tenant = True  # mark for creation log write below
+
+    if is_new_tenant and existing:
+        # LOCK-TENANT-D (W2): write to creation log for rate-limit tracking.
+        # Table exists (migration 051); write happens only on true first provision,
+        # not on concurrent-insert re-fetch (ON CONFLICT DO NOTHING path).
+        try:
+            db.execute(  # type: ignore[attr-defined]
+                "INSERT INTO oauth_tenant_creation_log (idp_provider, sub, created_at) "
+                "VALUES (%s, %s, NOW())",
+                idp_provider, sub,
+            )
+        except Exception as exc:
+            # Non-fatal — creation log is rate-limit telemetry, not integrity-critical
+            log.warning("oauth_tenant_creation_log write failed: %s", exc)
 
     if not existing:
         raise HTTPException(status_code=500, detail="tenant_provision_failed")

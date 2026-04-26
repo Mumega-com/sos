@@ -228,6 +228,7 @@ class MCPAuthContext:
     scope: str = ""  # "customer" for external customers; empty for internal agents
     plan: str | None = None  # starter | growth | scale | None (system)
     role: str = "admin"  # admin | editor | viewer
+    dev_mode: bool = False  # LOCK-TENANT-C: True while knight is activating (first-call window)
 
     @property
     def is_customer(self) -> bool:
@@ -1133,11 +1134,36 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # onboard tool handles its own mode check, but log the attempt
         pass
 
+    # LOCK-TENANT-B + LOCK-TENANT-C: dev-tenant activation window for OAuth customers.
+    #
+    # On every worker_oauth call: enqueue knight mint (idempotent — SET NX inside).
+    # On write attempts: block until knight is ready (sos:knight:ready:{tenant_id} set).
+    # Enforcement is here at middleware, NOT at caller trust — LOCK-TENANT-C requires it.
+    #
+    # Production tables guarded: engrams, principals, gtm.principal_state, audit_events.
+    # All these are written via the WRITE_TOOLS set (send/broadcast/remember/task_create/...).
+    # Read tools pass through; the customer gets immediate value while the knight activates.
+    if auth.source == "worker_oauth" and auth.tenant_id and not auth.is_system:
+        # LOCK-TENANT-B: fire-and-forget enqueue — never blocks reads
+        asyncio.create_task(_ensure_knight_enqueued(r, auth.tenant_id, auth.agent_name))
+        # LOCK-TENANT-C: gate writes until knight is activated
+        if name in WRITE_TOOLS:
+            knight_ready = await r.exists(f"sos:knight:ready:{auth.tenant_id}")
+            if not knight_ready:
+                return _text(
+                    "Your workspace is activating — usually completes within 60 seconds. "
+                    "Read tools are available now (try `get_briefing` or `list_signals`). "
+                    "Write access (send, remember, task_create) unlocks automatically "
+                    "once your knight is ready. "
+                    "[starter: https://mcp.mumega.com/upgrade?tier=starter]"
+                )
+
     # Rate limit write operations more strictly for tenant tokens.
     # WARN-1 fix: Redis sliding window — process-local _token_windows dict was
     # bypassable by concurrent connections (single-instance lucky today, latent at scale).
+    # WARN-S013-006 fix: key on _rate_key(auth) — worker_oauth contexts share token hash.
     if name in WRITE_TOOLS and not auth.is_system:
-        write_rkey = f"sos:rate:write:{auth.token}"
+        write_rkey = f"sos:rate:write:{_rate_key(auth)}"
         write_count = await r.incr(write_rkey)
         if write_count == 1:
             await r.expire(write_rkey, 60)
@@ -2050,16 +2076,52 @@ def _tool_result_failed(result: dict[str, Any]) -> bool:
     return isinstance(text, str) and text.startswith("Error:")
 
 
-def _enforce_rate_limit(token: str) -> None:
+def _rate_key(auth: "MCPAuthContext") -> str:
+    """WARN-S013-006 fix: derive a per-customer rate-limit identifier.
+
+    worker_oauth contexts all share the same auth.token hash (sha256 of SOS_INTERNAL_TOKEN).
+    Keying rate limits on that shared hash would make Customer A deplete Customer B's bucket.
+    Use tenant_id for worker_oauth — it is unique per customer and is NOT a secret.
+    All other sources key on auth.token (a sha256-derived opaque string).
+    """
+    if auth.source == "worker_oauth" and auth.tenant_id:
+        return auth.tenant_id
+    return auth.token
+
+
+def _enforce_rate_limit(auth: "MCPAuthContext") -> None:
     # WARN-1 fix: Redis sliding window (module-level client, WARN-S013-004 fix).
-    if not token:
+    # WARN-S013-006 fix: key on _rate_key(auth) not raw token.
+    key_id = _rate_key(auth)
+    if not key_id:
         raise HTTPException(status_code=401, detail="missing_token")
-    rkey = f"sos:rate:all:{token}"
+    rkey = f"sos:rate:all:{key_id}"
     count = _sync_redis.incr(rkey)
     if count == 1:
         _sync_redis.expire(rkey, 60)
     if count > RATE_LIMIT_PER_MINUTE:
         raise HTTPException(status_code=429, detail="rate_limit_exceeded")
+
+
+async def _ensure_knight_enqueued(r: Any, tenant_id: str, agent_name: str) -> None:
+    """LOCK-TENANT-B: enqueue knight mint on first worker_oauth call. Idempotent.
+
+    Uses Redis SET NX so concurrent retries (network replay) don't double-enqueue.
+    The knight service processes sos:stream:knight:mint and sets
+    sos:knight:ready:{tenant_id} when activation completes.
+    sos:knight:mint_lock expires after 5 min to allow retry if the service crashed.
+    """
+    ready_key = f"sos:knight:ready:{tenant_id}"
+    if await r.exists(ready_key):
+        return  # already activated — fast path
+    lock_key = f"sos:knight:mint_lock:{tenant_id}"
+    acquired = await r.set(lock_key, "1", nx=True, ex=300)
+    if acquired:
+        await r.xadd("sos:stream:knight:mint", {
+            "tenant_id": tenant_id,
+            "agent_name": agent_name,
+        })
+        await _publish_log("info", "mcp", f"knight_mint_enqueued:{tenant_id}", agent="system")
 
 
 # ---------------------------------------------------------------------------
@@ -3177,7 +3239,7 @@ async def messages_endpoint(request: Request) -> Response:
     session_id = request.query_params.get("session_id", "")
     queue = _sessions.get(session_id)
     auth = _session_auth.get(session_id) or _require_auth(request)
-    _enforce_rate_limit(auth.token)
+    _enforce_rate_limit(auth)
 
     try:
         body = await request.json()
@@ -3229,7 +3291,7 @@ async def mcp_info_with_token(token: str, request: Request) -> JSONResponse:
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> Response:
     auth = _require_auth(request, _request_bearer_token(request))
-    _enforce_rate_limit(auth.token)
+    _enforce_rate_limit(auth)
     return await _streamable_http_response(request, auth)
 
 
@@ -3238,7 +3300,7 @@ async def mcp_endpoint_with_token(token: str, request: Request) -> Response:
     # TODO: path-token auth is deprecated because tokens in URLs leak into access logs,
     # browser history, and proxies. Prefer Authorization: Bearer for new clients.
     auth = _require_auth(request, token)
-    _enforce_rate_limit(auth.token)
+    _enforce_rate_limit(auth)
     return await _streamable_http_response(request, auth)
 
 
