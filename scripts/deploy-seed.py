@@ -90,7 +90,7 @@ VERTICAL_CONFIGS = {
         ],
         "compliance": ["PIPEDA"],
     },
-    "general": {
+    "generic": {
         "theme_primary": "#6366F1",
         "theme_secondary": "#10B981",
         "collections": ["blog", "team"],
@@ -125,7 +125,7 @@ def deploy_seed(
 ) -> dict:
     """Plant the seed. Returns deployment summary."""
 
-    config = VERTICAL_CONFIGS.get(vertical, VERTICAL_CONFIGS["general"])
+    config = VERTICAL_CONFIGS.get(vertical, VERTICAL_CONFIGS["generic"])
     agent_name = f"{slug}-agent"
     project_id = slug
     now = datetime.now(timezone.utc)
@@ -242,7 +242,7 @@ def main():
     parser = argparse.ArgumentParser(description="Plant the Mumega seed in a new business")
     parser.add_argument("--business", required=True, help="Business name")
     parser.add_argument("--slug", required=True, help="URL-safe slug")
-    parser.add_argument("--vertical", default="general",
+    parser.add_argument("--vertical", default="generic",
                         choices=list(VERTICAL_CONFIGS.keys()),
                         help="Business vertical")
     parser.add_argument("--contact-name", required=True, help="Primary contact name")
