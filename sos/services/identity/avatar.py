@@ -53,7 +53,7 @@ class AvatarGenerator:
 
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config.load()
-        self.output_dir = Path(self.config.data_dir) / "avatars"
+        self.output_dir = Path(self.config.paths.data_dir) / "avatars"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _uv_to_color(self, uv: UV16D) -> Tuple[int, int, int]:
