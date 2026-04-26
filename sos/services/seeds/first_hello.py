@@ -19,6 +19,18 @@ from datetime import datetime, timezone
 log = logging.getLogger("sos.seeds.first_hello")
 
 
+def _alert_first_hello_failure(fields: dict) -> None:
+    """Alert on permanent first-hello delivery failure."""
+    try:
+        from sos.services.billing.webhook import _alert_athena
+        _alert_athena(
+            f"first-hello permanent failure for {fields.get('agent_name', '?')}: "
+            f"max retries reached, entry deleted"
+        )
+    except Exception:
+        log.error("first_hello: alert failed for %s", fields.get("agent_name", "?"))
+
+
 def consume_first_hellos() -> list[dict]:
     """Scan all first-hello queues and deliver pending messages.
 
@@ -39,11 +51,31 @@ def consume_first_hellos() -> list[dict]:
             try:
                 entries = r.xrange(key, count=10)
                 for entry_id, fields in entries:
-                    result = _deliver_first_hello(r, fields)
-                    if result:
-                        delivered.append(result)
-                    # ACK by removing the entry
-                    r.xdel(key, entry_id)
+                    try:
+                        result = _deliver_first_hello(r, fields)
+                        # BLOCK-2 fix: only xdel on confirmed delivery
+                        if result and result.get("delivered"):
+                            delivered.append(result)
+                            r.xdel(key, entry_id)
+                        else:
+                            # Delivery failed — check retry count
+                            retries = int(fields.get("_retries", "0"))
+                            if retries >= 5:
+                                log.error(
+                                    "first_hello: max retries reached for %s, deleting entry",
+                                    fields.get("agent_name", "?"),
+                                )
+                                _alert_first_hello_failure(fields)
+                                r.xdel(key, entry_id)
+                            else:
+                                # Increment retry count (re-add with incremented counter)
+                                fields["_retries"] = str(retries + 1)
+                                log.warning(
+                                    "first_hello: delivery failed for %s (retry %d/5)",
+                                    fields.get("agent_name", "?"), retries + 1,
+                                )
+                    except Exception as exc:
+                        log.warning("first_hello: entry processing failed: %s", exc)
             except Exception as exc:
                 log.warning("first_hello: failed to process queue %s: %s", key, exc)
         if cursor == 0:
@@ -112,12 +144,17 @@ def _deliver_first_hello(r, fields: dict) -> dict | None:
 
     except Exception as exc:
         log.warning("first_hello: bus delivery failed for %s: %s", agent_name, exc)
-        # Still count as delivered — the message was attempted
-        # Retry logic lives in the consumer schedule, not per-message
+        return {
+            "agent_name": agent_name,
+            "channel_id": channel_id,
+            "delivered": False,
+            "error": str(exc),
+        }
 
     return {
         "agent_name": agent_name,
         "channel_id": channel_id,
+        "delivered": True,
         "delivered_at": datetime.now(timezone.utc).isoformat(),
         "message": message[:100],
     }
