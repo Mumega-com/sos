@@ -8,10 +8,12 @@ Adds: Discord channel binding, deterministic seed, signer enum, env gate.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,7 @@ _QNFT_REGISTRY_PATH = _SOS_DIR / "sos" / "bus" / "qnft_registry.json"
 _DYNAMIC_ROUTING_PATH = Path.home() / ".sos" / "agent_routing.json"
 
 _VALID_SIGNERS = frozenset({"loom", "hadi"})
+_SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +45,10 @@ class MissingMintArgError(ValueError):
 
 class InvalidSignerError(ValueError):
     """Signer not in allowed set."""
+
+
+class InvalidChannelIdError(ValueError):
+    """Discord channel ID is not a valid snowflake."""
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +100,13 @@ def mint_internal_knight(
             f"signer must be one of {_VALID_SIGNERS}, got {signer!r}"
         )
 
+    # BLOCK-1: validate Discord channel ID is a snowflake
+    discord_channel_id = discord_channel_id.strip()
+    if not _SNOWFLAKE_RE.match(discord_channel_id):
+        raise InvalidChannelIdError(
+            f"discord_channel_id must be a Discord snowflake (17-20 digits), got {discord_channel_id!r}"
+        )
+
     knight_name = f"{name.strip().lower()}-knight"
     knight_id = f"agent:{knight_name}"
 
@@ -141,11 +155,26 @@ def mint_internal_knight(
     ]
 
     mint_date = datetime.now(timezone.utc).date().isoformat()
-    qnft_uri = f"qnft:{knight_name}:{seed_hex[:12]}"
     cause = f"Internal knight for {name} ({role}). Signer: {signer}."
     descriptor = f"{knight_name} — {role}, project mumega-internal"
 
-    # ── Mint bus token ──
+    # ── WARN-1 fix: Register principal in DB FIRST (hard stop) ──
+    try:
+        from sos.contracts.principals import upsert_principal
+        upsert_principal(
+            principal_id=knight_id,
+            display_name=f"{knight_name} ({role} for {name})",
+            email=None,
+            principal_type="agent",
+            tenant_id="mumega-internal",
+        )
+    except Exception as exc:
+        return {
+            "ok": False, "reason": "principal_upsert_failed", "knight_id": None,
+            "knight_slug": None, "qnft_uri": None, "error": str(exc), "skipped": False,
+        }
+
+    # ── Mint bus token (BLOCK-2: file lock for atomicity) ──
     raw_token = f"sk-{knight_name}-{secrets.token_hex(16)}"
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     token_record = {
@@ -161,9 +190,23 @@ def mint_internal_knight(
     }
 
     try:
-        tokens = json.loads(_TOKENS_PATH.read_text()) if _TOKENS_PATH.exists() else []
-        tokens.append(token_record)
-        _TOKENS_PATH.write_text(json.dumps(tokens, indent=2) + "\n")
+        with open(_TOKENS_PATH, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                tokens = json.loads(f.read()) if f.read else []
+                f.seek(0)
+                content = f.read()
+                tokens = json.loads(content) if content.strip() else []
+            except json.JSONDecodeError:
+                tokens = []
+            tokens.append(token_record)
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(tokens, indent=2) + "\n")
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except FileNotFoundError:
+        # First token — create file
+        _TOKENS_PATH.write_text(json.dumps([token_record], indent=2) + "\n")
     except Exception as exc:
         return {
             "ok": False, "reason": "token_write_failed", "knight_id": None,
@@ -202,34 +245,25 @@ def mint_internal_knight(
     except Exception as exc:
         log.warning("internal_knight_mint: QNFT registry write failed (non-fatal): %s", exc)
 
-    # ── Register principal in DB ──
-    try:
-        from sos.contracts.principals import upsert_principal
-        upsert_principal(
-            principal_id=knight_id,
-            display_name=f"{knight_name} ({role} for {name})",
-            email=None,
-            principal_type="agent",
-            tenant_id="mumega-internal",
-        )
-    except Exception as exc:
-        log.warning("internal_knight_mint: DB principal upsert failed (non-fatal): %s", exc)
-
     # ── Discord channel binding ──
     try:
         _bind_discord_channel(knight_id, discord_channel_id, signer)
     except Exception as exc:
         log.warning("internal_knight_mint: Discord binding failed (non-fatal): %s", exc)
 
-    # ── Generate QNFT image ──
-    qnft_image_path: str | None = None
+    # ── Generate QNFT image + R2 upload (WARN-3 fix) ──
+    qnft_r2_url: str | None = None
     try:
-        from sos.services.billing.qnft_image import generate_qnft_image
+        from sos.services.billing.qnft_image import generate_qnft_image, upload_qnft_to_r2
         image_bytes = generate_qnft_image(knight_name, vector_16d, cause)
-        qnft_image_path = f"Generated {len(image_bytes)} bytes"
         log.info("internal_knight_mint: QNFT image generated (%d bytes)", len(image_bytes))
+        # Upload to R2 (same bucket as webhook path)
+        qnft_r2_url = upload_qnft_to_r2(knight_name, image_bytes)
+        log.info("internal_knight_mint: QNFT uploaded to %s", qnft_r2_url)
     except Exception as exc:
-        log.warning("internal_knight_mint: QNFT image gen failed (non-fatal): %s", exc)
+        log.warning("internal_knight_mint: QNFT image/upload failed (non-fatal): %s", exc)
+
+    qnft_uri = qnft_r2_url or f"qnft:{knight_name}:{seed_hex[:12]}"
 
     # ── Bus welcome ──
     try:
@@ -238,12 +272,47 @@ def mint_internal_knight(
     except Exception as exc:
         log.warning("internal_knight_mint: bus welcome failed (non-fatal): %s", exc)
 
-    # ── Emit ──
+    # ── BLOCK-3 fix: durable audit record BEFORE emit ──
+    audit_payload = {
+        "knight_id": knight_id,
+        "signer": signer,
+        "discord_channel_id": discord_channel_id,
+        "action": "internal_knight_minted",
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        import psycopg2
+        db_url = os.environ.get("MIRROR_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if db_url:
+            audit_conn = psycopg2.connect(db_url)
+            try:
+                with audit_conn:
+                    with audit_conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO audit_events (stream_id, actor_id, actor_type, action, resource, payload) "
+                            "VALUES (%s, %s, %s, %s, %s, %s)",
+                            ("kernel", "billing", "service", "internal_knight_minted",
+                             f"knight:{knight_id}", json.dumps(audit_payload)),
+                        )
+            finally:
+                audit_conn.close()
+    except Exception as exc:
+        # Fallback: local file audit record
+        marker_dir = _SOS_DIR / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_kid = knight_id.replace(":", "_")
+        ts = audit_payload["ts"][:19].replace(":", "-")
+        (marker_dir / f"internal_knight_minted_{safe_kid}_{ts}.json").write_text(
+            json.dumps(audit_payload, indent=2)
+        )
+        log.warning("internal_knight_mint: DB audit failed, wrote local marker: %s", exc)
+
+    # ── Emit to bus (after durable audit) ──
     try:
         from sos.observability.sprint_telemetry import emit_internal_knight_minted
         emit_internal_knight_minted(knight_id, signer, discord_channel_id)
     except Exception as exc:
-        log.warning("internal_knight_mint: emit failed (non-fatal): %s", exc)
+        log.warning("internal_knight_mint: emit failed (non-fatal, audit record exists): %s", exc)
 
     log.info(
         "internal_knight_mint: ✓ %s minted for %s (%s), channel=%s, signer=%s",

@@ -20,6 +20,7 @@ import pytest
 
 from sos.services.billing.internal_knight_mint import (
     InternalMintModeDisabled,
+    InvalidChannelIdError,
     InvalidSignerError,
     MissingMintArgError,
     mint_internal_knight,
@@ -68,7 +69,7 @@ def test_g76_a_happy_path() -> None:
                side_effect=lambda knight_id, signer, channel_id: emitted.append(
                    {"knight_id": knight_id, "signer": signer})):
 
-        result = mint_internal_knight("gavin", "closer", "1234567890", "loom")
+        result = mint_internal_knight("gavin", "closer", "12345678901234567", "loom")
 
     assert result["ok"] is True
     assert result["reason"] == "minted"
@@ -138,7 +139,7 @@ def test_g76_d_duplicate_skip() -> None:
     with patch.dict("os.environ", _mock_env()), \
          patch("sos.contracts.principals.get_principal", return_value=mock_principal):
 
-        result = mint_internal_knight("gavin", "closer", "1234567890", "loom")
+        result = mint_internal_knight("gavin", "closer", "12345678901234567", "loom")
 
     assert result["ok"] is True
     assert result["reason"] == "already_minted"
@@ -179,6 +180,22 @@ def test_g76_f_invalid_signer_raises() -> None:
     """TC-G76-f: signer not in allowed set raises InvalidSignerError."""
     with patch.dict("os.environ", _mock_env()):
         with pytest.raises(InvalidSignerError):
-            mint_internal_knight("test", "role", "channel", "random")
+            mint_internal_knight("test", "role", "12345678901234567", "random")
         with pytest.raises(InvalidSignerError):
-            mint_internal_knight("test", "role", "channel", "kasra")
+            mint_internal_knight("test", "role", "12345678901234567", "kasra")
+
+
+# ---------------------------------------------------------------------------
+# TC-G76-g: invalid channel_id (non-snowflake) raises InvalidChannelIdError
+# ---------------------------------------------------------------------------
+
+
+def test_g76_g_invalid_channel_id_raises() -> None:
+    """TC-G76-g: non-snowflake channel ID raises InvalidChannelIdError."""
+    with patch.dict("os.environ", _mock_env()):
+        with pytest.raises(InvalidChannelIdError):
+            mint_internal_knight("test", "role", "not-a-snowflake", "loom")
+        with pytest.raises(InvalidChannelIdError):
+            mint_internal_knight("test", "role", "123", "loom")  # too short
+        with pytest.raises(InvalidChannelIdError):
+            mint_internal_knight("test", "role", "abc12345678901234", "loom")  # non-digits
