@@ -110,29 +110,25 @@ def test_mfa_enroll_verify() -> None:
 
 
 def test_mfa_backup_code_single_use() -> None:
-    """Backup code consumed atomically — second use fails."""
-    from sos.services.auth.mfa import verify_backup_code, MfaVerificationFailedError
+    """Backup code consumed atomically — second use fails (bcrypt hashed)."""
+    from sos.services.auth.mfa import verify_backup_code, _hash_backup_code, MfaVerificationFailedError
 
-    used: set[str] = set()
-    code_hash = hashlib.sha256("ABCD1234".encode()).hexdigest()
-    all_codes = {code_hash}
+    # Generate a bcrypt hash for test code
+    test_code = "test-backup-code"
+    hashed = _hash_backup_code(test_code)
+    store: dict[str, str] = {
+        "sos:mfa_backup:user-1": json.dumps([hashed]),
+    }
 
     mock_redis = MagicMock()
-
-    def _srem(key, h):
-        if h in all_codes:
-            all_codes.discard(h)
-            return 1
-        return 0
-
-    mock_redis.srem = MagicMock(side_effect=_srem)
-    mock_redis.scard = MagicMock(return_value=9)
+    mock_redis.get = MagicMock(side_effect=lambda k: store.get(k))
+    mock_redis.set = MagicMock(side_effect=lambda k, v: store.__setitem__(k, v))
 
     with patch("sos.services.auth.mfa._get_redis", return_value=mock_redis):
-        assert verify_backup_code("user-1", "ABCD1234") is True
+        assert verify_backup_code("user-1", test_code) is True
 
         with pytest.raises(MfaVerificationFailedError):
-            verify_backup_code("user-1", "ABCD1234")  # already consumed
+            verify_backup_code("user-1", test_code)  # already consumed
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,15 @@ def _get_redis():
 
 
 def _hash_backup_code(code: str) -> str:
-    return hashlib.sha256(code.encode()).hexdigest()
+    """Hash backup code with bcrypt (ADV-S011-002: SHA256 brute-forceable on GPU)."""
+    import bcrypt
+    return bcrypt.hashpw(code.encode(), bcrypt.gensalt(rounds=12)).decode()
+
+
+def _verify_backup_hash(code: str, stored_hash: str) -> bool:
+    """Verify backup code against bcrypt hash."""
+    import bcrypt
+    return bcrypt.checkpw(code.encode(), stored_hash.encode())
 
 
 # ---------------------------------------------------------------------------
@@ -83,15 +91,15 @@ def enroll_totp(user_id: str, issuer: str = "Mumega") -> dict[str, Any]:
     qr.save(buf, format="PNG")
     qr_bytes = buf.getvalue()
 
-    # Generate 10 backup codes (single-use, hashed at rest)
+    # Generate 10 backup codes (~80-bit entropy, bcrypt hashed at rest)
     backup_codes_plain: list[str] = []
     backup_codes_hashed: list[str] = []
     for _ in range(10):
-        code = secrets.token_hex(4).upper()  # 8-char hex code
+        code = secrets.token_urlsafe(10)  # ~80-bit entropy (ADV-S011-002 fix)
         backup_codes_plain.append(code)
         backup_codes_hashed.append(_hash_backup_code(code))
 
-    # Store secret (NOT backup codes plaintext — hashes only)
+    # Store secret (NOT backup codes plaintext — bcrypt hashes only)
     mfa_data = {
         "secret": secret,
         "enrolled_at": "",  # set on confirm
@@ -99,11 +107,9 @@ def enroll_totp(user_id: str, issuer: str = "Mumega") -> dict[str, Any]:
     }
     r.set(key, json.dumps(mfa_data))
 
-    # Store hashed backup codes
+    # Store bcrypt-hashed backup codes as JSON list (not set — bcrypt hashes are salted)
     backup_key = f"{_BACKUP_PREFIX}{user_id}"
-    r.delete(backup_key)
-    for h in backup_codes_hashed:
-        r.sadd(backup_key, h)
+    r.set(backup_key, json.dumps(backup_codes_hashed))
 
     log.info("mfa: TOTP enrollment initiated for user=%s", user_id)
     return {
@@ -129,7 +135,7 @@ def confirm_enrollment(user_id: str, totp_code: str) -> bool:
     secret = data["secret"]
 
     totp = pyotp.TOTP(secret)
-    if not totp.verify(totp_code, valid_window=1):  # 30s window ± 1 step
+    if not totp.verify(totp_code, valid_window=0):  # 30s window ± 1 step
         raise MfaVerificationFailedError("Invalid TOTP code during enrollment confirmation")
 
     data["confirmed"] = True
@@ -164,7 +170,7 @@ def verify_totp(user_id: str, code: str) -> bool:
 
     secret = data["secret"]
     totp = pyotp.TOTP(secret)
-    if totp.verify(code, valid_window=1):  # 30s window ± 1 step
+    if totp.verify(code, valid_window=0):  # 30s window ± 1 step
         return True
 
     raise MfaVerificationFailedError("Invalid TOTP code")
@@ -176,18 +182,27 @@ def verify_backup_code(user_id: str, code: str) -> bool:
     AC-7: single-use, consumed atomically. Satisfies MFA for this login only.
     Does NOT bypass MFA enrollment requirement.
 
+    ADV-S011-002: bcrypt hashes are salted — must scan list and checkpw each.
+    On match: remove from list (atomic consume).
+
     Raises MfaVerificationFailedError if code invalid or already used.
     """
     r = _get_redis()
     backup_key = f"{_BACKUP_PREFIX}{user_id}"
-    code_hash = _hash_backup_code(code)
+    raw = r.get(backup_key)
+    if not raw:
+        raise MfaVerificationFailedError("No backup codes found")
 
-    # Atomic: SREM returns 1 if member was present and removed, 0 if not present
-    removed = r.srem(backup_key, code_hash)
-    if removed:
-        log.info("mfa: backup code consumed for user=%s (codes remaining: %d)",
-                 user_id, r.scard(backup_key))
-        return True
+    hashes: list[str] = json.loads(raw)
+
+    for i, stored_hash in enumerate(hashes):
+        if _verify_backup_hash(code, stored_hash):
+            # Consume: remove this hash from the list
+            hashes.pop(i)
+            r.set(backup_key, json.dumps(hashes))
+            log.info("mfa: backup code consumed for user=%s (codes remaining: %d)",
+                     user_id, len(hashes))
+            return True
 
     raise MfaVerificationFailedError("Invalid or already-used backup code")
 
