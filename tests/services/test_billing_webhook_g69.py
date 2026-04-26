@@ -118,9 +118,13 @@ async def test_g69a_valid_webhook_mints_knight() -> None:
          patch("sos.services.billing.webhook.mint_knight_programmatic",
                return_value={"ok": True, "knight_id": "agent:acme-knight",
                              "knight_slug": "acme-knight", "qnft_uri": "qnft:acme-knight:abc",
-                             "error": None, "skipped": False}), \
+                             "error": None, "skipped": False, "vector_16d": [0.0] * 16}), \
          patch("sos.services.billing.webhook.emit_knight_minted", side_effect=_emit_knight), \
          patch("sos.services.billing.webhook.emit_stripe_webhook", side_effect=_emit_webhook), \
+         patch("sos.services.billing.qnft_image.generate_qnft_image",
+               return_value=b"\x89PNG\x00" * 10), \
+         patch("sos.services.billing.qnft_image.upload_qnft_to_r2",
+               return_value="https://qnft.mumega.com/qnft/acme-knight/v1.png"), \
          patch.dict("os.environ", {"DATABASE_URL": "postgresql://test/test", "SOS_ENV": "test"}):
 
         mock_asyncpg.connect = AsyncMock(return_value=mock_conn)
@@ -130,7 +134,7 @@ async def test_g69a_valid_webhook_mints_knight() -> None:
 
     assert result["ok"] is True, f"Expected ok=True, got: {result}"
     assert result["knight_id"] == "agent:acme-knight"
-    assert result["qnft_uri"] == "qnft:acme-knight:abc"
+    assert result["qnft_uri"] == "https://qnft.mumega.com/qnft/acme-knight/v1.png"
     assert len(emitted_knight) == 1
     assert emitted_knight[0]["project"] == "mumega"
     assert len(emitted_webhook) == 1

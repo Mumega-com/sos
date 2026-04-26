@@ -335,13 +335,14 @@ async def handle_payment_intent_succeeded(
 
             knight_id_str: str = mint_result["knight_id"] or ""
             knight_slug: str = mint_result["knight_slug"] or ""
-            qnft_uri: str = mint_result["qnft_uri"] or ""
 
             # ── 6. Persist results (inside single transaction, BLOCK-1) ──
+            # G73 Path B: resulting_knight_qnft_uri stays NULL in-transaction.
+            # R2 upload + URI UPDATE happen post-commit (after tx block exits).
             await conn.execute(
                 "UPDATE stripe_webhook_processed SET status='processed', resulting_knight_id=$1, "
-                "resulting_knight_qnft_uri=$2, completed_at=now() WHERE id=$3",
-                knight_id_str, qnft_uri, webhook_id,
+                "completed_at=now() WHERE id=$2",
+                knight_id_str, webhook_id,
             )
             await conn.execute(
                 "UPDATE contracts SET signed_at=now(), knight_id=$1 WHERE id=$2",
@@ -353,6 +354,48 @@ async def handle_payment_intent_succeeded(
         emit_knight_minted(knight_id_str, stripe_customer_id, payment_intent_id, project)
         emit_stripe_webhook(payment_intent_id, "payment_intent.succeeded", "minted")
 
+        # ── 8. After commit: QNFT image gen + R2 upload (G73, post-commit) ──
+        # Image gen + upload are outside the transaction — knight is minted regardless.
+        # On failure: emit + log; knight minted, only visual is missing temporarily.
+        qnft_r2_url: str | None = None
+        try:
+            from sos.services.billing.qnft_image import (
+                generate_qnft_image,
+                upload_qnft_to_r2,
+            )
+            # Get descriptor + vector from qnft_registry (written by mint_knight_programmatic)
+            qnft_descriptor = f"{knight_slug} — knight, project {project}"
+            qnft_vector = mint_result.get("vector_16d", [0.0] * 16)
+            qnft_cause = cause_raw
+
+            image_bytes = generate_qnft_image(qnft_descriptor, qnft_vector, qnft_cause)
+            principal_id = knight_id_str.replace("agent:", "")
+            qnft_r2_url = upload_qnft_to_r2(principal_id, image_bytes)
+
+            # Update stripe_webhook_processed with R2 URL (small separate transaction)
+            await conn.execute(
+                "UPDATE stripe_webhook_processed SET resulting_knight_qnft_uri=$1 WHERE id=$2",
+                qnft_r2_url, webhook_id,
+            )
+            log.info(
+                "payment_intent.succeeded: QNFT image uploaded to %s", qnft_r2_url,
+            )
+        except Exception as exc:
+            log.error(
+                "payment_intent.succeeded: QNFT image gen/upload failed for %s: %s "
+                "(knight minted, visual pending repair)",
+                knight_id_str, exc,
+            )
+            try:
+                from sos.observability.sprint_telemetry import emit_qnft_r2_upload_failed
+                emit_qnft_r2_upload_failed(
+                    principal_id=knight_id_str,
+                    key=f"qnft/{knight_id_str.replace('agent:', '')}/v1.png",
+                    error=str(exc),
+                )
+            except Exception:
+                pass  # non-blocking
+
         log.info(
             "payment_intent.succeeded: knight minted knight_id=%s payment_intent_id=%s",
             knight_id_str, payment_intent_id,
@@ -361,7 +404,7 @@ async def handle_payment_intent_succeeded(
             "ok": True,
             "knight_id": knight_id_str,
             "knight_slug": knight_slug,
-            "qnft_uri": qnft_uri,
+            "qnft_uri": qnft_r2_url,
             "payment_intent_id": payment_intent_id,
             "skipped": mint_result.get("skipped", False),
         }

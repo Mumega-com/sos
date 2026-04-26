@@ -641,6 +641,45 @@ def emit_stripe_webhook(
     return payload
 
 
+def emit_qnft_r2_upload_failed(
+    principal_id: str,
+    key: str,
+    error: str,
+    emitted_by: str = "billing",
+) -> dict[str, Any]:
+    """Emit qnft_r2_upload_failed when QNFT image R2 upload fails post-commit.
+
+    Sprint 007 G73. Knight is minted; only the visual is missing.
+    Repair pass re-uploads same key (deterministic).
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "principal_id": principal_id,
+        "r2_key": key,
+        "error": error,
+        "emitted_by": emitted_by,
+        "ts": ts,
+    }
+    try:
+        from sos.kernel.audit_chain import audit_emit  # type: ignore
+        audit_emit(
+            stream_id="kernel",
+            actor_id=emitted_by,
+            actor_type="service",
+            action="qnft_r2_upload_failed",
+            resource=f"principal:{principal_id}",
+            payload=payload,
+        )
+    except Exception:
+        marker_dir = SOS_REPO / ".sprint_markers"
+        marker_dir.mkdir(exist_ok=True)
+        safe_pid = principal_id.replace("/", "_").replace(":", "_")
+        (marker_dir / f"qnft_r2_upload_failed_{safe_pid}_{ts[:19].replace(':', '-')}.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+    return payload
+
+
 def emit_inactive_project_filtered(
     project_id: str,
     message_id: str,
