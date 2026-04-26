@@ -282,9 +282,14 @@ async def handle_payment_intent_succeeded(
                     "knight_id": contract["knight_id"],
                 }
 
-            # ── 3. Project scope guard (BLOCK-2: authoritative source is contracts.project) ──
+            # ── 3. Project scope guard (BLOCK-2 + G64b: active-project check) ──
             project = (contract["project"] or "mumega").strip()
-            if project != "mumega":
+            try:
+                from sos.services.brain.source_reader import is_active as _is_active_project
+                project_active = _is_active_project(project)
+            except Exception:
+                project_active = project == "mumega"  # fallback if source_reader unavailable
+            if not project_active:
                 log.warning(
                     "payment_intent.succeeded: project=%r refused (BLOCK-2) payment_intent_id=%s",
                     project, payment_intent_id,
