@@ -54,7 +54,7 @@ AGENT_ROUTING = {
     # Removed from routing so wake-daemon stops poking dead tmux sessions.
     "dara":     "none",  # Remote agent on Hadi's Mac — inbox only, no tmux wake
     "torivers": "tmux",  # Separate Linux user — wake via sudo tmux send-keys
-    "mizan":    "openclaw",
+    "mizan":    "tmux",     # Resurrected 2026-04-27 on Sonnet via Claude Code (Hadi directive). Business agent.
     "gemma":    "openclaw",
     "gaf":      "tmux",
     "prefrontal": "tmux",  # Customer agent — separate Linux user
