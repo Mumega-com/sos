@@ -2290,10 +2290,15 @@ async def me(
                 log.warning("dcr_client_id write failed for %s: %s", auth.tenant_id, exc)
             # Non-fatal — dcr_client_id is telemetry, never block profile response
 
+    # Derive slug from agent_name ("{slug}-knight" convention — set at tenant provision time)
+    agent_name = auth.agent_name or ""
+    slug = agent_name[:-7] if agent_name.endswith("-knight") else ""
+
     return JSONResponse({
         "tenant_id": auth.tenant_id,
         "tier": auth.plan or "free",
-        "agent_name": auth.agent_name or "",
+        "agent_name": agent_name,
+        "slug": slug,
     })
 
 
