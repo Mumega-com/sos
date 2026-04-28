@@ -47,6 +47,17 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 
+# ── Brain config knobs (settable via env / systemd unit) ──────────────────────
+# BRAIN_MODEL: Gemini model for prefrontal_think + _generate_content fallback.
+#   Default: gemini-2.5-flash  (was hardcoded gemma-4-31b-it)
+BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "gemini-2.5-flash")
+
+# BRAIN_CONTENT_MODE: controls whether the brain autonomously posts blog content.
+#   "on"  — enabled (default legacy behaviour)
+#   "off" — disabled; fallback emits health_check instead of post_content
+#   "log" — dry-run; logs what would have been posted without actually posting
+BRAIN_CONTENT_MODE = os.environ.get("BRAIN_CONTENT_MODE", "on").lower()
+
 from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL
 
 MIRROR_HEADERS = {"Authorization": f"Bearer {MIRROR_TOKEN}", "Content-Type": "application/json"}
@@ -152,7 +163,7 @@ Respond with EXACTLY this JSON format:
 }}"""
 
         response = client.models.generate_content(
-            model="gemma-4-31b-it",
+            model=BRAIN_MODEL,
             contents=prompt,
         )
 
@@ -173,35 +184,43 @@ Respond with EXACTLY this JSON format:
 
 
 def fallback_think(context: str) -> str:
-    """Fallback: use GitHub Models (gpt-4o-mini) if Gemma fails."""
-    if not GITHUB_TOKEN:
-        return json.dumps({
-            "action": "Post daily content for Mumega blog",
-            "goal_id": "maintenance",
-            "agent": "system",
-            "method": "post_content",
-            "details": "Generate and publish a blog post about AI automation",
-            "expected_progress": 0.05,
-            "risk": 0.0,
-        })
+    """Fallback: try GitHub Models, then Gemini, then hardcoded safe default."""
+    # Try GitHub Models first
+    if GITHUB_TOKEN:
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                base_url="https://models.inference.ai.azure.com",
+                api_key=GITHUB_TOKEN,
+            )
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": f"Given this system state, pick ONE concrete action to advance the goals. Respond with JSON only: action, goal_id, agent, method, details, expected_progress, risk.\n\n{context[:3000]}"
+                }],
+                max_tokens=300,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Fallback GitHub failed: {e}")
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(
-            base_url="https://models.inference.ai.azure.com",
-            api_key=GITHUB_TOKEN,
-        )
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{
-                "role": "user",
-                "content": f"Given this system state, pick ONE concrete action to advance the goals. Respond with JSON only: action, goal_id, agent, method, details, expected_progress, risk.\n\n{context[:3000]}"
-            }],
-            max_tokens=300,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Fallback (GitHub) failed: {e}")
+    # Try Gemini as secondary fallback
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=BRAIN_MODEL,
+                contents=f"Given this system state, pick ONE concrete action. Respond with JSON only: action, goal_id, agent, method, details, expected_progress (float), risk (float).\n\n{context[:3000]}",
+            )
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Fallback Gemini failed: {e}")
+
+    # Hard fallback — safe default action (no token cost)
+    # Respects BRAIN_CONTENT_MODE: if "off", emit health_check instead of post_content
+    if BRAIN_CONTENT_MODE == "off":
         return json.dumps({
             "action": "System health check and report",
             "goal_id": "maintenance",
@@ -211,6 +230,17 @@ def fallback_think(context: str) -> str:
             "expected_progress": 0.01,
             "risk": 0.0,
         })
+    return json.dumps({
+        "action": "Post daily content for Mumega blog",
+        "goal_id": "maintenance",
+        "agent": "system",
+        "method": "post_content",
+        "details": "Generate and publish a blog post about AI automation",
+        "expected_progress": 0.05,
+        "risk": 0.0,
+    })
+
+
 
 
 def _task_exists(title: str, agent: str) -> bool:
@@ -366,8 +396,11 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": f"Task created: {task_id}", "task_id": task_id}
 
         elif method == "post_content":
-            # Generate content using a cheap model and store it
+            # Generate content using a cheap model and store it.
+            # Skipped gracefully when BRAIN_CONTENT_MODE=off.
             content = _generate_content(details)
+            if content == "__CONTENT_MODE_OFF__":
+                return {"success": True, "result": "Content posting skipped (BRAIN_CONTENT_MODE=off)"}
             if content:
                 # Store in Supabase via a simple approach — create a Mirror engram
                 requests.post(f"{MIRROR_URL}/store", json={
@@ -482,7 +515,14 @@ def motor_execute(action: dict) -> dict:
 
 
 def _generate_content(prompt: str) -> str:
-    """Generate content using cheapest available model."""
+    """Generate content — respects BRAIN_CONTENT_MODE.
+    GitHub Models first (free), Gemini 2.5 Flash as fallback.
+    Returns "" if BRAIN_CONTENT_MODE is "off" (caller will mark as no-op success).
+    """
+    if BRAIN_CONTENT_MODE == "off":
+        logger.info("_generate_content: skipped (BRAIN_CONTENT_MODE=off)")
+        return "__CONTENT_MODE_OFF__"  # sentinel — caller treats as no-op
+
     if GITHUB_TOKEN:
         try:
             from openai import OpenAI
@@ -496,7 +536,19 @@ def _generate_content(prompt: str) -> str:
                 max_tokens=500,
             )
             return response.choices[0].message.content.strip()
-        except:
+        except Exception:
+            pass
+    # Fallback: Gemini
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=BRAIN_MODEL,
+                contents=prompt,
+            )
+            return response.text.strip()
+        except Exception:
             pass
     return ""
 
@@ -596,6 +648,43 @@ def hippocampus_recall() -> str:
     return "\n\n".join(state_parts) if state_parts else "No state available."
 
 
+# INKWELL_API_URL: base URL for the inkwell-api Worker (e.g. https://api.mumega.com)
+# INKWELL_INTERNAL_SECRET: matches INTERNAL_API_SECRET wrangler secret
+INKWELL_API_URL = os.environ.get("INKWELL_API_URL", "").rstrip("/")
+INKWELL_INTERNAL_SECRET = os.environ.get("INKWELL_INTERNAL_SECRET", "")
+
+
+def report_to_inkwell(action: dict, result: dict, cycle_ms: int) -> None:
+    """POST cycle summary to inkwell-api brain_cycles D1 table."""
+    if not INKWELL_API_URL or not INKWELL_INTERNAL_SECRET:
+        return
+    import urllib.request
+    payload = json.dumps({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "success": 1 if result.get("success") else 0,
+        "task_title": action.get("action", ""),
+        "method": action.get("method", ""),
+        "agent": action.get("agent", ""),
+        "model": BRAIN_MODEL,
+        "result": str(result.get("result", ""))[:500],
+        "cycle_ms": cycle_ms,
+    }).encode()
+    req = urllib.request.Request(
+        f"{INKWELL_API_URL}/api/brain/cycle",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {INKWELL_INTERNAL_SECRET}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as _r:
+            pass
+    except Exception as e:
+        logger.warning(f"report_to_inkwell failed (non-critical): {e}")
+
+
 def report_to_discord(action: dict, result: dict):
     """Post brain cycle result to Discord #control."""
     if not DISCORD_BOT_TOKEN:
@@ -642,6 +731,8 @@ def remember(action: dict, result: dict):
 
 def cycle():
     """One brain cycle: perceive → think → act → remember → report."""
+    import time as _time
+    _cycle_start = _time.monotonic()
     logger.info("=== BRAIN CYCLE START ===")
 
     # 1. PERCEIVE (hippocampus)
@@ -685,8 +776,10 @@ def cycle():
     # 4. REMEMBER (hippocampus write)
     remember(action, result)
 
-    # 5. REPORT (to Discord)
+    # 5. REPORT (to Discord + inkwell-api)
     report_to_discord(action, result)
+    cycle_ms = int((_time.monotonic() - _cycle_start) * 1000)
+    report_to_inkwell(action, result, cycle_ms)
 
     logger.info("=== BRAIN CYCLE COMPLETE ===")
     return action, result
