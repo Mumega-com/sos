@@ -45,7 +45,7 @@ _SOVEREIGN_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _SOVEREIGN_DIR not in sys.path:
     sys.path.insert(0, _SOVEREIGN_DIR)
 
-from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL
+from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, PAUSED_PROJECTS
 from model_config import get as _model_cfg
 
 MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", MIRROR_TOKEN)
@@ -179,7 +179,10 @@ def get_pending_tasks() -> list:
             timeout=10,
         )
         if squad_resp.ok:
-            tasks.extend(squad_resp.json())
+            tasks.extend(
+                t for t in squad_resp.json()
+                if str(t.get("project", "")).lower() not in PAUSED_PROJECTS
+            )
     except Exception:
         pass
     try:
@@ -188,7 +191,10 @@ def get_pending_tasks() -> list:
         all_tasks = data.get("tasks", []) if isinstance(data, dict) else data
         tasks.extend(
             t for t in all_tasks
-            if t.get("status") == "backlog" and not t.get("completed_at") and not is_squad_task(t)
+            if t.get("status") == "backlog"
+            and not t.get("completed_at")
+            and not is_squad_task(t)
+            and str(t.get("project", "")).lower() not in PAUSED_PROJECTS
         )
     except Exception:
         pass

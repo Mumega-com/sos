@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 
-from kernel.config import MIRROR_URL, SQUAD_URL, SOS_ENGINE_URL
+from kernel.config import MIRROR_URL, SQUAD_URL, SOS_ENGINE_URL, PAUSED_PROJECTS
 
 SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "sk-sos-system")
 SQUAD_HEADERS = {"Authorization": f"Bearer {SQUAD_TOKEN}"}
@@ -198,7 +198,11 @@ def snapshot_portfolio() -> PortfolioState:
             )
         )
 
-    backlog_tasks = [task for task in tasks_data if str(task.get("status", "")) == "backlog"]
+    backlog_tasks = [
+        task for task in tasks_data
+        if str(task.get("status", "")) == "backlog"
+        and str(task.get("project", "")).lower() not in PAUSED_PROJECTS
+    ]
     scored_tasks = sorted(
         (_score_task(task) for task in backlog_tasks),
         key=lambda item: (-item.score, item.priority, item.title.lower()),

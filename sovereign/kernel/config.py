@@ -37,6 +37,15 @@ SOVEREIGN_DATA_DIR = os.getenv("SOVEREIGN_DATA_DIR", str(Path.home() / ".mumega"
 SOVEREIGN_SQUADS_DIR = os.getenv("SOVEREIGN_SQUADS_DIR", "/home/mumega/SOS/sovereign/.squads")
 SOVEREIGN_PLANS_DIR = os.getenv("SOVEREIGN_PLANS_DIR", "/home/mumega/SOS/sovereign/.plans")
 
+# ── Project pause gate ───────────────────────────────────────────────────────
+# Comma-separated list of project slugs cortex won't score and loop won't claim.
+# Set via env: PAUSED_PROJECTS=dnu,trop
+# Remove a project from the list to resume it.
+_paused_raw = os.getenv("PAUSED_PROJECTS", "")
+PAUSED_PROJECTS: frozenset[str] = frozenset(
+    p.strip().lower() for p in _paused_raw.split(",") if p.strip()
+)
+
 # ── Brain cache knobs (see kernel/brain_cache.py) ────────────────────────────
 BRAIN_CACHE_ENABLED = os.getenv("BRAIN_CACHE_ENABLED", "auto")
 BRAIN_CACHE_TTL = int(os.getenv("BRAIN_CACHE_TTL", "3600"))
