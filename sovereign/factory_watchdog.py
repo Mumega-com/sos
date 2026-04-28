@@ -44,6 +44,8 @@ if _SOVEREIGN_DIR not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [WATCHDOG] %(message)s")
 logger = logging.getLogger("watchdog")
 
+from model_config import get as _model_cfg
+
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
@@ -176,13 +178,13 @@ def _gemini_generate(model: str, prompt: str = "Say OK") -> bool:
 def test_gemma4() -> bool:
     if not _gemini_key_pool():
         return False
-    return _gemini_generate("gemma-4-31b-it")
+    return _gemini_generate(_model_cfg()["tier1_primary"])
 
 
 def test_gemini_flash() -> bool:
     if not _gemini_key_pool():
         return False
-    return _gemini_generate("gemini-2.0-flash")
+    return _gemini_generate(_model_cfg()["tier3_fallback"])
 
 
 def test_github_models() -> bool:

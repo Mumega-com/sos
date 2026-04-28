@@ -46,6 +46,7 @@ if _SOVEREIGN_DIR not in sys.path:
     sys.path.insert(0, _SOVEREIGN_DIR)
 
 from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL
+from model_config import get as _model_cfg
 
 MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", MIRROR_TOKEN)
 MIRROR_HEADERS = {"Authorization": f"Bearer {MIRROR_TOKEN}", "Content-Type": "application/json"}
@@ -880,7 +881,7 @@ def _is_gemini_rate_limit(exc: Exception) -> bool:
 def call_gemma4(prompt: str) -> str:
     """
     Call LLM with 5-tier failover. 99.9% availability.
-    Gemma 4 31B → GitHub Models → Gemini Flash → OpenRouter → Local Ollama gemma2:2b
+    Vertex ADC → Gemini 2.5 Flash → GitHub Models → Gemini 2.5 Flash (key) → OpenRouter → Local Ollama gemma2:2b
 
     Tier 1 and Tier 3 share the same Gemini API key. If Tier 1 hits a per-minute
     rate limit, Tier 3 is skipped for 60s to avoid burning another call on the
@@ -891,12 +892,38 @@ def call_gemma4(prompt: str) -> str:
 
     gemini_rpm_ok = _time.time() >= _gemini_rpm_blocked_until
 
+    # Tier 0: Vertex AI ADC — Gemini 2.5 Flash, no free-tier quota limits
+    # Stream I (S015): pay-per-token via GCP Free Trial credit, ADC auto-refreshes
+    try:
+        import os as _os
+        import google.auth
+        import google.auth.transport.requests
+        import urllib.request as _urllib_request
+        import json as _json
+        _os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "mumega-com")
+        _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        _creds.refresh(google.auth.transport.requests.Request())
+        _payload = _json.dumps({
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 1024},
+        }).encode()
+        _req = _urllib_request.Request(
+            f"https://us-central1-aiplatform.googleapis.com/v1/projects/mumega-com/locations/us-central1/publishers/google/models/{_model_cfg()['tier0_vertex_model']}:generateContent",
+            data=_payload,
+            headers={"Authorization": f"Bearer {_creds.token}", "Content-Type": "application/json"},
+        )
+        with _urllib_request.urlopen(_req, timeout=30) as _r:
+            _data = _json.loads(_r.read())
+            return _data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        logger.warning(f"Tier 0 (Vertex ADC) failed: {e}")
+
     # Tier 1: Gemma 4 31B (free, best quality)
     if GEMINI_API_KEY and gemini_rpm_ok:
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(model="gemma-4-31b-it", contents=prompt)
+            response = client.models.generate_content(model=_model_cfg()["tier1_primary"], contents=prompt)
             return response.text.strip()
         except Exception as e:
             logger.warning(f"Tier 1 (Gemma 4) failed: {e}")
@@ -924,7 +951,7 @@ def call_gemma4(prompt: str) -> str:
         try:
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            response = client.models.generate_content(model=_model_cfg()["tier3_fallback"], contents=prompt)
             return response.text.strip()
         except Exception as e:
             logger.warning(f"Tier 3 (Gemini Flash) failed: {e}")
@@ -1024,21 +1051,36 @@ def cycle() -> bool:
 
     logger.info(f"{len(tasks)} pending tasks")
 
-    # Pick one
-    task = pick_task(tasks)
-    logger.info(f"Picked: [{task.get('priority','?')}] {task.get('title','?')[:60]}")
+    # Pick one — try up to 3 candidates in priority order to skip stale claims.
+    # Without this, a single stuck "critical" task starves the entire backlog.
+    remaining = list(tasks)
+    result = None
+    task = None
+    for _attempt in range(10):
+        if not remaining:
+            break
+        candidate = pick_task(remaining)
+        remaining = [t for t in remaining if (t.get("id") or t.get("title","")) != (candidate.get("id") or candidate.get("title",""))]
+        logger.info(f"Picked: [{candidate.get('priority','?')}] {candidate.get('title','?')[:60]}")
 
-    # Heartbeat for the project session if open
-    project_id = task.get("project", "")
-    if project_id:
-        _session_heartbeat(project_id)
+        # Heartbeat for the project session if open
+        project_id = candidate.get("project", "")
+        if project_id:
+            _session_heartbeat(project_id)
 
-    # Execute
-    result = execute_task(task)
-    logger.info(f"Result: {result['success']} — {result['result'][:100]}")
+        # Execute
+        result = execute_task(candidate)
+        logger.info(f"Result: {result['success']} — {result['result'][:100]}")
 
-    if result.get("skipped"):
-        logger.info("Skipped claimed task.")
+        if result.get("skipped"):
+            logger.info("Skipped claimed task — trying next candidate.")
+            continue  # try next task instead of giving up
+
+        task = candidate
+        break
+
+    if task is None:
+        logger.info("All candidate tasks were already claimed. Idle this cycle.")
         return completed_from_replies > 0
 
     # Mark done or failed
