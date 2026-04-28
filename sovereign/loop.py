@@ -1019,12 +1019,15 @@ def call_gemma4(prompt: str) -> str:
         except Exception as e:
             err_str = str(e)
             if "402" in err_str or "payment" in err_str.lower():
-                _openrouter_blocked_until = _time.time() + 3600  # 1-hour cooldown on quota exhaustion
+                _openrouter_blocked_until = _time.time() + 3600
                 logger.warning("Tier 4 (OpenRouter) 402 — free quota exhausted; skipping for 1 hour")
+            elif "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower():
+                _openrouter_blocked_until = _time.time() + 3600
+                logger.warning("Tier 4 (OpenRouter) 429/quota — rate limited; skipping for 1 hour")
             else:
                 logger.warning(f"Tier 4 (OpenRouter) failed: {e}")
     elif openrouter_key and not openrouter_ok:
-        logger.info("Tier 4 (OpenRouter) skipped — 402 cooldown active")
+        logger.debug("Tier 4 (OpenRouter) skipped — cooldown active")
 
     # Tier 5: Local Ollama — gemma2:2b, always on, zero cost, CPU-only
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
