@@ -13,7 +13,6 @@ import os
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +24,6 @@ from kernel.config import MIRROR_URL, SQUAD_URL, SOS_ENGINE_URL
 SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "sk-sos-system")
 SQUAD_HEADERS = {"Authorization": f"Bearer {SQUAD_TOKEN}"}
 ENGINE_URL = SOS_ENGINE_URL
-OPENCLAW_CONFIG = Path("/home/mumega/.openclaw/openclaw.json")
-OPENCLAW_AGENTS_DIR = Path("/home/mumega/.openclaw/agents")
 REVENUE_PROJECTS = {"dentalnearyou", "gaf", "viamar", "stemminds", "pecb"}
 PRIORITY_WEIGHTS = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
@@ -66,19 +63,8 @@ class ServiceHealth:
 
 
 @dataclass
-class AgentCapacity:
-    agent_id: str
-    tmux_session: bool
-    registered: bool
-    responsive: bool
-    last_session_at: str | None = None
-    runtime: str = ""
-
-
-@dataclass
 class CapacitySnapshot:
     tmux_sessions: list[str] = field(default_factory=list)
-    openclaw_agents: list[AgentCapacity] = field(default_factory=list)
 
 
 @dataclass
@@ -152,12 +138,6 @@ def _http_health(name: str, url: str) -> ServiceHealth:
         return ServiceHealth(name=name, status="down", detail=str(exc)[:160], latency_ms=latency_ms)
 
 
-def _openclaw_health() -> ServiceHealth:
-    # OpenClaw removed 2026-04-23 — agents now run via tmux + Claude Code directly.
-    # Return "removed" so the brain does not generate restart tasks for this service.
-    return ServiceHealth(name="openclaw", status="removed", detail="intentionally_removed", latency_ms=0)
-
-
 def _load_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
@@ -182,48 +162,6 @@ def _tmux_sessions() -> list[str]:
         return sessions
     except Exception:
         return []
-
-
-def _agent_session_time(agent_id: str) -> str | None:
-    sessions_dir = OPENCLAW_AGENTS_DIR / agent_id / "sessions"
-    if not sessions_dir.exists():
-        return None
-    latest: datetime | None = None
-    for path in sessions_dir.glob("*.jsonl"):
-        try:
-            modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-        except OSError:
-            continue
-        if latest is None or modified > latest:
-            latest = modified
-    return latest.isoformat() if latest else None
-
-
-def _openclaw_agents(tmux_sessions: list[str]) -> list[AgentCapacity]:
-    config = _load_json(OPENCLAW_CONFIG)
-    configured = config.get("agents", {}).get("list", [])
-    capacities: list[AgentCapacity] = []
-    for agent in configured:
-        agent_id = str(agent.get("id", "")).strip()
-        if not agent_id:
-            continue
-        runtime = "openclaw"
-        if agent_id in tmux_sessions:
-            runtime = "tmux+openclaw"
-        last_session_at = _agent_session_time(agent_id)
-        responsive = bool(last_session_at) or (agent_id in tmux_sessions)
-        capacities.append(
-            AgentCapacity(
-                agent_id=agent_id,
-                tmux_session=agent_id in tmux_sessions,
-                registered=True,
-                responsive=responsive,
-                last_session_at=last_session_at,
-                runtime=runtime,
-            )
-        )
-    capacities.sort(key=lambda item: (not item.responsive, item.agent_id))
-    return capacities
 
 
 def snapshot_portfolio() -> PortfolioState:
@@ -270,12 +208,8 @@ def snapshot_portfolio() -> PortfolioState:
         _http_health("mirror", f"{MIRROR_URL}/"),
         _http_health("engine", f"{ENGINE_URL}/health"),
         _http_health("squad", f"{SQUAD_URL}/health"),
-        _openclaw_health(),
     ]
-    capacity = CapacitySnapshot(
-        tmux_sessions=tmux_sessions,
-        openclaw_agents=_openclaw_agents(tmux_sessions),
-    )
+    capacity = CapacitySnapshot(tmux_sessions=tmux_sessions)
 
     return PortfolioState(
         squads=squad_summaries,
@@ -312,15 +246,8 @@ def render_portfolio_context(state: PortfolioState) -> str:
     service_line = " | ".join(f"{service.name}:{service.status}" for service in state.services)
     lines.append("SERVICES: " + service_line)
 
-    capacity_lines: list[str] = []
-    for agent in state.capacity.openclaw_agents:
-        if agent.tmux_session or agent.responsive:
-            last_seen = agent.last_session_at or "never"
-            capacity_lines.append(
-                f"{agent.agent_id} | tmux={agent.tmux_session} | responsive={agent.responsive} | last_session={last_seen}"
-            )
-    if capacity_lines:
-        lines.append("CAPACITY:\n" + "\n".join(capacity_lines[:12]))
+    if state.capacity.tmux_sessions:
+        lines.append("AGENTS (tmux): " + " | ".join(state.capacity.tmux_sessions))
 
     return "\n\n".join(lines)
 

@@ -672,8 +672,8 @@ def execute_task(task: dict) -> dict:
         return escalate_to_tmux(task, "athena")
 
     # === RESEARCH ===
-    if any(kw in combined for kw in ["research", "investigate", "analyze", "find out"]):
-        return execute_research(task)
+    if any(kw in combined for kw in ["research", "investigate", "analyze", "find out", "search", "look up"]):
+        return escalate_to_hermes(task)
 
     # === DEFAULT: try to do it with LLM ===
     return execute_generic(task)
@@ -821,12 +821,51 @@ def route_to_remote_agent(task: dict, agent: str, skill_matches: list[dict], squ
         return execute_generic(task)
 
 
-def escalate_to_openclaw(task: dict, agent: str) -> dict:
-    """Send task to an OpenClaw agent via the established wake channel."""
-    task_id = task.get("id", "")
+def escalate_to_hermes(task: dict) -> dict:
+    """
+    Web search via Hermes (primary) → Claude Code bus dispatch (backup).
+
+    Hermes has native web_search + web_extract tools.
+    If Hermes binary is not available, falls back to dispatching the research
+    task to the kasra bus agent (which has WebSearch/WebFetch natively).
+
+    Config knobs:
+      HERMES_BIN   path to hermes binary (default: ~/.hermes/bin/hermes)
+      HERMES_MODEL model override (default: config.yaml default)
+    """
     title = task.get("title", "")
     desc = task.get("description", "")
+    task_id = task.get("id", "")
+    query = desc or title
 
+    hermes_bin = Path(os.environ.get("HERMES_BIN", Path.home() / ".hermes" / "bin" / "hermes"))
+
+    # ── Primary: Hermes ───────────────────────────────────────────────────────
+    if hermes_bin.exists():
+        try:
+            prompt = (
+                f"Research task: {title}\n\n{desc}\n\n"
+                "Use web_search and web_extract to gather current information. "
+                "Return a concise summary of key findings (bullet points, under 500 words)."
+            )
+            model_flag = os.environ.get("HERMES_MODEL", "")
+            cmd = [str(hermes_bin), "--yes"]
+            if model_flag:
+                cmd += ["--model", model_flag]
+            cmd += ["--prompt", prompt]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            output = result.stdout.strip()
+            if result.returncode == 0 and output:
+                logger.info(f"Hermes research complete for task {task_id}")
+                return {"success": True, "result": output, "method": "hermes"}
+            logger.warning(f"Hermes exited {result.returncode}: {result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            logger.warning("Hermes timed out after 120s — falling back to Claude Code bus")
+        except Exception as e:
+            logger.warning(f"Hermes failed: {e} — falling back to Claude Code bus")
+
+    # ── Backup: Claude Code agent via SOS bus ────────────────────────────────
     try:
         r = get_redis_client()
         payload = {
@@ -835,14 +874,18 @@ def escalate_to_openclaw(task: dict, agent: str) -> dict:
             "task_id": task_id,
             "title": title,
             "description": desc,
-            "text": f"New task: {title}",
+            "method": "research",
+            "text": (
+                f"Research task (web search needed): {title}\n\n{desc}\n\n"
+                "Use WebSearch + WebFetch tools. Store findings in Mirror and reply with summary."
+            ),
         }
-        r.publish(f"sos:wake:{agent}", json.dumps(payload))
-        logger.info(f"Published OpenClaw wake for {agent}")
-        return {"success": True, "result": f"Escalated to openclaw:{agent}", "deferred": True}
+        r.publish("sos:stream:global:agent:kasra", json.dumps(payload))
+        logger.info(f"Research task dispatched to kasra bus agent (task {task_id})")
+        return {"success": True, "result": "Research dispatched to kasra agent", "method": "claude-code-bus", "deferred": True}
     except Exception as e:
-        logger.error(f"OpenClaw escalation failed for {agent}: {e}")
-        return {"success": False, "result": f"openclaw:{agent} not reachable"}
+        logger.error(f"Bus dispatch failed: {e}")
+        return {"success": False, "result": "Both Hermes and bus dispatch failed"}
 
 
 def escalate_to_tmux(task: dict, agent: str) -> dict:
