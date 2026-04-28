@@ -36,3 +36,9 @@ DISCORD_SCRIPT = os.getenv("DISCORD_SCRIPT", "/home/mumega/scripts/discord-reply
 SOVEREIGN_DATA_DIR = os.getenv("SOVEREIGN_DATA_DIR", str(Path.home() / ".mumega"))
 SOVEREIGN_SQUADS_DIR = os.getenv("SOVEREIGN_SQUADS_DIR", "/home/mumega/SOS/sovereign/.squads")
 SOVEREIGN_PLANS_DIR = os.getenv("SOVEREIGN_PLANS_DIR", "/home/mumega/SOS/sovereign/.plans")
+
+# ── Brain cache knobs (see kernel/brain_cache.py) ────────────────────────────
+BRAIN_CACHE_ENABLED = os.getenv("BRAIN_CACHE_ENABLED", "auto")
+BRAIN_CACHE_TTL = int(os.getenv("BRAIN_CACHE_TTL", "3600"))
+BRAIN_CACHE_PATH = Path(os.getenv("BRAIN_CACHE_PATH", str(Path.home() / ".mumega" / "brain_cache.json")))
+BRAIN_CACHE_SOURCES = os.getenv("BRAIN_CACHE_SOURCES", "system_md,agents,cycles")

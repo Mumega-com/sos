@@ -125,20 +125,25 @@ def resolve_squad(labels: list[str], project: str) -> str | None:
 def prefrontal_think(context: str) -> str:
     """
     PREFRONTAL CORTEX — Planning & Decision Making
-    Model: Gemma 4 31B (free, 1500 req/day, excellent reasoning)
+    Model: BRAIN_MODEL (default: gemini-2.5-flash)
 
-    Given system state, goals, and objections → decide what to do next.
+    Given system state delta → decide what to do next.
+    Uses Gemini Context Cache for the stable world model when available —
+    only the current delta (task queue + recent outcomes) is sent per cycle.
     """
     if not GEMINI_API_KEY:
         return fallback_think(context)
 
     try:
         from google import genai
+        from kernel.brain_cache import get_cache_name
+
         client = genai.Client(api_key=GEMINI_API_KEY)
+        cache_name = get_cache_name()
 
-        prompt = f"""You are the Sovereign Brain of Mumega — an autonomous AI operating system.
+        decision_prompt = f"""You are the Sovereign Brain of Mumega — an autonomous AI operating system.
 
-Your job: look at the current system state, active goals, and objections.
+Your job: look at the current system state delta, active goals, and objections.
 Pick the ONE highest-impact action that can be done RIGHT NOW with available tools.
 
 Rules:
@@ -148,7 +153,7 @@ Rules:
 - If nothing is urgent, pick maintenance work (content, outreach, memory cleanup)
 - Output ONLY a JSON object, no explanation
 
-SYSTEM STATE:
+CURRENT CYCLE DELTA:
 {context}
 
 Respond with EXACTLY this JSON format:
@@ -162,14 +167,25 @@ Respond with EXACTLY this JSON format:
   "risk": 0.1
 }}"""
 
-        response = client.models.generate_content(
-            model=BRAIN_MODEL,
-            contents=prompt,
-        )
+        if cache_name:
+            # Stable world model is in the cache — only send the delta
+            from google.genai import types
+            response = client.models.generate_content(
+                model=BRAIN_MODEL,
+                contents=decision_prompt,
+                config=types.GenerateContentConfig(
+                    cached_content=cache_name,
+                ),
+            )
+            logger.info("prefrontal: using Gemini context cache")
+        else:
+            # No cache — send full context inline (fallback)
+            response = client.models.generate_content(
+                model=BRAIN_MODEL,
+                contents=decision_prompt,
+            )
 
-        # Parse JSON from response
         text = response.text.strip()
-        # Handle markdown code blocks
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -179,7 +195,7 @@ Respond with EXACTLY this JSON format:
         return text
 
     except Exception as e:
-        logger.error(f"Prefrontal (Gemma 4) failed: {e}")
+        logger.error(f"Prefrontal failed: {e}")
         return fallback_think(context)
 
 
