@@ -622,7 +622,8 @@ def execute_task(task: dict) -> dict:
     # Explicit assignment always wins over keyword routing.
     # Known tmux agents get tmux send-keys, everything else gets bus/OpenClaw.
     TMUX_AGENTS = {"kasra", "mumega", "codex", "spai"}
-    OPENCLAW_AGENTS = {"athena", "worker", "sol", "dandan", "gemma", "river"}
+    # OpenClaw removed 2026-04-28. Remote agents (worker, sol, dandan) now route via bus.
+    OPENCLAW_AGENTS = {"athena", "worker", "sol", "gemma", "river"}  # dandan removed — routes to kasra via bus
 
     if has_explicit_agent(task):
         if is_squad_task(task):
@@ -630,8 +631,11 @@ def execute_task(task: dict) -> dict:
 
         if agent in TMUX_AGENTS:
             return escalate_to_tmux(task, agent)
+        elif agent == "dandan":
+            # Dandan's work: outreach + scan. Route to kasra via tmux.
+            return escalate_to_tmux(task, "kasra")
         else:
-            # All other named agents go through bus/OpenClaw
+            # All other named agents go through bus
             return route_to_remote_agent(task, agent, skill_matches, squad_state)
 
     # Route based on task content
@@ -680,22 +684,31 @@ def execute_task(task: dict) -> dict:
 
 
 def execute_scan(task: dict) -> dict:
-    """Run Google Maps scanner."""
+    """Run Google Maps scanner. Falls back to Hermes web search if script missing."""
     desc = task.get("description", "")
-    # Extract city from description or default to Toronto
     city = "Toronto"
-    for c in ["Toronto", "Vancouver", "Calgary", "Montreal", "Ottawa", "Mississauga", "Brampton"]:
+    for c in ["Toronto", "Vancouver", "Calgary", "Montreal", "Ottawa", "Mississauga", "Brampton", "Barrie", "Scarborough"]:
         if c.lower() in desc.lower():
             city = c
             break
 
-    query = "dentist"  # default for DNU
+    query = "dentist"
     if "restaurant" in desc.lower(): query = "restaurant"
     if "clinic" in desc.lower(): query = "clinic"
 
+    scan_script = Path("/home/mumega/SOS/sos/agents/dandan/google_maps.py")
+    if not scan_script.exists():
+        # Script not yet built — fall back to Hermes web research
+        logger.warning("execute_scan: google_maps.py missing — falling back to Hermes")
+        return escalate_to_hermes({
+            **task,
+            "title": f"Find {query} businesses in {city} without strong web presence",
+            "description": f"Search for {query} practices in {city}, Canada. List business name, address, phone, and any website gaps. Focus on practices with no website or poor online presence.",
+        })
+
     try:
         result = subprocess.run(
-            ["python3", "/home/mumega/scripts/scan-google-maps.py", query, city, "10"],
+            ["python3", str(scan_script), query, city, "10"],
             capture_output=True, text=True, timeout=120,
             env={**os.environ, "GEMINI_API_KEY": GEMINI_API_KEY},
         )
