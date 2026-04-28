@@ -932,7 +932,27 @@ def escalate_to_tmux(task: dict, agent: str) -> dict:
 
 
 _gemini_rpm_blocked_until: float = 0.0  # epoch seconds when Gemini RPM cooldown expires
-_openrouter_blocked_until: float = 0.0  # epoch seconds; set on 402 — skipped for 1 hour
+
+# OpenRouter backoff persisted to disk so restarts don't reset the cooldown.
+_OPENROUTER_BLOCK_FILE = Path("/home/mumega/.mumega/openrouter_blocked_until.txt")
+
+
+def _load_openrouter_blocked_until() -> float:
+    try:
+        return float(_OPENROUTER_BLOCK_FILE.read_text().strip())
+    except Exception:
+        return 0.0
+
+
+def _save_openrouter_blocked_until(ts: float) -> None:
+    try:
+        _OPENROUTER_BLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _OPENROUTER_BLOCK_FILE.write_text(str(ts))
+    except Exception:
+        pass
+
+
+_openrouter_blocked_until: float = _load_openrouter_blocked_until()
 
 
 def _is_gemini_rate_limit(exc: Exception) -> bool:
@@ -1039,9 +1059,11 @@ def call_gemma4(prompt: str) -> str:
             err_str = str(e)
             if "402" in err_str or "payment" in err_str.lower():
                 _openrouter_blocked_until = _time.time() + 3600
+                _save_openrouter_blocked_until(_openrouter_blocked_until)
                 logger.warning("Tier 4 (OpenRouter) 402 — free quota exhausted; skipping for 1 hour")
             elif "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower():
                 _openrouter_blocked_until = _time.time() + 3600
+                _save_openrouter_blocked_until(_openrouter_blocked_until)
                 logger.warning("Tier 4 (OpenRouter) 429/quota — rate limited; skipping for 1 hour")
             else:
                 logger.warning(f"Tier 4 (OpenRouter) failed: {e}")
