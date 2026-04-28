@@ -913,6 +913,7 @@ def escalate_to_tmux(task: dict, agent: str) -> dict:
 
 
 _gemini_rpm_blocked_until: float = 0.0  # epoch seconds when Gemini RPM cooldown expires
+_openrouter_blocked_until: float = 0.0  # epoch seconds; set on 402 — skipped for 1 hour
 
 
 def _is_gemini_rate_limit(exc: Exception) -> bool:
@@ -1002,8 +1003,10 @@ def call_gemma4(prompt: str) -> str:
         logger.info("Tier 3 (Gemini Flash) skipped — RPM cooldown active")
 
     # Tier 4: OpenRouter free (28 free models, auto-routes)
+    global _openrouter_blocked_until
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if openrouter_key:
+    openrouter_ok = _time.time() >= _openrouter_blocked_until
+    if openrouter_key and openrouter_ok:
         try:
             from openai import OpenAI
             client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key)
@@ -1014,7 +1017,14 @@ def call_gemma4(prompt: str) -> str:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.warning(f"Tier 4 (OpenRouter) failed: {e}")
+            err_str = str(e)
+            if "402" in err_str or "payment" in err_str.lower():
+                _openrouter_blocked_until = _time.time() + 3600  # 1-hour cooldown on quota exhaustion
+                logger.warning("Tier 4 (OpenRouter) 402 — free quota exhausted; skipping for 1 hour")
+            else:
+                logger.warning(f"Tier 4 (OpenRouter) failed: {e}")
+    elif openrouter_key and not openrouter_ok:
+        logger.info("Tier 4 (OpenRouter) skipped — 402 cooldown active")
 
     # Tier 5: Local Ollama — gemma2:2b, always on, zero cost, CPU-only
     ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
