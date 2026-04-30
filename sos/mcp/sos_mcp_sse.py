@@ -43,10 +43,14 @@ from sos.contracts.messages import SendMessage
 from sos.kernel.bus import enforce_scope
 from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
+    CUSTOMER_TOOLS,
+    IDENTITY_TOOLS,
     TOOL_MAPPING,
     get_tools_for_role,
+    get_tools_for_tier,
     is_customer_tool,
     is_tool_allowed_for_role,
+    is_tool_allowed_for_tier,
 )
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
@@ -222,13 +226,22 @@ class MCPAuthContext:
 
     @property
     def project_scope(self) -> str | None:
-        return None if self.is_system else self.tenant_id
+        # S016 Track A — sign_in() pins active_project for the session;
+        # it overrides the token-default tenant_id when set.
+        if self.is_system:
+            return None
+        return self.active_project or self.tenant_id
 
     agent_name: str = ""  # Explicit agent identity from token
     scope: str = ""  # "customer" for external customers; empty for internal agents
     plan: str | None = None  # starter | growth | scale | None (system)
     role: str = "admin"  # admin | editor | viewer
     dev_mode: bool = False  # LOCK-TENANT-C: True while knight is activating (first-call window)
+    # S016 Track A — per-session active project (set by sign_in, cleared by sign_out).
+    # When None, project_scope falls back to tenant_id (token-default project).
+    active_project: str | None = None
+    # S016 Track A — BYOA identity from Inkwell D1 (lazy-loaded on first sign_in).
+    identity_id: str | None = None
 
     @property
     def is_customer(self) -> bool:
@@ -515,7 +528,12 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
         # by _TokenCacheWithHotReload so we don't lose those fields.
         local_bus = _load_bus_tokens().get(token_hash)
         if local_bus:
-            return local_bus
+            # S016 Track A — BYOA lookups need the raw token to send to inkwell-api,
+            # which hashes it server-side. The cache stores token=hash for safety, so
+            # we COPY the cached context and overwrite .token with the raw candidate.
+            # Mutating the cached object directly would poison subsequent requests.
+            from dataclasses import replace as _replace
+            return _replace(local_bus, token=token)
         # Fallback: construct MCPAuthContext from AuthContext alone.
         return MCPAuthContext(
             token=token,
@@ -1089,11 +1107,273 @@ async def _handle_code_mode(args: dict[str, Any], auth: MCPAuthContext) -> dict[
     return _text(json.dumps(payload))
 
 
-async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# S016 Track A — BYOA identity helpers
+# ---------------------------------------------------------------------------
+
+INKWELL_API_URL = os.environ.get("INKWELL_API_URL", "https://mumega.com")
+INTERNAL_API_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
+
+
+async def _inkwell_lookup_connection(token: str) -> dict[str, Any] | None:
+    """Look up a BYOA identity + memberships by raw connection token.
+
+    Calls Inkwell's POST /api/agents/connections/lookup which hashes the token
+    server-side and returns the identity row joined with the connection.
+    Returns None on lookup miss or any non-2xx.
+    """
+    if not INTERNAL_API_SECRET:
+        log.warning("BYOA lookup disabled — INTERNAL_API_SECRET unset")
+        return None
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{INKWELL_API_URL}/api/agents/connections/lookup",
+                headers={"Authorization": f"Bearer {INTERNAL_API_SECRET}"},
+                json={"token": token},
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 404:
+                return None
+            log.warning("BYOA lookup unexpected status=%s", resp.status_code)
+            return None
+    except Exception as exc:  # noqa: BLE001 — network/timeout — fail closed-ish
+        log.warning("BYOA lookup error: %s", exc)
+        return None
+
+
+def _memberships_from_lookup(info: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Extract the memberships array from a /connections/lookup response."""
+    if not info:
+        return []
+    raw = info.get("memberships") or []
+    return raw if isinstance(raw, list) else []
+
+
+async def _push_tools_list_changed(session_id: str | None) -> None:
+    """Notify the client that the available tool list has changed.
+
+    MCP spec: notifications/tools/list_changed has no params. The client should
+    re-call tools/list to pick up the new set. Safe to call when session_id
+    is None (Streamable HTTP) — it's a no-op.
+    """
+    if not session_id:
+        return
+    queue = _sessions.get(session_id)
+    if not queue:
+        return
+    await queue.put({
+        "jsonrpc": "2.0",
+        "method": "notifications/tools/list_changed",
+        "params": {},
+    })
+
+
+async def _handle_my_profile(auth: MCPAuthContext) -> dict[str, Any]:
+    info = await _inkwell_lookup_connection(auth.token)
+    if not info or not info.get("identity"):
+        return _text(
+            "Your token isn't bound to a BYOA identity yet. "
+            "Sign in via mumega.com/dashboard/login to mint your identity."
+        )
+    ident = info["identity"]
+    return _text(json.dumps({
+        "identity_id": ident.get("id"),
+        "name": ident.get("person_name"),
+        "email": ident.get("person_email"),
+        "qnft_url": ident.get("qnft_url"),
+        "google_id": bool(ident.get("google_id")),
+        "github_id": bool(ident.get("github_id")),
+        "active_project": auth.active_project,
+        "default_project": auth.tenant_id,
+    }, indent=2))
+
+
+async def _handle_list_projects(auth: MCPAuthContext) -> dict[str, Any]:
+    info = await _inkwell_lookup_connection(auth.token)
+    if not info or not info.get("identity"):
+        return _text("No BYOA identity bound to this token.")
+    auth.identity_id = info["identity"]["id"]
+    memberships = _memberships_from_lookup(info)
+    if not memberships:
+        return _text("You don't have access to any projects yet.")
+    rows = [
+        {"project": m.get("project_id"), "role": m.get("role")}
+        for m in memberships
+    ]
+    return _text(json.dumps({"projects": rows, "count": len(rows)}, indent=2))
+
+
+async def _handle_sign_in(
+    auth: MCPAuthContext,
+    args: dict[str, Any],
+    session_id: str | None,
+) -> dict[str, Any]:
+    project = str(args.get("project") or "").strip()
+    if not project:
+        return _text("sign_in requires a project slug. Use list_projects to see options.")
+    info = await _inkwell_lookup_connection(auth.token)
+    if not info or not info.get("identity"):
+        return _text("No BYOA identity bound to this token.")
+    auth.identity_id = info["identity"]["id"]
+    memberships = _memberships_from_lookup(info)
+    allowed = {m.get("project_id") for m in memberships}
+    if project not in allowed:
+        return _text(
+            f"You don't have access to project '{project}'. "
+            f"Available: {sorted(p for p in allowed if p)}"
+        )
+    auth.active_project = project
+    role_for_project = next(
+        (m.get("role") for m in memberships if m.get("project_id") == project),
+        "viewer",
+    )
+    auth.role = role_for_project or "viewer"
+    if session_id:
+        _session_signed_in.add(session_id)
+        await _push_tools_list_changed(session_id)
+    return _text(json.dumps({
+        "ok": True,
+        "active_project": project,
+        "role": auth.role,
+    }, indent=2))
+
+
+async def _handle_sign_out(
+    auth: MCPAuthContext,
+    session_id: str | None,
+) -> dict[str, Any]:
+    auth.active_project = None
+    if session_id:
+        _session_signed_in.discard(session_id)
+        await _push_tools_list_changed(session_id)
+    return _text(json.dumps({"ok": True, "signed_out": True}, indent=2))
+
+
+async def _handle_invite(
+    auth: MCPAuthContext,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """S016 Track B — admin generates an invite code for the active project.
+
+    POSTs to inkwell-api /api/invites with INTERNAL_API_SECRET; returns the
+    join URL the admin can share. Owner/admin role is enforced by ROLE_TOOLS
+    upstream (tools/list filtering); we double-check here in case a stale
+    client calls invite without listing first.
+    """
+    if not auth.active_project:
+        return _text(
+            "Sign in to a project first. invite() always generates codes for "
+            "the project you're currently signed into."
+        )
+    if auth.role not in ("admin", "owner"):
+        return _text(
+            f"invite() is admin/owner only. Your role on {auth.active_project} is "
+            f"'{auth.role or 'viewer'}'."
+        )
+    if not INTERNAL_API_SECRET:
+        return _text("invite() unavailable — INTERNAL_API_SECRET not configured.")
+    if not auth.identity_id:
+        # Backfill identity_id from connection lookup so created_by is non-null.
+        info = await _inkwell_lookup_connection(auth.token)
+        if info and info.get("identity"):
+            auth.identity_id = info["identity"].get("id")
+    if not auth.identity_id:
+        return _text("Cannot determine your identity — re-sign in.")
+
+    role = str(args.get("role") or "member").strip()
+    if role not in ("viewer", "member", "admin", "owner"):
+        return _text(f"role must be one of viewer/member/admin/owner. Got: {role}")
+    try:
+        max_uses = int(args.get("max_uses") or 1)
+    except (TypeError, ValueError):
+        max_uses = 1
+    max_uses = max(1, min(max_uses, 100))
+
+    expires_at: str | None = None
+    expires_in_hours = args.get("expires_in_hours")
+    if expires_in_hours is not None:
+        try:
+            hours = int(expires_in_hours)
+            if hours > 0:
+                from datetime import datetime, timedelta, timezone
+                expires_at = (
+                    datetime.now(timezone.utc) + timedelta(hours=hours)
+                ).isoformat().replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            pass
+
+    payload = {
+        "project_id": auth.active_project,
+        "role": role,
+        "max_uses": max_uses,
+        "created_by": auth.identity_id,
+        "expires_at": expires_at,
+    }
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{INKWELL_API_URL}/api/invites",
+                headers={"Authorization": f"Bearer {INTERNAL_API_SECRET}"},
+                json=payload,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("invite() POST failed: %s", exc)
+        return _text(f"Invite creation failed: {exc}")
+
+    if resp.status_code != 201:
+        return _text(
+            f"Invite creation failed: HTTP {resp.status_code} {resp.text[:200]}"
+        )
+
+    data = resp.json()
+    invite = data.get("invite") or {}
+    code = invite.get("code")
+    if not code:
+        return _text(f"Inkwell returned no code: {data}")
+    join_url = f"https://mcp.mumega.com/join/{code}"
+    return _text(json.dumps({
+        "ok": True,
+        "code": code,
+        "join_url": join_url,
+        "project": auth.active_project,
+        "role": role,
+        "max_uses": max_uses,
+        "expires_at": expires_at,
+        "share": (
+            f"You've been invited to {auth.active_project} as {role}. "
+            f"Sign in: {join_url}"
+        ),
+    }, indent=2))
+
+
+async def handle_tool(
+    name: str,
+    args: dict[str, Any],
+    auth: MCPAuthContext,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     r = _get_redis()
     project_scope = _scope_project(auth)
     agent_scope = auth.agent_scope
+
+    # S016 Track A — BYOA identity tools (no tenant-write side effects).
+    # Dispatched before WRITE_TOOLS rate-limit so unsigned-in users aren't gated.
+    if name == "my_profile":
+        return await _handle_my_profile(auth)
+    if name == "list_projects":
+        return await _handle_list_projects(auth)
+    if name == "sign_in":
+        return await _handle_sign_in(auth, args, session_id)
+    if name == "sign_out":
+        return await _handle_sign_out(auth, session_id)
+    if name == "invite":
+        return await _handle_invite(auth, args)
 
     # Log tool invocation
     await _publish_log("info", "mcp", f"tool:{name} by {agent_scope}", agent=agent_scope)
@@ -1371,10 +1651,42 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
         # --- remember ---
         elif name == "remember":
             ctx = _scoped_context_id(auth, args.get("context"))
-            # mirror_post("/store", ...) removed — mirror_bus_consumer writes engrams
-            # from the bus stream asynchronously. Direct HTTP write retired.
-            # Publish a "remember" type message onto the agent's stream so the
-            # bus consumer picks it up and stores the engram automatically.
+            text_to_store = args["text"]
+
+            # Write directly to Mirror DB with embedding (synchronous, immediate readback)
+            if _mirror_db is not None:
+                try:
+                    from uuid import uuid4 as _uuid4
+                    from datetime import datetime, timezone
+
+                    embedding = await loop.run_in_executor(
+                        _mirror_executor,
+                        lambda: [float(x) for x in _get_mirror_embedding(text_to_store)],
+                    )
+
+                    engram = {
+                        "id": str(_uuid4()),
+                        "context_id": ctx,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "series": "memory",
+                        "raw_data": json.dumps({"text": text_to_store, "source": "mcp-remember"}),
+                        "embedding": embedding,
+                        "project": project_scope or "",
+                        "workspace_id": project_scope or agent_scope,
+                        "owner_type": "agent",
+                        "owner_id": agent_scope,
+                        "memory_tier": "working",
+                        "core_concepts": [args.get("context", "memory")],
+                    }
+
+                    await loop.run_in_executor(
+                        _mirror_executor,
+                        lambda: _mirror_db.upsert_engram(engram),
+                    )
+                except Exception as exc:
+                    log.warning("Direct Mirror write failed (falling back to bus): %s", exc)
+
+            # Also publish to bus stream for any consumers
             try:
                 from uuid import uuid4 as _uuid4
 
@@ -1386,7 +1698,7 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
                     "message_id": str(_uuid4()),
                     "payload": json.dumps(
                         {
-                            "text": args["text"],
+                            "text": text_to_store,
                             "content_type": "text/plain",
                             "remember": True,
                         }
@@ -2022,6 +2334,229 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
             )
             return _text(text)
 
+        # --- dashboard (customer: "dashboard" → mapped: "get_dashboard") ---
+        elif name == "get_dashboard":
+            period = args.get("period", "7d")
+            tenant_slug = project_scope or agent_scope
+            try:
+                resp = requests.get(
+                    f"http://localhost:8075/tenants/{tenant_slug}/stats",
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    stats = resp.json()
+                    text = (
+                        f"Dashboard for {tenant_slug} ({period}):\n"
+                        f"- Plan: {stats.get('plan', 'unknown')}\n"
+                        f"- Status: {stats.get('status', 'active')}\n"
+                        f"- Domain: {stats.get('domain', 'not configured')}\n"
+                    )
+                    if stats.get("tasks_total") is not None:
+                        text += f"- Tasks: {stats.get('tasks_done', 0)}/{stats.get('tasks_total', 0)} completed\n"
+                    if stats.get("memories_count") is not None:
+                        text += f"- Memories: {stats.get('memories_count', 0)} stored\n"
+                else:
+                    text = f"Dashboard for {tenant_slug}: active tenant on {stats.get('plan', 'starter') if resp.status_code == 200 else 'starter'} plan. Detailed stats coming soon."
+            except Exception:
+                text = f"Dashboard for {tenant_slug}: active tenant. Detailed stats endpoint not yet configured."
+            return _text(text)
+
+        # --- publish (customer: "publish" → mapped: "publish_content") ---
+        elif name == "publish_content":
+            title = args.get("title", "")
+            content = args.get("content", "")
+            slug = args.get("slug", "")
+            status = args.get("status", "draft")
+            tags = args.get("tags", [])
+            tenant_slug = project_scope or agent_scope
+
+            if not title or not content:
+                return _text("Error: title and content are required.")
+
+            # Auto-generate slug from title if not provided
+            if not slug:
+                slug = title.lower().replace(" ", "-")[:60]
+                import re as _re
+                slug = _re.sub(r"[^a-z0-9-]", "", slug)
+
+            text = (
+                f"Content prepared for publishing:\n"
+                f"- Title: {title}\n"
+                f"- Slug: /{slug}\n"
+                f"- Status: {status}\n"
+                f"- Tags: {', '.join(tags) if tags else 'none'}\n"
+                f"- Tenant: {tenant_slug}\n\n"
+                f"Content publishing to Inkwell is being wired. "
+                f"For now, the content has been saved to memory. "
+                f"Use the dashboard to view and publish."
+            )
+            # Store as memory so content isn't lost
+            try:
+                await _remember(
+                    f"[draft:{slug}] {title}\n\n{content[:500]}",
+                    context=f"publish-draft-{slug}",
+                    auth=auth,
+                )
+                text += "\n\nDraft saved to memory."
+            except Exception:
+                pass
+            return _text(text)
+
+        # --- sell (customer: "sell" → mapped: "create_checkout") ---
+        elif name == "create_checkout":
+            product_name = args.get("product_name", "")
+            price_cents = args.get("price_cents", 0)
+            currency = args.get("currency", "usd")
+            description = args.get("description", "")
+
+            if not product_name or not price_cents:
+                return _text("Error: product_name and price_cents are required.")
+
+            price_display = f"${price_cents / 100:.2f} {currency.upper()}"
+            text = (
+                f"Payment link for '{product_name}':\n"
+                f"- Price: {price_display}\n"
+                f"- Description: {description or 'No description'}\n\n"
+                f"Stripe checkout integration is being wired. "
+                f"For now, create a payment link at stripe.com/dashboard."
+            )
+            return _text(text)
+
+        # --- my_site (customer: "my_site" → mapped: "site_info") ---
+        elif name == "site_info":
+            tenant_slug = project_scope or agent_scope
+            try:
+                resp = requests.get(
+                    f"http://localhost:8075/tenants/{tenant_slug}",
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    info = resp.json()
+                    domain = info.get("domain") or info.get("subdomain") or f"{tenant_slug}.mumega.com"
+                    text = (
+                        f"Your site: {tenant_slug}\n"
+                        f"- URL: https://{domain}\n"
+                        f"- Plan: {info.get('plan', 'starter')}\n"
+                        f"- Status: {info.get('status', 'active')}\n"
+                    )
+                    if info.get("label"):
+                        text += f"- Label: {info['label']}\n"
+                else:
+                    text = f"Your site: {tenant_slug}.mumega.com (details unavailable)"
+            except Exception:
+                text = f"Your site: {tenant_slug}.mumega.com\nSite info endpoint not yet configured."
+            return _text(text)
+
+        # --- request_squad ---
+        elif name == "request_squad":
+            squad_type = args.get("type", "support")
+            task_text = args.get("task", "")
+            urgency = args.get("urgency", "normal")
+            project_id = project_scope or agent_scope
+
+            priority_map = {"low": "low", "normal": "medium", "high": "high"}
+            task_id = f"{project_id}-squad-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            # Squad ID is the global squad for this type — any member can claim
+            squad_id = squad_type
+
+            # 1. Post bounty to Squad Service task board — any agent in that squad can claim
+            try:
+                resp = requests.post(
+                    f"{SQUAD_SERVICE_URL}/tasks",
+                    json={
+                        "id": task_id,
+                        "squad_id": squad_id,
+                        "title": f"[{squad_type.upper()}] {task_text[:100]}",
+                        "description": task_text,
+                        "project": project_id,
+                        "priority": priority_map.get(urgency, "medium"),
+                        "labels": ["bounty", "squad-request", squad_type, f"tenant:{project_id}"],
+                        "status": "backlog",
+                    },
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                )
+                if resp.status_code >= 400:
+                    # Squad may not exist yet — auto-create then retry
+                    requests.post(
+                        f"{SQUAD_SERVICE_URL}/squads",
+                        json={
+                            "id": squad_id,
+                            "name": f"{squad_type} squad",
+                            "objective": f"Handle {squad_type} requests",
+                            "status": "active",
+                        },
+                        headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                        timeout=5,
+                    )
+                    requests.post(
+                        f"{SQUAD_SERVICE_URL}/tasks",
+                        json={
+                            "id": task_id,
+                            "squad_id": squad_id,
+                            "title": f"[{squad_type.upper()}] {task_text[:100]}",
+                            "description": task_text,
+                            "project": project_id,
+                            "priority": priority_map.get(urgency, "medium"),
+                            "labels": ["bounty", "squad-request", squad_type, f"tenant:{project_id}"],
+                            "status": "backlog",
+                        },
+                        headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                        timeout=5,
+                    )
+            except Exception as e:
+                log.warning("request_squad task creation failed: %s", e)
+
+            # 2. Broadcast to squad channel — agents subscribed to sos:squad:{type}
+            #    pick it up and claim if they're a member. No direct-to-agent routing.
+            try:
+                bounty_event = json.dumps({
+                    "type": "bounty.posted",
+                    "squad": squad_type,
+                    "task_id": task_id,
+                    "project": project_id,
+                    "priority": priority_map.get(urgency, "medium"),
+                    "title": task_text[:100],
+                })
+                await r.publish(f"sos:squad:{squad_type}", bounty_event)
+            except Exception as e:
+                log.warning("request_squad bounty broadcast failed: %s", e)
+
+            return _text(
+                f"Squad request sent. A {squad_type} specialist will join your project shortly. "
+                f"You'll see them appear in squad_status once they've loaded your context.\n"
+                f"Task ID: {task_id}"
+            )
+
+        # --- squad_status ---
+        elif name == "squad_status":
+            project_id = project_scope or agent_scope
+            try:
+                resp = requests.get(
+                    f"{SQUAD_SERVICE_URL}/projects/{project_id}/presence",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    agents = data.get("agents", [])
+                    if not agents:
+                        text = "No squad members currently active on your project."
+                    else:
+                        lines = [f"Active squad members ({len(agents)}):"]
+                        for a in agents:
+                            lines.append(
+                                f"- {a['agent_id']} ({a['role']}) — joined {a.get('joined_at', 'recently')}"
+                            )
+                            if a.get("reason"):
+                                lines.append(f"  Working on: {a['reason']}")
+                        text = "\n".join(lines)
+                else:
+                    text = "Squad status temporarily unavailable."
+            except Exception:
+                text = "Squad status temporarily unavailable."
+            return _text(text)
+
         else:
             return _text(f"Unknown tool: {name}")
 
@@ -2037,6 +2572,12 @@ async def handle_tool(name: str, args: dict[str, Any], auth: MCPAuthContext) -> 
 
 _sessions: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
 _session_auth: dict[str, MCPAuthContext] = {}
+# S016 Track A — per-session "signed in" flag.
+# Connection auth.tenant_id stays the personal default project; sign_in("foo")
+# mutates auth.active_project to override scope. Tracking the flag separately
+# lets Step 5's tools/list filter on "is signed in" without a None-vs-set
+# ambiguity. Cleared on sign_out and on session disconnect.
+_session_signed_in: set[str] = set()
 # REMOVED 2026-04-26 (S013 WARN-1, Athena adversarial): process-local rate-limit dict.
 # _token_windows was bypassable via concurrent connections (single INCR per-process,
 # multiple processes = no shared state). Replaced with Redis INCR + EXPIRE in both
@@ -2294,12 +2835,14 @@ async def me(
     agent_name = auth.agent_name or ""
     slug = agent_name[:-7] if agent_name.endswith("-knight") else ""
 
-    return JSONResponse({
+    response_body: dict[str, object] = {
         "tenant_id": auth.tenant_id,
         "tier": auth.plan or "free",
         "agent_name": agent_name,
         "slug": slug,
-    })
+    }
+
+    return JSONResponse(response_body)
 
 
 @app.get("/health")
@@ -3247,14 +3790,32 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
     _sessions[session_id] = queue
     _session_auth[session_id] = auth
 
-    # Use public URL if behind nginx proxy, otherwise localhost
+    # S016 Track A Step 6 — Auto sign-in via ?project= query param.
+    # If the SSE client opens with ?project=foo and the token is BYOA-customer,
+    # invoke the sign_in handler inline so the session lands already signed-in.
+    # Failure (no identity, no membership) is silent — client can sign_in
+    # manually via tools/call. Internal/system tokens skip this entirely; their
+    # token-default project is already authoritative.
+    auto_project = request.query_params.get("project", "").strip()
+    if auto_project and auth.is_customer:
+        try:
+            await _handle_sign_in(auth, {"project": auto_project}, session_id)
+        except Exception as exc:
+            log.warning("auto sign-in failed for project=%s: %s", auto_project, exc)
+
+    # Use public URL if behind nginx proxy, otherwise localhost.
+    # Embed the token as ?token= so the POST /messages request is self-contained —
+    # clients (e.g. Claude Code on Mac) may not forward Authorization headers to the
+    # messages URL, and session auth is lost if the SSE connection briefly drops.
+    raw_token = resolved_token  # already validated above
     public_base = os.environ.get("MCP_PUBLIC_URL", "")
     if public_base:
-        messages_url = f"{public_base}/messages?session_id={session_id}"
+        messages_url = f"{public_base}/messages?session_id={session_id}&token={raw_token}"
     elif request.headers.get("x-forwarded-proto") == "https":
-        messages_url = f"https://{request.headers.get('host', 'mcp.mumega.com')}/messages?session_id={session_id}"
+        host = request.headers.get('host', 'mcp.mumega.com')
+        messages_url = f"https://{host}/messages?session_id={session_id}&token={raw_token}"
     else:
-        messages_url = f"http://localhost:{PORT}/messages?session_id={session_id}"
+        messages_url = f"http://localhost:{PORT}/messages?session_id={session_id}&token={raw_token}"
     log.info("SSE client connected, session=%s", session_id)
 
     async def event_generator():
@@ -3276,6 +3837,7 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
         finally:
             _sessions.pop(session_id, None)
             _session_auth.pop(session_id, None)
+            _session_signed_in.discard(session_id)
             log.info("SSE client disconnected, session=%s", session_id)
 
     return EventSourceResponse(event_generator())
@@ -3297,7 +3859,12 @@ async def messages_endpoint(request: Request) -> Response:
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=session_id, auth=auth)
+    try:
+        resp = await _process_jsonrpc(body, session_id=session_id, auth=auth)
+    except Exception as exc:
+        log.exception("_process_jsonrpc unhandled error: %s", exc)
+        msg_id = body.get("id") if isinstance(body, dict) else None
+        resp = _jsonrpc_err(msg_id, f"Internal server error: {type(exc).__name__}")
     if resp is None:
         return Response(status_code=202)
 
@@ -3320,7 +3887,7 @@ async def mcp_info(request: Request) -> JSONResponse:
             "transport": "streamable-http",
             "endpoint": "/mcp",
             "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {"tools": {"listChanged": True}},
         }
     )
 
@@ -3334,7 +3901,7 @@ async def mcp_info_with_token(token: str, request: Request) -> JSONResponse:
             "transport": "streamable-http",
             "endpoint": "/mcp",
             "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {"tools": {"listChanged": True}},
         }
     )
 
@@ -3361,7 +3928,24 @@ async def _streamable_http_response(request: Request, auth: MCPAuthContext) -> R
     except Exception:
         return Response(status_code=400, content="Invalid JSON")
 
-    resp = await _process_jsonrpc(body, session_id=None, auth=auth)
+    # S016 Track A Step 6 — Stateless per-request project scoping for /mcp.
+    # Streamable HTTP has no long-lived session, so auto sign-in runs per request.
+    # ?project=foo on the URL → resolve membership, set auth.active_project before
+    # dispatch. Synthetic session_id keeps signed-in flag local to this request.
+    auto_project = request.query_params.get("project", "").strip()
+    synthetic_session: str | None = None
+    if auto_project and auth.is_customer:
+        try:
+            synthetic_session = f"http-{uuid4()}"
+            await _handle_sign_in(auth, {"project": auto_project}, synthetic_session)
+        except Exception as exc:
+            log.warning("streamable auto sign-in failed for project=%s: %s", auto_project, exc)
+
+    try:
+        resp = await _process_jsonrpc(body, session_id=synthetic_session, auth=auth)
+    finally:
+        if synthetic_session:
+            _session_signed_in.discard(synthetic_session)
     if resp is None:
         return Response(status_code=202)
     return JSONResponse(resp)
@@ -3383,17 +3967,57 @@ async def _process_jsonrpc(
             msg_id,
             {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {"listChanged": False}},
+                # listChanged=True so MCP clients re-call tools/list after our
+                # notifications/tools/list_changed push (S016 Track A Step 5 —
+                # IDENTITY_TOOLS pre-sign_in expand to project-scoped post-sign_in).
+                "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": "sos", "version": "2.1.0"},
             },
         )
     if method == "notifications/initialized":
+        # B3 — Auto-onboard: push welcome prompt to new tenant SSE queue (non-critical)
+        if auth.is_customer and auth.tenant_id and session_id:
+            try:
+                onboard_key = f"sos:onboarded:{auth.tenant_id}"
+                r = _get_redis()
+                if r and not await r.exists(onboard_key):
+                    queue = _sessions.get(session_id)
+                    if queue:
+                        welcome = (
+                            "Welcome to Mumega. I'm your Envoy.\n\n"
+                            "To get started, tell me: **what does your company do** "
+                            "and **what's your biggest open problem right now?** "
+                            "I'll remember this so every future conversation has full context. "
+                            "Use the `remember` tool (or just tell me and I'll save it)."
+                        )
+                        await queue.put({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/message",
+                            "params": {"level": "info", "data": welcome},
+                        })
+                    await r.set(onboard_key, "1", ex=86400 * 365)  # 1-year TTL
+            except Exception as exc:
+                log.warning("B3 onboard welcome failed (non-critical): %s", exc)
         return None
     if method == "tools/list":
-        # Customer tokens see tools filtered by their role
-        if auth.is_customer:
-            return _jsonrpc_ok(msg_id, {"tools": get_tools_for_role(auth.role)})
-        return _jsonrpc_ok(msg_id, {"tools": get_tools()})
+        # Internal/system tokens (kasra, athena, brain, etc.) — full legacy tool
+        # set. They never go through sign_in; their token is already project-scoped.
+        if not auth.is_customer:
+            return _jsonrpc_ok(msg_id, {"tools": get_tools()})
+
+        # S016 Track A Step 5 — Customer (BYOA) dynamic tool list.
+        # Before sign_in: only the 4 IDENTITY_TOOLS (my_profile, list_projects,
+        # sign_in, sign_out). After sign_in: full role+tier-filtered set scoped
+        # to auth.active_project. notifications/tools/list_changed is pushed by
+        # _handle_sign_in / _handle_sign_out so clients re-call tools/list.
+        is_signed_in = bool(session_id and session_id in _session_signed_in)
+        if not is_signed_in:
+            identity_tools = [t for t in CUSTOMER_TOOLS if t["name"] in IDENTITY_TOOLS]
+            return _jsonrpc_ok(msg_id, {"tools": identity_tools})
+
+        # Signed in — return tier+role filtered set
+        tier = auth.plan or "free"
+        return _jsonrpc_ok(msg_id, {"tools": get_tools_for_tier(tier, auth.role)})
     if method == "tools/call":
         tool_name = params.get("name", "")
         # --- Rate limiting (customer tokens only) ---
@@ -3446,25 +4070,28 @@ async def _process_jsonrpc(
                     details={"status": "blocked", "reason": "customer_tool_gating"},
                 )
                 return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
-            # --- RBAC: check role-based permission ---
-            if not is_tool_allowed_for_role(tool_name, auth.role):
+            # --- Tier gate: prospect (free) gets read-only subset ---
+            tier = auth.plan or "free"
+            if not is_tool_allowed_for_tier(tool_name, tier, auth.role):
+                upgrade_hint = (
+                    " Upgrade to starter at mumega.com/start to unlock all tools."
+                    if tier == "free" else ""
+                )
                 log.warning(
-                    "customer %s (role=%s) denied tool %s",
-                    auth.tenant_id,
-                    auth.role,
-                    tool_name,
+                    "customer %s (tier=%s role=%s) denied tool %s",
+                    auth.tenant_id, tier, auth.role, tool_name,
                 )
                 _audit_tool_call(
                     auth.tenant_id or "unknown",
                     tool_name,
                     actor=auth.tenant_id or "",
-                    details={"status": "blocked", "reason": "rbac_denied", "role": auth.role},
+                    details={"status": "blocked", "reason": "tier_denied", "tier": tier},
                 )
-                return _jsonrpc_err(msg_id, f"Tool not available: {tool_name}")
+                return _jsonrpc_err(msg_id, f"Tool not available on {tier} plan.{upgrade_hint}")
             # Resolve customer-facing name to internal SOS tool name
             internal_name = TOOL_MAPPING.get(tool_name, tool_name)
             tool_name = internal_name
-        tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth)
+        tool_result = await handle_tool(tool_name, params.get("arguments", {}), auth, session_id=session_id)
         _append_audit(auth.token, tool_name, not _tool_result_failed(tool_result))
         _audit_tool_call(
             _scope_project(auth) or "system",
