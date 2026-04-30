@@ -1,0 +1,8 @@
+{
+  "knight_id": "agent:acme-e3-knight",
+  "customer_id": "cus_e3test_synthetic",
+  "payment_intent_id": "pi_e3test_synthetic_001",
+  "project": "mumega",
+  "emitted_by": "billing",
+  "ts": "2026-04-25T23:54:36.140937+00:00"
+}

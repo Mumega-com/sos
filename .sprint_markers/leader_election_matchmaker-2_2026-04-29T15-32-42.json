@@ -1,0 +1,7 @@
+{
+  "instance_id": "matchmaker-2",
+  "role": "leader",
+  "transition_reason": "startup_acquired",
+  "emitted_by": "matchmaker",
+  "ts": "2026-04-29T15:32:42.348006+00:00"
+}

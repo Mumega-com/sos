@@ -1,0 +1,7 @@
+{
+  "instance_id": "matchmaker-1",
+  "role": "observer",
+  "transition_reason": "startup_observer",
+  "emitted_by": "matchmaker",
+  "ts": "2026-04-26T20:02:33.410954+00:00"
+}

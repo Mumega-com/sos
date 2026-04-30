@@ -1,0 +1,7 @@
+{
+  "payment_intent_id": "pi_e3test_synthetic_001",
+  "event_type": "payment_intent.succeeded",
+  "outcome": "minted",
+  "emitted_by": "billing",
+  "ts": "2026-04-25T23:54:36.144391+00:00"
+}

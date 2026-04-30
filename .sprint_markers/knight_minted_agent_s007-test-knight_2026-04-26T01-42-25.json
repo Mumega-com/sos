@@ -1,0 +1,8 @@
+{
+  "knight_id": "agent:s007-test-knight",
+  "customer_id": "cus_s007_onboard_test",
+  "payment_intent_id": "pi_s007_acceptance_001",
+  "project": "s007-onboard-test",
+  "emitted_by": "billing",
+  "ts": "2026-04-26T01:42:25.021292+00:00"
+}

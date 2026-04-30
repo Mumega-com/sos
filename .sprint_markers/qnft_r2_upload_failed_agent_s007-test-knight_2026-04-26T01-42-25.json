@@ -1,0 +1,7 @@
+{
+  "principal_id": "agent:s007-test-knight",
+  "r2_key": "qnft/s007-test-knight/v1.png",
+  "error": "AvatarGenerator.generate failed: 'Config' object has no attribute 'data_dir'",
+  "emitted_by": "billing",
+  "ts": "2026-04-26T01:42:25.233330+00:00"
+}

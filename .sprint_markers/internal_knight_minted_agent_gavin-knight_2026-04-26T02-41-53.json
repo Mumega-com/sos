@@ -1,0 +1,7 @@
+{
+  "knight_id": "agent:gavin-knight",
+  "signer": "loom",
+  "discord_channel_id": "12345678901234567",
+  "action": "internal_knight_minted",
+  "ts": "2026-04-26T02:41:53.160276+00:00"
+}

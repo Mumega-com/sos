@@ -1,0 +1,20 @@
+{
+  "gate": "G64-narrow",
+  "track": "brain/dispatch-safety",
+  "sprint": "006",
+  "verdict": "GREEN",
+  "timestamp": "2026-04-25T21:20:58Z",
+  "commits": ["ff30412", "827e5d5"],
+  "scope": "motor_execute paused-project allowlist filter (narrow — phantom dispatch emergency)",
+  "adversarial_findings": "dispensed (normalize_project() is alias dict, not injectable — Athena verified)",
+  "tests": "5/5 TC-G64a–e (test_brain_project_filter.py)",
+  "key_fix": "_load_active_project_ids() ImportError fallback: frozenset() → frozenset({'mumega','reserve'}) — fail-safe not fail-open",
+  "carries_to_G64b": [
+    "Part A: TTL removal from _source_signal_active()",
+    "Part B: apply _source_signal_active() to all four _task_creating_methods",
+    "Part C: SOURCES.md at SOS/sos/services/brain/SOURCES.md",
+    "Part D: organism YAML routing, agents[0] dispatch, emit_dispatch_routing telemetry"
+  ],
+  "prerequisite_for": "four-customer dogfooding (mumega/FRC/Digid/GAF) — blocked until G64b closes",
+  "next": "Sprint 006 A.1 / A.1b (per Loom directive)"
+}

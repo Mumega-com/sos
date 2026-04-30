@@ -1,0 +1,7 @@
+{
+  "principal_id": "agent:acme-knight",
+  "r2_key": "qnft/acme-knight/v1.png",
+  "error": "OPENAI_API_KEY not set \u2014 cannot generate QNFT image",
+  "emitted_by": "billing",
+  "ts": "2026-04-26T01:14:33.121350+00:00"
+}

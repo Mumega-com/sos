@@ -1,0 +1,8 @@
+{
+  "stream_id": "guild:test-28e1017b",
+  "reason": "r2_fetch_failed: An error occurred (NoSuchKey) when calling the GetObject operation: The specified key does not exist.",
+  "seq": null,
+  "instance_id": "audit-anchor-secondary",
+  "emitted_by": "audit-anchor",
+  "ts": "2026-04-25T23:09:57.343046+00:00"
+}

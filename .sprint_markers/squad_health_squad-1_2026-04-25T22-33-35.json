@@ -1,0 +1,8 @@
+{
+  "instance_id": "squad-1",
+  "prev_status": "healthy",
+  "new_status": "unhealthy",
+  "db_reachable_ms": 0.09,
+  "emitted_by": "squad",
+  "ts": "2026-04-25T22:33:35.448102+00:00"
+}

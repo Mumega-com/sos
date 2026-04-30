@@ -1,0 +1,7 @@
+{
+  "payment_intent_id": "pi_s007_acceptance_001",
+  "event_type": "payment_intent.succeeded",
+  "outcome": "minted",
+  "emitted_by": "billing",
+  "ts": "2026-04-26T01:42:25.022996+00:00"
+}
