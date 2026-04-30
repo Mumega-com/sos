@@ -36,8 +36,8 @@ providers:
     cost_per_call_estimate_micros: 1000
 
   - id: gemini-25-flash
-    name: Gemini 2.5 Flash
-    backend: gemini-adapter
+    name: Gemini 2.5 Flash (Vertex ADC)
+    backend: vertex-gemini-adapter
     tier: cheap
     model: gemini-2.5-flash
     timeout_seconds: 30
