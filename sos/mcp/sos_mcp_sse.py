@@ -242,6 +242,13 @@ class MCPAuthContext:
     active_project: str | None = None
     # S016 Track A — BYOA identity from Inkwell D1 (lazy-loaded on first sign_in).
     identity_id: str | None = None
+    # S017 G2 — IdP-confirmed identity fields, set on the worker_oauth path
+    # when the dispatcher passes X-Email / X-Email-Verified / X-Agent-Identity-Id.
+    # /v2/me surfaces these to inkwell-api /oauth-complete which gates the
+    # portal-account bridge on email_verified === true (§2.7).
+    email: str | None = None
+    email_verified: bool = False
+    agent_identity_id: str | None = None
 
     @property
     def is_customer(self) -> bool:
@@ -2736,6 +2743,12 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
         tenant_id = request.headers.get("X-Tenant-Id", "")
         agent_name = request.headers.get("X-Agent-Name", "")
         tier = request.headers.get("X-Tier", "free")
+        # S017 G2 — bridge fields. Absent on pre-G2 dispatcher tokens; in that
+        # case the inkwell-api bridge gate falls through to legacy S016.
+        email_header = request.headers.get("X-Email") or None
+        email_verified_header = request.headers.get("X-Email-Verified", "").lower()
+        email_verified = email_verified_header == "true"
+        agent_identity_id_header = request.headers.get("X-Agent-Identity-Id") or None
         return MCPAuthContext(
             token=hashlib.sha256(candidate.encode()).hexdigest()[:16],  # never store raw
             tenant_id=tenant_id,
@@ -2744,6 +2757,9 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
             agent_name=agent_name,
             scope="customer",
             plan=tier,
+            email=email_header,
+            email_verified=email_verified,
+            agent_identity_id=agent_identity_id_header,
         )
 
     context = _resolve_token_context(candidate)
@@ -2841,6 +2857,19 @@ async def me(
         "agent_name": agent_name,
         "slug": slug,
     }
+    # S017 G2 — surface IdP verification fields to inkwell-api /oauth-complete.
+    # Absent on pre-G2 dispatcher tokens (legacy customers); inkwell-api treats
+    # absent fields as "skip bridge" so legacy auth continues working.
+    # Brief: agents/loom/briefs/kasra-s017-g2-portal-unification.md (v0.4) §2.7
+    if auth.email is not None:
+        response_body["email"] = auth.email
+    # Always include email_verified when we know it (positive OR negative),
+    # so inkwell-api can distinguish "IdP said unverified" from "pre-G2 token".
+    # Pre-G2 tokens leave the field absent (auth.email is None).
+    if auth.email is not None:
+        response_body["email_verified"] = bool(auth.email_verified)
+    if auth.agent_identity_id is not None:
+        response_body["agent_identity_id"] = auth.agent_identity_id
 
     return JSONResponse(response_body)
 
