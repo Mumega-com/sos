@@ -45,6 +45,8 @@ if str(SOVEREIGN_DIR) not in sys.path:
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "mumega-com")
+GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 
 # ── Brain config knobs (settable via env / systemd unit) ──────────────────────
@@ -58,7 +60,45 @@ BRAIN_MODEL = os.environ.get("BRAIN_MODEL", "gemini-2.5-flash")
 #   "log" — dry-run; logs what would have been posted without actually posting
 BRAIN_CONTENT_MODE = os.environ.get("BRAIN_CONTENT_MODE", "on").lower()
 
-from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL
+from kernel.config import (
+    MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL,
+    BRAIN_TENANT_SCOPE, BRAIN_SCOPE_TYPE, BRAIN_TOKEN_BUDGET,
+)
+
+# ── Cycle token counter ───────────────────────────────────────────────────────
+# Reset at the start of each cycle. Accumulates tokens across all LLM calls
+# within one perceive-think-act pass. Enforced against BRAIN_TOKEN_BUDGET.
+_cycle_tokens: int = 0
+
+
+def _record_tokens(count: int) -> None:
+    """Add `count` tokens to the current cycle total."""
+    global _cycle_tokens
+    _cycle_tokens += count
+
+
+def _budget_exhausted() -> bool:
+    """True if the token budget is set and the cycle has exceeded it."""
+    return BRAIN_TOKEN_BUDGET > 0 and _cycle_tokens >= BRAIN_TOKEN_BUDGET
+
+
+def _assert_in_scope(project: str) -> None:
+    """Raise if the brain tries to create a task outside its declared tenant scope.
+
+    This is a hard security boundary — not a warning, not a log-and-continue.
+    A scope violation means the brain is hallucinating work for a customer it
+    does not own. The cycle must stop, not proceed with a wrong project assignment.
+    """
+    if BRAIN_TENANT_SCOPE is None:
+        return  # global scope — all projects allowed
+    normalized = project.strip().lower()
+    if normalized not in BRAIN_TENANT_SCOPE:
+        raise ValueError(
+            f"Brain scope violation: project={project!r} is not in "
+            f"BRAIN_TENANT_SCOPE={sorted(BRAIN_TENANT_SCOPE)!r}. "
+            f"BRAIN_SCOPE_TYPE={BRAIN_SCOPE_TYPE!r}. "
+            "This brain instance may not create tasks for this project."
+        )
 
 MIRROR_HEADERS = {"Authorization": f"Bearer {MIRROR_TOKEN}", "Content-Type": "application/json"}
 
@@ -131,14 +171,23 @@ def prefrontal_think(context: str) -> str:
     Uses Gemini Context Cache for the stable world model when available —
     only the current delta (task queue + recent outcomes) is sent per cycle.
     """
-    if not GEMINI_API_KEY:
+    if _budget_exhausted():
+        logger.warning(
+            f"prefrontal: token budget exhausted ({_cycle_tokens}/{BRAIN_TOKEN_BUDGET}) — "
+            "falling back to safe default action"
+        )
         return fallback_think(context)
 
     try:
         from google import genai
         from kernel.brain_cache import get_cache_name
 
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Vertex AI ADC path — billed against $400 Vertex budget, no API key needed
+        client = genai.Client(
+            vertexai=True,
+            project=GOOGLE_CLOUD_PROJECT,
+            location=GOOGLE_CLOUD_LOCATION,
+        )
         cache_name = get_cache_name()
 
         decision_prompt = f"""You are the Sovereign Brain of Mumega — an autonomous AI operating system.
@@ -186,6 +235,17 @@ Respond with EXACTLY this JSON format:
             )
 
         text = response.text.strip()
+
+        # Track token usage for budget enforcement
+        try:
+            usage = response.usage_metadata
+            tokens = getattr(usage, "total_token_count", 0) or 0
+            _record_tokens(tokens)
+            if BRAIN_TOKEN_BUDGET > 0:
+                logger.info(f"prefrontal: tokens={tokens} cycle_total={_cycle_tokens}/{BRAIN_TOKEN_BUDGET}")
+        except Exception:
+            pass
+
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -221,18 +281,21 @@ def fallback_think(context: str) -> str:
         except Exception as e:
             logger.error(f"Fallback GitHub failed: {e}")
 
-    # Try Gemini as secondary fallback
-    if GEMINI_API_KEY:
-        try:
-            from google import genai
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(
-                model=BRAIN_MODEL,
-                contents=f"Given this system state, pick ONE concrete action. Respond with JSON only: action, goal_id, agent, method, details, expected_progress (float), risk (float).\n\n{context[:3000]}",
-            )
-            return response.text.strip()
-        except Exception as e:
-            logger.error(f"Fallback Gemini failed: {e}")
+    # Vertex AI ADC as secondary fallback
+    try:
+        from google import genai
+        client = genai.Client(
+            vertexai=True,
+            project=GOOGLE_CLOUD_PROJECT,
+            location=GOOGLE_CLOUD_LOCATION,
+        )
+        response = client.models.generate_content(
+            model=BRAIN_MODEL,
+            contents=f"Given this system state, pick ONE concrete action. Respond with JSON only: action, goal_id, agent, method, details, expected_progress (float), risk (float).\n\n{context[:3000]}",
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Fallback Vertex failed: {e}")
 
     # Hard fallback — safe default action (no token cost)
     # Respects BRAIN_CONTENT_MODE: if "off", emit health_check instead of post_content
@@ -364,6 +427,18 @@ def motor_execute(action: dict) -> dict:
             return {"success": True, "result": f"Duplicate task skipped for {check_agent}: {check_title[:60]}"}
 
     project = normalize_project(action.get("goal_id", "mumega").replace("goal_", ""))
+
+    # Hard scope boundary — raises if this brain instance is not allowed to
+    # create tasks for the resolved project. Non-task methods (health_check,
+    # post_content) bypass this check since they don't write to a project queue.
+    _task_creating_methods = ("create_task", "send_outreach", "fix_code", "research")
+    if method in _task_creating_methods:
+        try:
+            _assert_in_scope(project)
+        except ValueError as scope_err:
+            logger.error(f"[scope] {scope_err}")
+            return {"success": False, "result": str(scope_err)}
+
     method_labels = {
         "create_task": ["brain-generated"],
         "send_outreach": ["outreach", "brain-generated"],
@@ -554,18 +629,21 @@ def _generate_content(prompt: str) -> str:
             return response.choices[0].message.content.strip()
         except Exception:
             pass
-    # Fallback: Gemini
-    if GEMINI_API_KEY:
-        try:
-            from google import genai
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            response = client.models.generate_content(
-                model=BRAIN_MODEL,
-                contents=prompt,
-            )
-            return response.text.strip()
-        except Exception:
-            pass
+    # Fallback: Vertex AI ADC
+    try:
+        from google import genai
+        client = genai.Client(
+            vertexai=True,
+            project=GOOGLE_CLOUD_PROJECT,
+            location=GOOGLE_CLOUD_LOCATION,
+        )
+        response = client.models.generate_content(
+            model=BRAIN_MODEL,
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception:
+        pass
     return ""
 
 
@@ -675,6 +753,9 @@ def report_to_inkwell(action: dict, result: dict, cycle_ms: int) -> None:
     if not INKWELL_API_URL or not INKWELL_INTERNAL_SECRET:
         return
     import urllib.request
+    scope_label = (
+        ",".join(sorted(BRAIN_TENANT_SCOPE)) if BRAIN_TENANT_SCOPE else "*"
+    )
     payload = json.dumps({
         "ts": datetime.now(timezone.utc).isoformat(),
         "success": 1 if result.get("success") else 0,
@@ -684,6 +765,10 @@ def report_to_inkwell(action: dict, result: dict, cycle_ms: int) -> None:
         "model": BRAIN_MODEL,
         "result": str(result.get("result", ""))[:500],
         "cycle_ms": cycle_ms,
+        "tenant_scope": scope_label,
+        "scope_type": BRAIN_SCOPE_TYPE,
+        "tokens_used": _cycle_tokens,
+        "token_budget": BRAIN_TOKEN_BUDGET,
     }).encode()
     req = urllib.request.Request(
         f"{INKWELL_API_URL}/api/brain/cycle",
@@ -747,9 +832,13 @@ def remember(action: dict, result: dict):
 
 def cycle():
     """One brain cycle: perceive → think → act → remember → report."""
+    global _cycle_tokens
+    _cycle_tokens = 0  # reset token counter at start of each cycle
+
     import time as _time
     _cycle_start = _time.monotonic()
-    logger.info("=== BRAIN CYCLE START ===")
+    scope_label = ",".join(sorted(BRAIN_TENANT_SCOPE)) if BRAIN_TENANT_SCOPE else "*"
+    logger.info(f"=== BRAIN CYCLE START === scope={scope_label} type={BRAIN_SCOPE_TYPE} budget={BRAIN_TOKEN_BUDGET or 'unlimited'}")
 
     # 1. PERCEIVE (hippocampus)
     logger.info("Perceiving system state...")
