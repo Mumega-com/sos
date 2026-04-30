@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "sos.bus.tokens.schema.json",
+  "title": "SOS Bus Tokens",
+  "description": "Runtime-mutated token store for the SOS bus. NOT tracked in git (see .gitignore). The bus service writes this file on token mint/revoke. To recover from loss, see scripts/restore-tokens.sh or pull the latest snapshot from /tmp/tokens-snapshot-*.json.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["token_hash", "agent", "active"],
+    "properties": {
+      "token": {
+        "type": "string",
+        "description": "Raw bearer token (sk-<agent>-<hex>). Stored only at mint time; production hardening should clear after first read and rely on token_hash."
+      },
+      "token_hash": {
+        "type": "string",
+        "description": "SHA-256 hex of the raw token. Authoritative for verification."
+      },
+      "agent": {
+        "type": "string",
+        "description": "Agent identifier (kasra, mizan, viamar, etc)."
+      },
+      "project": {
+        "type": ["string", "null"],
+        "description": "Project scope (gaf, sos, mumega-internal, viamar, ...). null = global agent scope."
+      },
+      "label": {
+        "type": "string",
+        "description": "Human-readable description."
+      },
+      "scope": {
+        "type": "string",
+        "enum": ["agent", "customer", "tenant"],
+        "description": "Token scope class. agent = first-party / colony, customer = external paying, tenant = byoa/multi-tenant."
+      },
+      "active": {
+        "type": "boolean",
+        "description": "Soft-deactivate without deletion. Verify queries SHOULD filter active=true."
+      },
+      "created_at": {
+        "type": "string",
+        "description": "ISO-8601 timestamp."
+      },
+      "resurrected_at": {
+        "type": "string",
+        "description": "ISO-8601 timestamp of agent re-issue (if applicable)."
+      }
+    }
+  },
+  "x-canonical-record": {
+    "ownership": "sos.services.bus",
+    "writers": [
+      "sos/bus/provision.py",
+      "sos/services/bus/* (token rotation paths)"
+    ],
+    "do_not_commit": "This file is runtime state. The git working tree may diverge from the running service at any time. To re-add a missing internal agent, use sos.bus.provision.create_token() — do not edit by hand."
+  }
+}
