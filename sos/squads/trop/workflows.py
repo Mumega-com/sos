@@ -130,16 +130,7 @@ def daily_content() -> dict[str, Any]:
         "content_type": "daily_weather",
         "language": "en",
         "title": f"Cosmic Weather — {today}",
-        "body": reading,
-        "params": {
-            "date": today,
-            "sun_sign": cosmic_data["sun_sign"],
-            "moon_sign": cosmic_data["moon_sign"],
-            "moon_phase": cosmic_data["moon_phase"]["name"],
-            "dominant": cosmic_data["dominant"]["name"],
-            "signature": cosmic_data["signature"],
-            "vector": cosmic_data["vector"],
-        },
+        "content_blocks": [{"type": "text", "content": reading}],
     })
 
     # Step 3: Try LLM-enriched version (best effort, may fail)
@@ -223,8 +214,7 @@ def weekly_content() -> dict[str, Any]:
         "content_type": "weekly_forecast",
         "language": "en",
         "title": f"This Week in the Patterns — {today}",
-        "body": narrative,
-        "params": {"week_start": today},
+        "content_blocks": [{"type": "text", "content": narrative}],
     })
 
     # Queue email newsletter
@@ -275,8 +265,7 @@ def monthly_content() -> dict[str, Any]:
         "content_type": "monthly_forecast",
         "language": "en",
         "title": f"Monthly Patterns — {month_label}",
-        "body": narrative,
-        "params": {"month": today.strftime("%Y-%m")},
+        "content_blocks": [{"type": "text", "content": narrative}],
     })
 
     _store_in_mirror(

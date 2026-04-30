@@ -90,62 +90,80 @@ async def _upsert_tenant(
     Returns existing row if already provisioned.
     """
     try:
-        import asyncpg  # noqa: F401 — confirm available
+        import sys
+        if '/home/mumega' not in sys.path:
+            sys.path.insert(0, '/home/mumega')
         from mirror.kernel.db import get_db  # Mirror PG pool
-    except ImportError:
-        log.error("asyncpg or mirror.kernel.db not available")
-        raise HTTPException(status_code=503, detail="db_unavailable")
+    except Exception as exc:
+        log.error("DB import failed: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=503, detail=f"db_unavailable: {type(exc).__name__}: {exc}")
 
-    db = get_db()  # sync psycopg2 pool — run in executor if needed
+    db = get_db()  # LocalDB wrapping psycopg2 pool
 
-    # Check existing first (fast path for repeat callers)
-    existing = db.fetchrow(  # type: ignore[attr-defined]
-        "SELECT tenant_id, slug, tier, agent_name FROM oauth_tenants "
-        "WHERE idp_provider = %s AND sub = %s",
-        idp_provider, sub,
-    ) if hasattr(db, "fetchrow") else None
+    # Use raw psycopg2 from the pool (LocalDB doesn't expose fetchrow/execute)
+    conn = db._pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
 
-    is_new_tenant = False
-    if not existing:
-        # This is a sync psycopg2 pool — wrap INSERT in executor at call site
-        # For simplicity, use synchronous call here (MCP dispatcher calls are infrequent)
-        tenant_id = _generate_tenant_id(idp_provider, sub)
-        agent_name = f"{slug_candidate}-knight"
-        db.execute(  # type: ignore[attr-defined]
-            """
-            INSERT INTO oauth_tenants
-              (tenant_id, idp_provider, sub, slug, display_name, email, tier, agent_name, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'free', %s, NOW())
-            ON CONFLICT (idp_provider, sub) DO NOTHING
-            """,
-            tenant_id, idp_provider, sub, slug_candidate, display_name, email, agent_name,
-        )
-        # Re-fetch in case of concurrent insert
-        existing = db.fetchrow(  # type: ignore[attr-defined]
+        # Check existing first (fast path for repeat callers)
+        cur.execute(
             "SELECT tenant_id, slug, tier, agent_name FROM oauth_tenants "
             "WHERE idp_provider = %s AND sub = %s",
-            idp_provider, sub,
+            (idp_provider, sub),
         )
-        is_new_tenant = True  # mark for creation log write below
+        row = cur.fetchone()
+        existing = dict(zip(["tenant_id", "slug", "tier", "agent_name"], row)) if row else None
 
-    if is_new_tenant and existing:
-        # LOCK-TENANT-D (W2): write to creation log for rate-limit tracking.
-        # Table exists (migration 051); write happens only on true first provision,
-        # not on concurrent-insert re-fetch (ON CONFLICT DO NOTHING path).
-        try:
-            db.execute(  # type: ignore[attr-defined]
-                "INSERT INTO oauth_tenant_creation_log (idp_provider, sub, created_at) "
-                "VALUES (%s, %s, NOW())",
-                idp_provider, sub,
+        is_new_tenant = False
+        if not existing:
+            tenant_id = _generate_tenant_id(idp_provider, sub)
+            # Deduplicate slug: if "hadi" exists, try "hadi-google", "hadi-google-2", etc.
+            slug = slug_candidate
+            for suffix in ["", f"-{idp_provider}", f"-{idp_provider}-2", f"-{sub[:6]}"]:
+                try_slug = f"{slug_candidate}{suffix}" if suffix else slug_candidate
+                cur.execute("SELECT 1 FROM oauth_tenants WHERE slug = %s", (try_slug,))
+                if not cur.fetchone():
+                    slug = try_slug
+                    break
+            agent_name = f"{slug}-envoy"
+            cur.execute(
+                """
+                INSERT INTO oauth_tenants
+                  (tenant_id, idp_provider, sub, slug, display_name, email, tier, agent_name, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'free', %s, NOW())
+                ON CONFLICT (idp_provider, sub) DO NOTHING
+                """,
+                (tenant_id, idp_provider, sub, slug, display_name, email, agent_name),
             )
-        except Exception as exc:
-            # Non-fatal — creation log is rate-limit telemetry, not integrity-critical
-            log.warning("oauth_tenant_creation_log write failed: %s", exc)
+            # Re-fetch in case of concurrent insert
+            cur.execute(
+                "SELECT tenant_id, slug, tier, agent_name FROM oauth_tenants "
+                "WHERE idp_provider = %s AND sub = %s",
+                (idp_provider, sub),
+            )
+            row = cur.fetchone()
+            existing = dict(zip(["tenant_id", "slug", "tier", "agent_name"], row)) if row else None
+            is_new_tenant = True
+
+        if is_new_tenant and existing:
+            try:
+                cur.execute(
+                    "INSERT INTO oauth_tenant_creation_log (idp_provider, sub, created_at) "
+                    "VALUES (%s, %s, NOW())",
+                    (idp_provider, sub),
+                )
+            except Exception as exc:
+                log.warning("oauth_tenant_creation_log write failed: %s", exc)
+
+        cur.close()
+    finally:
+        db._pool.putconn(conn)
 
     if not existing:
         raise HTTPException(status_code=500, detail="tenant_provision_failed")
 
-    return dict(existing)
+    return existing
 
 
 def _generate_tenant_id(idp_provider: str, sub: str) -> str:

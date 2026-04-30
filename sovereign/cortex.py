@@ -20,7 +20,10 @@ from typing import Any
 import httpx
 
 
-from kernel.config import MIRROR_URL, SQUAD_URL, SOS_ENGINE_URL, PAUSED_PROJECTS
+from kernel.config import (
+    MIRROR_URL, SQUAD_URL, SOS_ENGINE_URL,
+    PAUSED_PROJECTS, BRAIN_DELEGATED_PROJECTS, project_in_brain_scope,
+)
 
 SQUAD_TOKEN = os.environ.get("SOS_SYSTEM_TOKEN", "sk-sos-system")
 SQUAD_HEADERS = {"Authorization": f"Bearer {SQUAD_TOKEN}"}
@@ -33,7 +36,7 @@ PRIORITY_WEIGHTS = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 class SquadSummary:
     id: str
     name: str
-    project: str
+    projects: list[str]
     objective: str
     status: str
     total_tasks: int
@@ -190,7 +193,7 @@ def snapshot_portfolio() -> PortfolioState:
             SquadSummary(
                 id=squad_id,
                 name=str(squad.get("name", "")),
-                project=str(squad.get("project", "")),
+                projects=list(squad.get("projects", []) or ([squad["project"]] if squad.get("project") else [])),
                 objective=str(squad.get("objective", "")),
                 status=str(squad.get("status", "")),
                 total_tasks=len(squad_tasks),
@@ -202,6 +205,8 @@ def snapshot_portfolio() -> PortfolioState:
         task for task in tasks_data
         if str(task.get("status", "")) == "backlog"
         and str(task.get("project", "")).lower() not in PAUSED_PROJECTS
+        and str(task.get("project", "")).lower() not in BRAIN_DELEGATED_PROJECTS
+        and project_in_brain_scope(str(task.get("project", "")))
     ]
     scored_tasks = sorted(
         (_score_task(task) for task in backlog_tasks),
@@ -232,7 +237,7 @@ def render_portfolio_context(state: PortfolioState) -> str:
     for squad in state.squads:
         counts = ", ".join(f"{status}={count}" for status, count in sorted(squad.task_counts.items()))
         squad_lines.append(
-            f"[{squad.status}] {squad.name} ({squad.project}) — total={squad.total_tasks}"
+            f"[{squad.status}] {squad.name} ({','.join(squad.projects) or 'unscoped'}) — total={squad.total_tasks}"
             + (f" | {counts}" if counts else "")
         )
     if squad_lines:

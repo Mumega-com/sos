@@ -1830,6 +1830,141 @@ async def auth_forgot_password(req: ForgotPasswordRequest):
     return {"ok": True, "message": "Check your email for a login link."}
 
 
+class GoogleExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: str
+
+
+@app.post("/auth/google-exchange")
+async def auth_google_exchange(req: GoogleExchangeRequest):
+    """Exchange Google OAuth code for user info. Creates tenant if new user.
+
+    Called by mumega.com/auth/google/callback page after Google redirects back.
+    Returns: { name, email, picture, user_id, tenant_slug, bus_token }
+    """
+    import httpx
+
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+    if not google_client_id or not google_client_secret:
+        raise HTTPException(503, detail="Google OAuth not configured on server")
+
+    # Exchange code for tokens
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": req.code,
+                "client_id": google_client_id,
+                "client_secret": google_client_secret,
+                "redirect_uri": req.redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+
+    if token_resp.status_code != 200:
+        log.error("Google token exchange failed: %s", token_resp.text[:200])
+        raise HTTPException(502, detail="Google token exchange failed")
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(502, detail="No access_token from Google")
+
+    # Get user info
+    async with httpx.AsyncClient() as client:
+        user_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    if user_resp.status_code != 200:
+        raise HTTPException(502, detail="Failed to fetch Google user info")
+
+    user = user_resp.json()
+    email = user.get("email", "")
+    name = user.get("name", "")
+    picture = user.get("picture", "")
+    google_id = user.get("id", "")
+
+    if not email:
+        raise HTTPException(400, detail="Google account has no email")
+
+    # Find or create tenant
+    tenant = _find_tenant_by_email(email)
+    if not tenant:
+        # Auto-create tenant for new Google users
+        slug = email.split("@")[0].lower().replace(".", "-").replace("+", "-")[:30]
+        try:
+            signup_req = SignupRequest(email=email, name=name, plan="starter")
+            result = await signup(signup_req)
+            tenant_slug = result.get("tenant", slug)
+        except Exception as exc:
+            log.error("Auto-signup failed for %s: %s", email, exc)
+            raise HTTPException(500, detail="Account creation failed")
+    else:
+        tenant_slug = tenant.slug
+
+    # S016 BYOA — sync identity to Inkwell D1. Awaited inline so the response
+    # carries byoa_identity_id; failure logged but does not block the auth flow.
+    # Membership-write failure is logged distinctly so operators can re-run.
+    byoa_identity_id = ""
+    byoa_project_slug = ""
+    inkwell_secret = os.environ.get("INTERNAL_API_SECRET", "")
+    if inkwell_secret:
+        try:
+            inkwell_url = os.environ.get("INKWELL_API_URL", "https://mumega.com")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                id_body = {
+                    "person_name": name or email.split("@")[0],
+                    "person_email": email,
+                    "google_id": google_id,
+                }
+                if picture:
+                    id_body["qnft_url"] = picture
+                id_resp = await client.post(
+                    f"{inkwell_url}/api/agents/identities",
+                    json=id_body,
+                    headers={"Authorization": f"Bearer {inkwell_secret}"},
+                )
+                if id_resp.status_code in (200, 201):
+                    idn = id_resp.json().get("identity") or {}
+                    byoa_identity_id = idn.get("id", "")
+                    if byoa_identity_id:
+                        slug2 = email.split("@")[0].lower().replace(".", "-").replace("+", "-")[:32]
+                        byoa_project_slug = slug2 or f"user-{google_id[:8]}"
+                        mem_resp = await client.post(
+                            f"{inkwell_url}/api/agents/memberships",
+                            json={
+                                "identity_id": byoa_identity_id,
+                                "project_id": byoa_project_slug,
+                                "role": "owner",
+                            },
+                            headers={"Authorization": f"Bearer {inkwell_secret}"},
+                        )
+                        if mem_resp.status_code not in (200, 201):
+                            log.error(
+                                "BYOA membership write failed: status=%s identity=%s project=%s",
+                                mem_resp.status_code, byoa_identity_id, byoa_project_slug,
+                            )
+                else:
+                    log.error("BYOA identity upsert failed: status=%s", id_resp.status_code)
+        except Exception as exc:
+            log.warning("BYOA identity sync failed for %s: %s", email, exc)
+
+    return {
+        "name": name,
+        "email": email,
+        "picture": picture,
+        "user_id": google_id,
+        "tenant_slug": tenant_slug,
+        "bus_token": tenant.bus_token if tenant else "",
+        "byoa_identity_id": byoa_identity_id,
+        "byoa_project_slug": byoa_project_slug,
+    }
+
+
 @app.post("/billing/webhook")
 async def stripe_billing_webhook(request: Request):
     """Receive Stripe webhook events.

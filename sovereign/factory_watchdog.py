@@ -114,7 +114,7 @@ def alert_hadi(message: str):
     logger.warning(message)
 
 
-QUOTA_COOLDOWN_SECS = 3600  # Skip quota-exhausted sources for 1 hour
+QUOTA_COOLDOWN_SECS = 86400  # Skip quota-exhausted sources for 24 hours
 
 
 def check_source(name: str, test_fn, state: dict | None = None) -> dict:
@@ -330,13 +330,14 @@ def run_check():
 
             error = result["error"] or ""
             is_cooldown = error.startswith("QUOTA: cooldown active")
+            is_new_quota = error.startswith("QUOTA:") and not is_cooldown
 
-            if is_cooldown:
-                # Expected state — quota already known, cooldown ticking down.
-                # Log locally only; do not spam bus/Discord.
-                logger.warning("%s in quota cooldown (%dx): %s", name, fails, error[:80])
-            elif fails == 1 or fails % 5 == 0:
-                # New failure or persistent real error — alert.
+            if is_cooldown or is_new_quota:
+                # Quota state — cooldown active or re-test still hitting quota.
+                # Log locally only; do not spam bus.
+                logger.warning("%s quota (%dx): %s", name, fails, error[:80])
+            elif fails == 1 or fails % 48 == 0:
+                # Genuine new non-quota failure — alert once, then every 24h.
                 alert_hadi(f"**🚨 {name} DOWN** ({fails}x): {error}")
 
     # Check tmux agents

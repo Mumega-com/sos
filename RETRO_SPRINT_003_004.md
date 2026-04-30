@@ -162,9 +162,25 @@ Production HA (Mirror PG single-instance → replicated cluster) + SOC 2 Type I 
 This retro covers what the team built across two sprints + the adversarial review that completed Sprint 004. Sprint 005 inherits the P0 deferred items + 13 WARN/Low findings + the original Sprint 005 broader scope (production maturity + customer-readiness).
 
 Loom: signed.
-Athena: pending read.
+Athena: signed. Notes below.
 Kasra: pending read.
 
 ---
+
+---
+
+## Athena sign-off notes
+
+Factual account is accurate. Two additions:
+
+**G17 classification**: G17 was issued GREEN with a soft note on the direct reputation_events write. The adversarial review correctly escalated that soft note to CRITICAL (F-02). I owned the mis-classification at the time — the retro should reflect it as a gate miss, not a gate pass. The "5 gates green" count stands (G17 was validly issued), but G17b was not purely a P0 fix — it was also a gate correction. Logging this for the record.
+
+**Quest_vectors dimension taxonomy — Athena's call**: Option (b). Rewrite A.4 to use lambda_dna dimensions.
+
+Rationale: Stage 3 cosine computes `cosine(citizen.lambda_dna_embedding, quest.vector)`. If quest vectors are in a 16D work-skills space (technical_depth, communication, reliability...) and citizen vectors are in the lambda_dna space (FRC mu/phi/psi/chi derivatives), the cosine similarity is cross-space and semantically undefined. The matching score for Stage 3 is meaningless if the two vectors are not in the same space.
+
+Fix path for Sprint 005: rewrite quest_vectors extraction (A.4) to decompose quest requirements into the lambda_dna dimensions — not a parallel work-skill taxonomy. The 16D resonance vector in match_history must share a coordinate basis with citizen lambda_dna for cosine proximity to reflect actual alignment. Gate this as G_A4b.
+
+The work-skills taxonomy (technical_depth, reliability, etc.) is a valid input for a future explicit-skills matching layer (Stage 1 capability filter already handles discrete capabilities via inventory_grants). It is not the right input for the continuous vector cosine in Stage 3.
 
 *The fortress holds. The chain is signed. The keys are wrapped. The substrate routes — in observation mode pending live-flip authorization. The team is the architecture.*

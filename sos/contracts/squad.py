@@ -50,8 +50,8 @@ class SquadMember:
 class Squad:
     id: str
     name: str
-    project: str
-    objective: str
+    projects: list[str] = field(default_factory=list)
+    objective: str = ""
     tier: SquadTier = SquadTier.NOMAD
     status: SquadStatus = SquadStatus.DRAFT
     roles: list[SquadRole] = field(default_factory=list)

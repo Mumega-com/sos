@@ -98,11 +98,29 @@ class SquadBus:
             log.warn("Squad bus emit failed", error=str(exc), event_type=event_type, squad_id=squad_id)
 
 
+def _decode_projects(raw: str | None) -> list[str]:
+    """Decode the squads.project column into a list of projects.
+
+    S016 Track F (2026-04-29): the column is now JSON-encoded list[str] for
+    multi-project support (e.g. Forge squad: projects=["*"]). Older rows hold a
+    bare string (e.g. "sos") — accept both for backward compat.
+    """
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, TypeError):
+        return [raw]
+    if isinstance(decoded, list):
+        return [str(item) for item in decoded]
+    return [str(decoded)]
+
+
 def row_to_squad(row: sqlite3.Row) -> Squad:
     return Squad(
         id=row["id"],
         name=row["name"],
-        project=row["project"],
+        projects=_decode_projects(row["project"]),
         objective=row["objective"],
         tier=SquadTier(row["tier"]),
         status=SquadStatus(row["status"]),
@@ -137,7 +155,7 @@ class SquadService:
                     squad.id,
                     tenant_id,
                     squad.name,
-                    squad.project,
+                    _dumps(squad.projects),
                     squad.objective,
                     squad.tier.value,
                     squad.status.value,
@@ -175,12 +193,36 @@ class SquadService:
             query += " AND status = ?"
             params.append(status.value)
         if project:
-            query += " AND project = ?"
+            # S016 Track F: project column now stores JSON-encoded list[str].
+            # Substring LIKE narrows candidates; exact membership check below
+            # rejects false-positives (WARN-F1-1, e.g. 'ga' matching 'gaf').
+            # Wildcard "*" entry means accept-any-project.
+            query += " AND (project = ? OR project LIKE ? OR project LIKE ?)"
             params.append(project)
+            params.append(f'%"{project}"%')
+            params.append('%"*"%')
         query += " ORDER BY updated_at DESC"
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [row_to_squad(row) for row in rows]
+        squads = [row_to_squad(row) for row in rows]
+        if project:
+            # WARN-F1-1 fix: enforce exact JSON-array-membership semantics.
+            # The LIKE clauses above are an indexable narrow filter; this loop
+            # is the truth check. Accepts: exact plain match (legacy), wildcard
+            # "*" entry, or exact list membership.
+            def _matches(sq: Squad) -> bool:
+                raw = sq.project
+                if raw == project:
+                    return True
+                try:
+                    decoded = json.loads(raw) if isinstance(raw, str) else raw
+                except (json.JSONDecodeError, TypeError):
+                    return raw == project
+                if not isinstance(decoded, list):
+                    return decoded == project
+                return project in decoded or "*" in decoded
+            squads = [sq for sq in squads if _matches(sq)]
+        return squads
 
     def update(self, squad_id: str, updates: dict[str, Any], actor: str = "system", tenant_id: str | None = DEFAULT_TENANT_ID) -> Squad:
         existing = self.get(squad_id, tenant_id=tenant_id)
@@ -200,7 +242,7 @@ class SquadService:
                 """,
                 (
                     existing.name,
-                    existing.project,
+                    _dumps(existing.projects),
                     existing.objective,
                     existing.tier.value,
                     existing.status.value,

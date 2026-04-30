@@ -45,7 +45,10 @@ _SOVEREIGN_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _SOVEREIGN_DIR not in sys.path:
     sys.path.insert(0, _SOVEREIGN_DIR)
 
-from kernel.config import MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, PAUSED_PROJECTS
+from kernel.config import (
+    MIRROR_URL, MIRROR_TOKEN, SQUAD_URL,
+    PAUSED_PROJECTS, BRAIN_DELEGATED_PROJECTS, project_in_brain_scope,
+)
 from model_config import get as _model_cfg
 
 MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", MIRROR_TOKEN)
@@ -62,6 +65,22 @@ REPLY_CURSOR_FILE = Path("/home/mumega/.mumega/loop_reply_cursor.txt")
 REPLY_AGENT = "sovereign-loop"
 REPLY_STREAM = f"sos:stream:sos:channel:private:agent:{REPLY_AGENT}"
 PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _task_in_scope(project: str) -> bool:
+    """Return True if the task's project is claimable by this loop instance.
+
+    Three-layer filter (all must pass):
+    1. PAUSED_PROJECTS       — operator pause gate (applies to all instances)
+    2. BRAIN_DELEGATED_PROJECTS — projects with dedicated brain instances, excluded from global
+    3. project_in_brain_scope   — BRAIN_TENANT_SCOPE exact + prefix matching
+    """
+    p = project.strip().lower()
+    if p in PAUSED_PROJECTS:
+        return False
+    if p in BRAIN_DELEGATED_PROJECTS:
+        return False
+    return project_in_brain_scope(p)
 
 
 # ============================================
@@ -181,7 +200,7 @@ def get_pending_tasks() -> list:
         if squad_resp.ok:
             tasks.extend(
                 t for t in squad_resp.json()
-                if str(t.get("project", "")).lower() not in PAUSED_PROJECTS
+                if _task_in_scope(str(t.get("project", "")))
             )
     except Exception:
         pass
@@ -194,7 +213,7 @@ def get_pending_tasks() -> list:
             if t.get("status") == "backlog"
             and not t.get("completed_at")
             and not is_squad_task(t)
-            and str(t.get("project", "")).lower() not in PAUSED_PROJECTS
+            and _task_in_scope(str(t.get("project", "")))
         )
     except Exception:
         pass

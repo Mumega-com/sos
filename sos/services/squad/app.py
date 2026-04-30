@@ -203,10 +203,12 @@ class RollbackIn(BaseModel):
 
 
 def _to_squad(payload: SquadIn) -> Squad:
+    # S016 Track F: contract Squad now uses projects: list[str].
+    # SquadIn keeps project: str for HTTP backward-compat; promote to single-element list.
     return Squad(
         id=payload.id,
         name=payload.name,
-        project=payload.project,
+        projects=[payload.project] if payload.project else [],
         objective=payload.objective,
         tier=payload.tier,
         status=payload.status,
@@ -1435,6 +1437,244 @@ async def remove_project_member(
         return {"status": "removed", "agent_id": agent_id}
     except MemberNotFoundError:
         raise HTTPException(status_code=404, detail="member_not_found")
+
+
+# ---------------------------------------------------------------------------
+# Project Join / Leave / Presence / Context API
+# ---------------------------------------------------------------------------
+
+_INKWELL_API_URL: str = os.environ.get("INKWELL_API_URL", "")
+_NETWORK_TOKEN: str = os.environ.get("NETWORK_TOKEN", "")
+_SOS_BUS_URL: str = os.environ.get("SOS_BUS_URL", "http://localhost:6380")
+_SQUAD_BUS_TOKEN: str = os.environ.get("SOS_SYSTEM_TOKEN", "sk-sos-system")
+
+_REDIS_PASSWORD_JOIN = os.getenv("REDIS_PASSWORD", "")
+_REDIS_HOST_JOIN = os.getenv("REDIS_HOST", "127.0.0.1")
+_REDIS_PORT_JOIN = int(os.getenv("REDIS_PORT", "6379"))
+
+_CONTEXT_TTL_SECONDS = 8 * 3600  # 8 hours
+_AUDIT_LIST_MAXLEN = 1000
+
+
+def _squad_redis() -> "redis.Redis":  # type: ignore[name-defined]
+    import redis as _redis
+    return _redis.Redis(
+        host=_REDIS_HOST_JOIN,
+        port=_REDIS_PORT_JOIN,
+        password=_REDIS_PASSWORD_JOIN or None,
+        decode_responses=True,
+    )
+
+
+class JoinRequest(BaseModel):
+    agent_id: str
+    role: str = "member"  # member | observer
+    reason: str = ""
+
+
+class LeaveRequest(BaseModel):
+    agent_id: str
+
+
+@app.post("/projects/{project_id}/join")
+async def project_join(
+    project_id: str,
+    body: JoinRequest,
+    token_rec: dict = Depends(_require_project_role("member")),
+) -> dict:
+    """Join a project: add member, load wiki context into Redis, set presence, emit bus event."""
+    joined_at = now_iso()
+
+    # 1. Add member
+    try:
+        _member_svc.add_member(project_id, body.agent_id, role=body.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 2. Load wiki context from Inkwell API (best-effort — never fails the join)
+    topics: list[dict] = []
+    if _INKWELL_API_URL:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{_INKWELL_API_URL}/api/wiki/context",
+                    params={"project": project_id},
+                    headers={"Authorization": f"Bearer {_NETWORK_TOKEN}"},
+                )
+                if resp.is_success:
+                    data = resp.json()
+                    topics = data.get("topics", [])
+        except Exception:
+            pass  # wiki context load failure is non-fatal
+
+    # 3. Store ephemeral context in Redis with 8h TTL
+    context_key = f"squad:context:{project_id}:{body.agent_id}"
+    try:
+        r = _squad_redis()
+        r.setex(
+            context_key,
+            _CONTEXT_TTL_SECONDS,
+            json.dumps({"topics": topics, "loaded_at": joined_at}),
+        )
+    except Exception:
+        pass  # Redis failure is non-fatal for the join response
+
+    # 4. Set presence in Redis hash
+    presence_key = f"squad:presence:{project_id}"
+    presence_value = json.dumps({
+        "joined_at": joined_at,
+        "role": body.role,
+        "reason": body.reason,
+    })
+    try:
+        r = _squad_redis()
+        r.hset(presence_key, body.agent_id, presence_value)
+    except Exception:
+        pass
+
+    # 5. Emit bus event (fire-and-forget)
+    n_topics = len(topics)
+    bus_text = f"Joined project {project_id} — context loaded ({n_topics} topics)"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(
+                f"{_SOS_BUS_URL}/send",
+                json={"from": "squad-service", "to": body.agent_id, "text": bus_text},
+                headers={"Authorization": f"Bearer {_SQUAD_BUS_TOKEN}"},
+            )
+    except Exception:
+        pass
+
+    return {
+        "status": "joined",
+        "agent_id": body.agent_id,
+        "project_id": project_id,
+        "context_topics": n_topics,
+        "joined_at": joined_at,
+    }
+
+
+@app.post("/projects/{project_id}/leave")
+async def project_leave(
+    project_id: str,
+    body: LeaveRequest,
+    token_rec: dict = Depends(_require_project_role("member")),
+) -> dict:
+    """Leave a project: remove member, clear Redis context + presence, write audit log."""
+    left_at = now_iso()
+
+    # 1. Retrieve presence record before clearing it (for audit duration)
+    joined_at: Optional[str] = None
+    presence_key = f"squad:presence:{project_id}"
+    context_key = f"squad:context:{project_id}:{body.agent_id}"
+
+    try:
+        r = _squad_redis()
+        raw_presence = r.hget(presence_key, body.agent_id)
+        if raw_presence:
+            presence_data = json.loads(raw_presence)
+            joined_at = presence_data.get("joined_at")
+    except Exception:
+        pass
+
+    # 2. Remove member
+    try:
+        _member_svc.remove_member(project_id, body.agent_id)
+    except MemberNotFoundError:
+        raise HTTPException(status_code=404, detail="member_not_found")
+
+    # 3. Clear Redis context key
+    try:
+        r = _squad_redis()
+        r.delete(context_key)
+    except Exception:
+        pass
+
+    # 4. Clear presence hash field
+    try:
+        r = _squad_redis()
+        r.hdel(presence_key, body.agent_id)
+    except Exception:
+        pass
+
+    # 5. Append to audit list
+    duration_seconds: Optional[float] = None
+    if joined_at:
+        try:
+            from datetime import datetime, timezone as _tz
+            t_joined = datetime.fromisoformat(joined_at)
+            t_left = datetime.fromisoformat(left_at)
+            duration_seconds = (t_left - t_joined).total_seconds()
+        except Exception:
+            pass
+
+    audit_key = f"squad:audit:{project_id}"
+    audit_entry = json.dumps({
+        "agent_id": body.agent_id,
+        "joined_at": joined_at,
+        "left_at": left_at,
+        "duration_seconds": duration_seconds,
+    })
+    try:
+        r = _squad_redis()
+        r.lpush(audit_key, audit_entry)
+        r.ltrim(audit_key, 0, _AUDIT_LIST_MAXLEN - 1)
+    except Exception:
+        pass
+
+    return {
+        "status": "left",
+        "agent_id": body.agent_id,
+        "project_id": project_id,
+        "session_duration_seconds": duration_seconds,
+    }
+
+
+@app.get("/projects/{project_id}/presence")
+async def project_presence(
+    project_id: str,
+    token_rec: dict = Depends(_require_project_role("observer")),
+) -> dict:
+    """List agents currently present on the project (reads Redis hash)."""
+    presence_key = f"squad:presence:{project_id}"
+    agents: list[dict] = []
+    try:
+        r = _squad_redis()
+        raw_map = r.hgetall(presence_key)
+        for agent_id, raw_val in raw_map.items():
+            try:
+                entry = json.loads(raw_val)
+            except Exception:
+                entry = {}
+            agents.append({
+                "agent_id": agent_id,
+                "role": entry.get("role", "member"),
+                "joined_at": entry.get("joined_at"),
+                "reason": entry.get("reason", ""),
+            })
+    except Exception:
+        pass
+
+    return {"project_id": project_id, "agents": agents}
+
+
+@app.get("/projects/{project_id}/context/{agent_id}")
+async def project_agent_context(
+    project_id: str,
+    agent_id: str,
+    token_rec: dict = Depends(_require_project_role("observer")),
+) -> dict:
+    """Return the loaded wiki context for an agent on this project (reads Redis)."""
+    context_key = f"squad:context:{project_id}:{agent_id}"
+    try:
+        r = _squad_redis()
+        raw = r.get(context_key)
+        if raw is None:
+            return {"project_id": project_id, "agent_id": agent_id, "topics": []}
+        data = json.loads(raw)
+        return {"project_id": project_id, "agent_id": agent_id, "topics": data.get("topics", [])}
+    except Exception:
+        return {"project_id": project_id, "agent_id": agent_id, "topics": []}
 
 
 # ---------------------------------------------------------------------------

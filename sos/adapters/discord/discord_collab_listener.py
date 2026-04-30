@@ -32,6 +32,8 @@ WEBHOOKS_PATH = Path.home() / ".mumega" / "discord_webhooks.json"
 KNOWN_AGENTS = {
     "kasra", "athena", "sol", "river", "hermes", "loom",
     "codex", "mumega", "worker", "dandan", "mizan",
+    "lex-knight",  # Lex Ace — PEI regional activator
+    "kaveh",       # First customer knight — GAF/SR&ED
 }
 
 
