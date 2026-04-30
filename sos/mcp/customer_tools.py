@@ -338,6 +338,144 @@ CUSTOMER_TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "name": "request_squad",
+        "description": (
+            "Request a Mumega squad to join your project. Specialists load your "
+            "business context and start working on your priorities. Use when you "
+            "need help with specific tasks: content, SEO, ops, sales, technical work."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "description": (
+                        "Type of squad needed: content, seo, ops, sales, "
+                        "technical, support"
+                    ),
+                    "enum": ["content", "seo", "ops", "sales", "technical", "support"],
+                },
+                "task": {
+                    "type": "string",
+                    "description": "What you need them to work on",
+                },
+                "urgency": {
+                    "type": "string",
+                    "enum": ["low", "normal", "high"],
+                    "default": "normal",
+                },
+            },
+            "required": ["type", "task"],
+        },
+    },
+    {
+        "name": "squad_status",
+        "description": (
+            "Check who from the Mumega team is currently working on your project "
+            "and what they're doing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    # ─── S016 Track A — BYOA identity tools ────────────────────────────────
+    {
+        "name": "my_profile",
+        "description": (
+            "Show your Mumega identity — your name, email, QNFT, and the projects "
+            "you have access to. Use this any time to see who you're signed in as."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "list_projects",
+        "description": (
+            "List the projects you have access to. Each project is a separate "
+            "workspace with its own memory, tasks, and team. Use sign_in(project) "
+            "to switch into one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "sign_in",
+        "description": (
+            "Sign in to one of your projects. After sign-in, every tool call "
+            "(remember, recall, task_create, etc.) is scoped to that project. "
+            "You can switch projects any time by calling sign_in again."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Project slug to sign into (e.g. 'viamar', 'gaf'). "
+                        "See list_projects for what's available."
+                    ),
+                },
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "sign_out",
+        "description": (
+            "Sign out of the active project. Tool list reverts to identity-only "
+            "tools (sign_in, list_projects, my_profile). Memory and tasks for the "
+            "previous project remain saved — sign_in again to resume."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "invite",
+        "description": (
+            "Generate an invite link to add someone to your active project. "
+            "Returns a https://mcp.mumega.com/join/<code> URL — share it; the "
+            "recipient signs in with Google and joins automatically. "
+            "Owner/admin only. You must be signed in to a project."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "enum": ["viewer", "member", "admin", "owner"],
+                    "default": "member",
+                    "description": "Role the invitee receives on redemption.",
+                },
+                "max_uses": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": (
+                        "How many times the link can be redeemed before "
+                        "auto-expiry. Default 1 (single-use)."
+                    ),
+                },
+                "expires_in_hours": {
+                    "type": "integer",
+                    "description": (
+                        "Optional expiry in hours from now. Omit for no expiry."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 # Map customer tool names to internal SOS MCP tool names
@@ -357,6 +495,26 @@ TOOL_MAPPING: dict[str, str] = {
     "my_subscriptions": "my_subscriptions",
     "create_listing": "create_listing",
     "my_earnings": "my_earnings",
+    # Squad tools — handled directly in handle_tool, not remapped
+    "request_squad": "request_squad",
+    "squad_status": "squad_status",
+    # S016 BYOA identity tools — handled directly, not remapped
+    "my_profile": "my_profile",
+    "list_projects": "list_projects",
+    "sign_in": "sign_in",
+    "sign_out": "sign_out",
+    # S016 Track B — invite generator (admin/owner only)
+    "invite": "invite",
+}
+
+# Identity tools — visible BEFORE sign-in (Step 5 dynamic tool list).
+# These four are always allowed regardless of role/tier so a fresh BYOA
+# connection can introspect itself and select a project.
+IDENTITY_TOOLS: set[str] = {
+    "my_profile",
+    "list_projects",
+    "sign_in",
+    "sign_out",
 }
 
 # Tools that are explicitly BLOCKED for customers
@@ -402,7 +560,8 @@ def resolve_internal_name(customer_tool_name: str) -> str | None:
 
 # Tools allowed per role.  None means "all customer tools".
 ROLE_TOOLS: dict[str, set[str] | None] = {
-    "admin": None,  # admin sees every customer tool
+    "admin": None,   # admin sees every customer tool
+    "owner": None,   # owner = full access (same as admin)
     "editor": {
         "remember",
         "recall",
@@ -416,6 +575,13 @@ ROLE_TOOLS: dict[str, set[str] | None] = {
         "browse_marketplace",
         "subscribe",
         "my_subscriptions",
+        "request_squad",
+        "squad_status",
+        # Identity tools — every role gets these
+        "my_profile",
+        "list_projects",
+        "sign_in",
+        "sign_out",
     },
     "viewer": {
         "recall",
@@ -425,6 +591,12 @@ ROLE_TOOLS: dict[str, set[str] | None] = {
         "notification_settings",
         "my_subscriptions",
         "browse_marketplace",
+        "squad_status",
+        # Identity tools — every role gets these
+        "my_profile",
+        "list_projects",
+        "sign_in",
+        "sign_out",
     },
 }
 
@@ -449,3 +621,44 @@ def is_tool_allowed_for_role(tool_name: str, role: str = "admin") -> bool:
     if allowed is None:
         return is_customer_tool(tool_name)
     return tool_name in allowed
+
+
+# ---------------------------------------------------------------------------
+# Tier-based access control (prospect / free tier gating)
+# ---------------------------------------------------------------------------
+
+# Prospect (free) tier — read-only exploration tools.
+# Drives the PLG hook: they get immediate value, upgrade unlocks everything.
+PROSPECT_TOOLS: set[str] = {
+    "recall",
+    "dashboard",
+    "my_site",
+    "list_tasks",
+    "browse_marketplace",
+    "my_subscriptions",
+    "squad_status",
+    # Identity tools — prospects need to sign in / list their projects
+    "my_profile",
+    "list_projects",
+    "sign_in",
+    "sign_out",
+}
+
+
+def get_tools_for_tier(tier: str, role: str = "admin") -> list[dict]:
+    """Return tool definitions filtered by tier, then by role.
+
+    free  → PROSPECT_TOOLS (read-only exploration)
+    any other tier → full role-based set (starter / growth / scale)
+    """
+    if not tier or tier == "free":
+        role_tools = get_tools_for_role(role)
+        return [t for t in role_tools if t["name"] in PROSPECT_TOOLS]
+    return get_tools_for_role(role)
+
+
+def is_tool_allowed_for_tier(tool_name: str, tier: str, role: str = "admin") -> bool:
+    """Check if *tool_name* is permitted for the given tier and role."""
+    if not tier or tier == "free":
+        return tool_name in PROSPECT_TOOLS and is_tool_allowed_for_role(tool_name, role)
+    return is_tool_allowed_for_role(tool_name, role)
