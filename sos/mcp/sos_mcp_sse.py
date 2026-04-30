@@ -280,6 +280,42 @@ def _prefix(project: str | None) -> str:
     return f"sos:stream:project:{project}" if project else "sos:stream:global"
 
 
+# S018 Track E — read agent's specialist slugs from mumega.com/agents/<a>/specialists.yml.
+# Best-effort: never raises. Missing or malformed file => empty list.
+_SPECIALISTS_REPO_ROOT = Path(
+    os.getenv("MUMEGA_COM_REPO", "/home/mumega/mumega.com")
+)
+
+
+def _read_specialist_slugs(agent: str) -> list[str]:
+    path = _SPECIALISTS_REPO_ROOT / "agents" / agent / "specialists.yml"
+    if not path.exists():
+        return []
+    try:
+        txt = path.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    slugs: list[str] = []
+    in_list = False
+    for raw in txt.splitlines():
+        line = raw.rstrip()
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("specialists:"):
+            in_list = True
+            continue
+        if not in_list:
+            continue
+        if line.startswith("  - "):
+            kv = line[4:].split(":", 1)
+            if len(kv) == 2 and kv[0].strip() == "slug":
+                slugs.append(kv[1].strip().strip('"').strip("'"))
+        elif not line.startswith(" "):
+            in_list = False
+    return slugs
+
+
 def _agent_stream(agent: str, project: str | None) -> str:
     return f"{_prefix(project)}:agent:{agent}"
 
@@ -1620,9 +1656,21 @@ async def handle_tool(
             if not auth.is_system:
                 agents -= internal_agents
             scope = f"project:{project_scope}" if project_scope else "global"
-            return _text(
-                f"Agents ({scope}): {', '.join(sorted(agents))}" if agents else "No agents found."
-            )
+            sorted_agents = sorted(agents)
+            if not sorted_agents:
+                return _text("No agents found.")
+            # S018 Track E — surface each agent's loadable specialist slugs
+            # from agents/<agent>/specialists.yml in mumega.com (absent =
+            # empty array). Reads are best-effort; missing/malformed YAML
+            # never errors the peers response.
+            lines = [f"Agents ({scope}):"]
+            for a in sorted_agents:
+                slugs = _read_specialist_slugs(a)
+                if slugs:
+                    lines.append(f"  - {a} (specialists: {', '.join(slugs)})")
+                else:
+                    lines.append(f"  - {a} (specialists: -)")
+            return _text("\n".join(lines))
 
         # --- broadcast ---
         elif name == "broadcast":
