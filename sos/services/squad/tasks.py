@@ -7,6 +7,7 @@ import re
 import sqlite3
 import uuid as _uuid
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -27,6 +28,18 @@ CLAIM_TTL_SECONDS: int = int(os.getenv("CLAIM_TTL_SECONDS", "3600"))
 
 # Instance identity — disambiguates PID-reuse across restarts in dual-instance HA.
 SQUAD_INSTANCE_ID: str = os.getenv("SQUAD_INSTANCE_ID", "squad-default")
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 class NotAllDoneError(ValueError):
@@ -1239,12 +1252,12 @@ class SquadTaskService:
         return task
 
     def reap_stale_claims(self, tenant_id: str | None = None) -> int:
-        """Reset tasks claimed by dead processes back to BACKLOG.
+        """Reset stale claimed tasks back to BACKLOG.
 
-        For each task in status='claimed' with a non-NULL claim_owner_pid,
-        check whether that PID is still alive via os.kill(pid, 0).  If the
-        process is gone, reset the task to BACKLOG so another instance (or
-        the restarted instance) can re-claim it.
+        Current claims carry claim_owner_pid, so the primary liveness signal is
+        os.kill(pid, 0). Legacy claims created before claim ownership columns are
+        unowned; once their claimed_at/claim_owner_acquired_at timestamp is past
+        CLAIM_TTL_SECONDS, they are also reclaimable.
 
         Returns the number of tasks reset.
 
@@ -1254,48 +1267,58 @@ class SquadTaskService:
         """
         log = get_logger(__name__)
         now = now_iso()
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=CLAIM_TTL_SECONDS)
         reset_count = 0
         with self.db.connect() as conn:
             tenant_clause = "AND tenant_id = ?" if tenant_id is not None else ""
             params: tuple = (TaskStatus.CLAIMED.value,) + ((tenant_id,) if tenant_id else ())
             rows = conn.execute(
-                f"""SELECT id, squad_id, tenant_id, claim_owner_pid, attempt
+                f"""SELECT id, squad_id, tenant_id, claim_owner_pid,
+                           claim_owner_acquired_at, claimed_at, attempt
                     FROM squad_tasks
-                    WHERE status = ? AND claim_owner_pid IS NOT NULL
+                    WHERE status = ?
                     {tenant_clause}""",
                 params,
             ).fetchall()
             for row in rows:
                 pid = row["claim_owner_pid"]
-                try:
-                    os.kill(pid, 0)  # signal 0 = existence check, no-op
-                except ProcessLookupError:
-                    pass  # PID dead — reclaim
-                except PermissionError:
-                    continue  # PID alive but owned by different user
+                reason = ""
+                if pid is not None:
+                    try:
+                        os.kill(pid, 0)  # signal 0 = existence check, no-op
+                    except ProcessLookupError:
+                        reason = "dead_claim_owner_pid"
+                    except PermissionError:
+                        continue  # PID alive but owned by different user
+                    else:
+                        continue  # PID alive — skip
                 else:
-                    continue  # PID alive — skip
+                    acquired_at = _parse_iso_timestamp(row["claim_owner_acquired_at"])
+                    claimed_at = _parse_iso_timestamp(row["claimed_at"])
+                    claim_started_at = acquired_at or claimed_at
+                    if claim_started_at is not None and claim_started_at > cutoff:
+                        continue
+                    reason = "legacy_unowned_claim"
                 conn.execute(
                     """UPDATE squad_tasks
                        SET status = ?, assignee = NULL, claimed_at = NULL,
-                           claim_owner_pid = NULL, updated_at = ?
-                       WHERE id = ? AND claim_owner_pid = ? AND status = ?""",
+                           claim_owner_pid = NULL, claim_owner_instance = NULL,
+                           claim_owner_acquired_at = NULL, claim_token = NULL,
+                           updated_at = ?
+                       WHERE id = ? AND status = ?""",
                     (
                         TaskStatus.BACKLOG.value,
                         now,
                         row["id"],
-                        pid,
                         TaskStatus.CLAIMED.value,
                     ),
                 )
                 reset_count += 1
-                log.info(
-                    f"squad.reap_stale_claims: reset task {row['id']} (claimed by dead pid {pid})"
-                )
+                log.info(f"squad.reap_stale_claims: reset task {row['id']} ({reason})")
                 self.bus.emit(
                     "task.requeued",
                     row["squad_id"],
                     "system",
-                    {"task_id": row["id"], "reason": "dead_claim_owner_pid", "pid": pid},
+                    {"task_id": row["id"], "reason": reason, "pid": pid},
                 )
         return reset_count

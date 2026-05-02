@@ -148,3 +148,38 @@ def test_limit_caps_task_results(tmp_path, monkeypatch):
     results = svc.list(limit=2, tenant_id="tenant-g")
 
     assert len(results) == 2
+
+
+def test_reap_stale_claims_resets_legacy_unowned_claim(tmp_path, monkeypatch):
+    svc = _make_service(tmp_path, monkeypatch)
+    task = _task("legacy-claimed-task", project="sos")
+    svc.create(task, tenant_id="tenant-h")
+
+    with svc.db.connect() as conn:
+        conn.execute(
+            """UPDATE squad_tasks
+                  SET status = 'claimed',
+                      assignee = 'old-worker',
+                      claimed_at = '2026-01-01T00:00:00+00:00',
+                      claim_owner_pid = NULL,
+                      claim_owner_instance = NULL,
+                      claim_owner_acquired_at = NULL,
+                      claim_token = 'stale-token'
+                WHERE id = ? AND tenant_id = ?""",
+            (task.id, "tenant-h"),
+        )
+
+    reset = svc.reap_stale_claims(tenant_id="tenant-h")
+
+    assert reset == 1
+    with svc.db.connect() as conn:
+        row = conn.execute(
+            """SELECT status, assignee, claimed_at, claim_token
+                 FROM squad_tasks
+                WHERE id = ? AND tenant_id = ?""",
+            (task.id, "tenant-h"),
+        ).fetchone()
+    assert row["status"] == "backlog"
+    assert row["assignee"] is None
+    assert row["claimed_at"] is None
+    assert row["claim_token"] is None
