@@ -88,6 +88,109 @@ class SquadTask(Base):
     )
 
 
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id = Column(Text, primary_key=True)
+    tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
+    task_id = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    actor = Column(Text, nullable=False)
+    claim_token = Column(Text)
+    idempotency_key = Column(Text)
+    correlation_id = Column(Text)
+    metadata_json = Column(Text, nullable=False, server_default=text("'{}'"))
+    started_at = Column(Text, nullable=False)
+    completed_at = Column(Text)
+    updated_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_task_runs_task", "tenant_id", "task_id", text("started_at DESC")),
+        Index("uq_task_runs_idempotency", "tenant_id", "task_id", "idempotency_key", unique=True),
+    )
+
+
+class TaskStep(Base):
+    __tablename__ = "task_steps"
+
+    id = Column(Text, primary_key=True)
+    tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
+    run_id = Column(Text, nullable=False)
+    task_id = Column(Text, nullable=False)
+    name = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False, server_default=text("'{}'"))
+    started_at = Column(Text, nullable=False)
+    completed_at = Column(Text)
+    updated_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_task_steps_run", "tenant_id", "run_id", text("updated_at DESC")),
+    )
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+
+    id = Column(Text, primary_key=True)
+    tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
+    run_id = Column(Text, nullable=False)
+    task_id = Column(Text, nullable=False)
+    event_type = Column(Text, nullable=False)
+    actor = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False, server_default=text("'{}'"))
+    idempotency_key = Column(Text)
+    correlation_id = Column(Text)
+    created_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_task_events_task", "tenant_id", "task_id", text("created_at DESC")),
+        Index("idx_task_events_run", "tenant_id", "run_id", text("created_at DESC")),
+        Index("uq_task_events_idempotency", "tenant_id", "run_id", "idempotency_key", unique=True),
+    )
+
+
+class TaskArtifact(Base):
+    __tablename__ = "task_artifacts"
+
+    id = Column(Text, primary_key=True)
+    tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
+    run_id = Column(Text, nullable=False)
+    task_id = Column(Text, nullable=False)
+    kind = Column(Text, nullable=False)
+    uri = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=False, server_default=text("'{}'"))
+    idempotency_key = Column(Text)
+    created_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_task_artifacts_task", "tenant_id", "task_id", text("created_at DESC")),
+        Index("idx_task_artifacts_run", "tenant_id", "run_id", text("created_at DESC")),
+        Index("uq_task_artifacts_idempotency", "tenant_id", "run_id", "idempotency_key", unique=True),
+    )
+
+
+class TaskApproval(Base):
+    __tablename__ = "task_approvals"
+
+    id = Column(Text, primary_key=True)
+    tenant_id = Column(Text, nullable=False, server_default=text("'default'"))
+    run_id = Column(Text, nullable=False)
+    task_id = Column(Text, nullable=False)
+    gate = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    requested_by = Column(Text, nullable=False)
+    decided_by = Column(Text)
+    payload_json = Column(Text, nullable=False, server_default=text("'{}'"))
+    requested_at = Column(Text, nullable=False)
+    decided_at = Column(Text)
+    updated_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_task_approvals_task", "tenant_id", "task_id", text("updated_at DESC")),
+    )
+
+
 class SquadSkill(Base):
     __tablename__ = "squad_skills"
 

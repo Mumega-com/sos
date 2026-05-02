@@ -120,3 +120,31 @@ def test_project_id_empty_string_filters_on_empty_not_all(tmp_path, monkeypatch)
     assert len(results) == 1
     assert results[0].project == ""
     assert results[0].title == "task-with-empty-project"
+
+
+def test_assignee_filter_returns_matching_tasks(tmp_path, monkeypatch):
+    svc = _make_service(tmp_path, monkeypatch)
+
+    alice = _task("alice-task", project="sos")
+    alice.assignee = "alice"
+    bob = _task("bob-task", project="sos")
+    bob.assignee = "bob"
+    svc.create(alice, tenant_id="tenant-f")
+    svc.create(bob, tenant_id="tenant-f")
+
+    results = svc.list(assignee="alice", tenant_id="tenant-f")
+
+    assert len(results) == 1
+    assert results[0].title == "alice-task"
+    assert results[0].assignee == "alice"
+
+
+def test_limit_caps_task_results(tmp_path, monkeypatch):
+    svc = _make_service(tmp_path, monkeypatch)
+
+    for index in range(3):
+        svc.create(_task(f"task-{index}", project="sos"), tenant_id="tenant-g")
+
+    results = svc.list(limit=2, tenant_id="tenant-g")
+
+    assert len(results) == 2

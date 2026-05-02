@@ -161,6 +161,36 @@ class FailIn(BaseModel):
     error: str
 
 
+class TaskRunIn(BaseModel):
+    actor: str = "system"
+    status: str = "running"
+    claim_token: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    correlation_id: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskStepIn(BaseModel):
+    name: str
+    status: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskWorkflowEventIn(BaseModel):
+    event_type: str
+    actor: str = "system"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+
+class TaskArtifactIn(BaseModel):
+    kind: str
+    uri: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: Optional[str] = None
+
+
 class EventIn(BaseModel):
     event_type: str
     actor: str
@@ -427,10 +457,23 @@ async def create_task(
 async def list_tasks(
     squad_id: str | None = None,
     status: TaskStatus | None = None,
+    assignee: Optional[str] = None,
+    agent: Optional[str] = None,
+    limit: int = Query(100, ge=0, le=500),
     project_id: Optional[str] = None,
+    project: Optional[str] = None,
     auth: AuthContext = Depends(require_capability("tasks", "read")),
 ) -> list[dict[str, Any]]:
-    return _json(tasks.list(squad_id=squad_id, status=status, project_id=project_id, tenant_id=auth.tenant_scope))
+    return _json(
+        tasks.list(
+            squad_id=squad_id,
+            status=status,
+            project_id=project_id if project_id is not None else project,
+            assignee=assignee if assignee is not None else agent,
+            limit=limit,
+            tenant_id=auth.tenant_scope,
+        )
+    )
 
 
 _PRIORITY_WEIGHTS = {
@@ -574,6 +617,122 @@ async def get_task(
     if not task:
         raise HTTPException(status_code=404, detail="task_not_found")
     return _json(task)
+
+
+@app.get("/tasks/{task_id}/runs")
+async def list_task_runs(
+    task_id: str,
+    auth: AuthContext = Depends(require_capability("tasks", "read")),
+) -> list[dict[str, Any]]:
+    try:
+        return _json(tasks.list_runs(task_id, tenant_id=auth.tenant_scope))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task_not_found")
+
+
+@app.get("/tasks/{task_id}/events")
+async def list_task_events(
+    task_id: str,
+    auth: AuthContext = Depends(require_capability("tasks", "read")),
+) -> list[dict[str, Any]]:
+    try:
+        return _json(tasks.list_events(task_id, tenant_id=auth.tenant_scope))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task_not_found")
+
+
+@app.get("/tasks/{task_id}/artifacts")
+async def list_task_artifacts(
+    task_id: str,
+    auth: AuthContext = Depends(require_capability("tasks", "read")),
+) -> list[dict[str, Any]]:
+    try:
+        return _json(tasks.list_artifacts(task_id, tenant_id=auth.tenant_scope))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task_not_found")
+
+
+@app.post("/tasks/{task_id}/runs")
+async def create_task_run(
+    task_id: str,
+    payload: TaskRunIn,
+    auth: AuthContext = Depends(require_capability("tasks", "write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    try:
+        return _json(tasks.create_run(
+            task_id,
+            payload.actor,
+            status=payload.status,
+            claim_token=payload.claim_token,
+            idempotency_key=payload.idempotency_key or idempotency_key,
+            correlation_id=payload.correlation_id,
+            metadata=payload.metadata,
+            tenant_id=auth.tenant_scope,
+        ))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="task_not_found")
+    except ClaimTokenMismatchError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/runs/{run_id}/steps")
+async def create_run_step(
+    run_id: str,
+    payload: TaskStepIn,
+    auth: AuthContext = Depends(require_capability("tasks", "write")),
+) -> dict[str, Any]:
+    try:
+        return _json(tasks.add_step(
+            run_id,
+            payload.name,
+            payload.status,
+            payload=payload.payload,
+            tenant_id=auth.tenant_scope,
+        ))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run_not_found")
+
+
+@app.post("/runs/{run_id}/events")
+async def create_run_event(
+    run_id: str,
+    payload: TaskWorkflowEventIn,
+    auth: AuthContext = Depends(require_capability("tasks", "write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    try:
+        return _json(tasks.add_event(
+            run_id,
+            payload.event_type,
+            payload.actor,
+            payload=payload.payload,
+            idempotency_key=payload.idempotency_key or idempotency_key,
+            correlation_id=payload.correlation_id,
+            tenant_id=auth.tenant_scope,
+        ))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run_not_found")
+
+
+@app.post("/runs/{run_id}/artifacts")
+async def create_run_artifact(
+    run_id: str,
+    payload: TaskArtifactIn,
+    auth: AuthContext = Depends(require_capability("tasks", "write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    try:
+        return _json(tasks.add_artifact(
+            run_id,
+            payload.kind,
+            payload.uri,
+            metadata=payload.metadata,
+            idempotency_key=payload.idempotency_key or idempotency_key,
+            tenant_id=auth.tenant_scope,
+        ))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run_not_found")
 
 
 @app.post("/tasks/{task_id}/claim")

@@ -253,6 +253,14 @@ def row_to_task(row: sqlite3.Row) -> SquadTask:
     )
 
 
+def _row_to_workflow_dict(row: sqlite3.Row) -> dict[str, Any]:
+    out = dict(row)
+    for key in ("metadata_json", "payload_json"):
+        if key in out:
+            out[key.removesuffix("_json")] = _loads(out.pop(key), {})
+    return out
+
+
 # ── Deterministic Cost Estimation ─────────────────────────────────────────
 # Ported from cli/mumega/core/task_hierarchy.py — every task gets a budget
 # BEFORE it runs. No surprises.
@@ -506,11 +514,283 @@ class SquadTaskService:
                 row = conn.execute("SELECT * FROM squad_tasks WHERE id = ? AND tenant_id = ?", (task_id, tenant_id)).fetchone()
         return row_to_task(row) if row else None
 
+    def _task_row_for_workflow(
+        self,
+        conn: sqlite3.Connection,
+        task_id: str,
+        tenant_id: str | None,
+    ) -> sqlite3.Row:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        row = conn.execute(
+            "SELECT id, claim_token FROM squad_tasks WHERE id = ? AND tenant_id = ?",
+            (task_id, effective_tenant),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Task not found: {task_id}")
+        return row
+
+    def _run_row_for_workflow(
+        self,
+        conn: sqlite3.Connection,
+        run_id: str,
+        tenant_id: str | None,
+    ) -> sqlite3.Row:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        row = conn.execute(
+            "SELECT id, task_id FROM task_runs WHERE id = ? AND tenant_id = ?",
+            (run_id, effective_tenant),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Run not found: {run_id}")
+        return row
+
+    def _check_claim_token(
+        self,
+        task_row: sqlite3.Row,
+        claim_token: str | None,
+    ) -> None:
+        if claim_token is None:
+            return
+        if task_row["claim_token"] != claim_token:
+            raise ClaimTokenMismatchError(
+                f"claim_token invalid for task {task_row['id']} — "
+                "task has been re-claimed by another owner"
+            )
+
+    def list_runs(
+        self,
+        task_id: str,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> list[dict[str, Any]]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        with self.db.connect() as conn:
+            self._task_row_for_workflow(conn, task_id, tenant_id)
+            rows = conn.execute(
+                "SELECT * FROM task_runs WHERE task_id = ? AND tenant_id = ? ORDER BY started_at DESC",
+                (task_id, effective_tenant),
+            ).fetchall()
+        return [_row_to_workflow_dict(row) for row in rows]
+
+    def list_events(
+        self,
+        task_id: str,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> list[dict[str, Any]]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        with self.db.connect() as conn:
+            self._task_row_for_workflow(conn, task_id, tenant_id)
+            rows = conn.execute(
+                "SELECT * FROM task_events WHERE task_id = ? AND tenant_id = ? ORDER BY created_at DESC",
+                (task_id, effective_tenant),
+            ).fetchall()
+        return [_row_to_workflow_dict(row) for row in rows]
+
+    def list_artifacts(
+        self,
+        task_id: str,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> list[dict[str, Any]]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        with self.db.connect() as conn:
+            self._task_row_for_workflow(conn, task_id, tenant_id)
+            rows = conn.execute(
+                "SELECT * FROM task_artifacts WHERE task_id = ? AND tenant_id = ? ORDER BY created_at DESC",
+                (task_id, effective_tenant),
+            ).fetchall()
+        return [_row_to_workflow_dict(row) for row in rows]
+
+    def create_run(
+        self,
+        task_id: str,
+        actor: str,
+        *,
+        status: str = "running",
+        claim_token: str | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> dict[str, Any]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        timestamp = now_iso()
+        run_id = str(_uuid.uuid4())
+        with self.db.connect() as conn:
+            task_row = self._task_row_for_workflow(conn, task_id, tenant_id)
+            self._check_claim_token(task_row, claim_token)
+            if idempotency_key:
+                existing = conn.execute(
+                    """SELECT * FROM task_runs
+                       WHERE tenant_id = ? AND task_id = ? AND idempotency_key = ?""",
+                    (effective_tenant, task_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    return _row_to_workflow_dict(existing)
+            conn.execute(
+                """INSERT INTO task_runs (
+                    id, tenant_id, task_id, status, actor, claim_token,
+                    idempotency_key, correlation_id, metadata_json,
+                    started_at, completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                (
+                    run_id,
+                    effective_tenant,
+                    task_id,
+                    status,
+                    actor,
+                    claim_token,
+                    idempotency_key,
+                    correlation_id,
+                    _dumps(metadata or {}),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_runs WHERE id = ? AND tenant_id = ?",
+                (run_id, effective_tenant),
+            ).fetchone()
+        return _row_to_workflow_dict(row)
+
+    def add_step(
+        self,
+        run_id: str,
+        name: str,
+        status: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> dict[str, Any]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        timestamp = now_iso()
+        step_id = str(_uuid.uuid4())
+        completed_at = timestamp if status in {"completed", "failed", "canceled"} else None
+        with self.db.connect() as conn:
+            run = self._run_row_for_workflow(conn, run_id, tenant_id)
+            conn.execute(
+                """INSERT INTO task_steps (
+                    id, tenant_id, run_id, task_id, name, status, payload_json,
+                    started_at, completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    step_id,
+                    effective_tenant,
+                    run_id,
+                    run["task_id"],
+                    name,
+                    status,
+                    _dumps(payload or {}),
+                    timestamp,
+                    completed_at,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_steps WHERE id = ? AND tenant_id = ?",
+                (step_id, effective_tenant),
+            ).fetchone()
+        return _row_to_workflow_dict(row)
+
+    def add_event(
+        self,
+        run_id: str,
+        event_type: str,
+        actor: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> dict[str, Any]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        timestamp = now_iso()
+        event_id = str(_uuid.uuid4())
+        with self.db.connect() as conn:
+            run = self._run_row_for_workflow(conn, run_id, tenant_id)
+            if idempotency_key:
+                existing = conn.execute(
+                    """SELECT * FROM task_events
+                       WHERE tenant_id = ? AND run_id = ? AND idempotency_key = ?""",
+                    (effective_tenant, run_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    return _row_to_workflow_dict(existing)
+            conn.execute(
+                """INSERT INTO task_events (
+                    id, tenant_id, run_id, task_id, event_type, actor,
+                    payload_json, idempotency_key, correlation_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    effective_tenant,
+                    run_id,
+                    run["task_id"],
+                    event_type,
+                    actor,
+                    _dumps(payload or {}),
+                    idempotency_key,
+                    correlation_id,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_events WHERE id = ? AND tenant_id = ?",
+                (event_id, effective_tenant),
+            ).fetchone()
+        return _row_to_workflow_dict(row)
+
+    def add_artifact(
+        self,
+        run_id: str,
+        kind: str,
+        uri: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        tenant_id: str | None = DEFAULT_TENANT_ID,
+    ) -> dict[str, Any]:
+        effective_tenant = tenant_id if tenant_id is not None else DEFAULT_TENANT_ID
+        timestamp = now_iso()
+        artifact_id = str(_uuid.uuid4())
+        with self.db.connect() as conn:
+            run = self._run_row_for_workflow(conn, run_id, tenant_id)
+            if idempotency_key:
+                existing = conn.execute(
+                    """SELECT * FROM task_artifacts
+                       WHERE tenant_id = ? AND run_id = ? AND idempotency_key = ?""",
+                    (effective_tenant, run_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    return _row_to_workflow_dict(existing)
+            conn.execute(
+                """INSERT INTO task_artifacts (
+                    id, tenant_id, run_id, task_id, kind, uri,
+                    metadata_json, idempotency_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    artifact_id,
+                    effective_tenant,
+                    run_id,
+                    run["task_id"],
+                    kind,
+                    uri,
+                    _dumps(metadata or {}),
+                    idempotency_key,
+                    timestamp,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_artifacts WHERE id = ? AND tenant_id = ?",
+                (artifact_id, effective_tenant),
+            ).fetchone()
+        return _row_to_workflow_dict(row)
+
     def list(
         self,
         squad_id: str | None = None,
         status: TaskStatus | None = None,
         project_id: str | None = None,
+        assignee: str | None = None,
+        limit: int | None = None,
         tenant_id: str | None = DEFAULT_TENANT_ID,
     ) -> list[SquadTask]:
         query = "SELECT * FROM squad_tasks WHERE 1=1"
@@ -524,10 +804,16 @@ class SquadTaskService:
         if project_id is not None:
             query += " AND project = ?"
             params.append(project_id)
+        if assignee is not None:
+            query += " AND assignee = ?"
+            params.append(assignee)
         if status:
             query += " AND status = ?"
             params.append(status.value)
         query += " ORDER BY updated_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(0, min(limit, 500)))
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [row_to_task(row) for row in rows]

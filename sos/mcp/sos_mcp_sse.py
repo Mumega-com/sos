@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import redis.asyncio as aioredis
@@ -1906,20 +1907,22 @@ async def handle_tool(
 
         # --- task_list ---
         elif name == "task_list":
-            params = f"?limit={args.get('limit', 20)}"
+            requested_limit = max(0, min(int(args.get("limit", 20)), 500))
+            params: dict[str, Any] = {"limit": requested_limit}
             if args.get("status"):
-                params += f"&status={args['status']}"
+                params["status"] = args["status"]
             assignee = args.get("assignee")
             if assignee:
                 assignee = _require_same_tenant_agent(auth, assignee)
-                params += f"&agent={assignee}"
+                params["assignee"] = assignee
             if project_scope:
-                params += f"&project={project_scope}"
+                params["project"] = project_scope
+            query = f"?{urlencode(params)}"
             # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
             result = await loop.run_in_executor(
                 None,
                 lambda: requests.get(
-                    f"{SQUAD_SERVICE_URL}/tasks{params}",
+                    f"{SQUAD_SERVICE_URL}/tasks{query}",
                     headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
                     timeout=5,
                 ).json(),
@@ -1927,6 +1930,13 @@ async def handle_tool(
             tasks = result if isinstance(result, list) else result.get("tasks", [])
             if project_scope:
                 tasks = [t for t in tasks if t.get("project") == project_scope]
+            if assignee:
+                tasks = [
+                    t
+                    for t in tasks
+                    if t.get("assignee") == assignee or t.get("agent") == assignee
+                ]
+            tasks = tasks[:requested_limit]
             if not tasks:
                 return _text("No tasks found.")
             lines = []
