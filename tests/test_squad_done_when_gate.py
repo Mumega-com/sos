@@ -108,6 +108,36 @@ def test_complete_succeeds_with_empty_done_when(task_service):
     assert out.completed_at is not None
 
 
+def test_complete_emits_s037_receipt_after_done_when_passes(task_service, monkeypatch):
+    """S037 receipt emission happens after the done_when gate allows completion."""
+    calls = []
+
+    def fake_emit(task, *, result, actor, tenant_id, client=None):
+        calls.append({
+            "task_id": task.id,
+            "result": result,
+            "actor": actor,
+            "tenant_id": tenant_id,
+        })
+        return {"ok": True, "receipt": {"id": "r1"}}
+
+    monkeypatch.setattr(
+        "sos.clients.inkwell_receipts.emit_sos_task_completed_receipt",
+        fake_emit,
+    )
+    task = _make_task(task_id="t-s037", done_when=[])
+    task_service.create(task)
+
+    task_service.complete("t-s037", {"summary": "ok"}, actor="agent:codex")
+
+    assert calls == [{
+        "task_id": "t-s037",
+        "result": {"summary": "ok"},
+        "actor": "agent:codex",
+        "tenant_id": "default",
+    }]
+
+
 def test_complete_refused_when_any_entry_unchecked(task_service):
     """Uncompleted check → NotAllDoneError, and the task's persisted
     status MUST remain un-DONE (no half-commit)."""

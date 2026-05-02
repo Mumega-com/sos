@@ -1045,6 +1045,20 @@ class SquadTaskService:
         # consumers are idempotent on message_id and fail-open.
         _emit_task_completed(task, actor, task.completed_at or timestamp)
 
+        # S037: cross-system proof receipt. Fail-open until receipt policy is
+        # explicit for customer task completion; Inkwell remains the verifier.
+        try:
+            from sos.clients.inkwell_receipts import emit_sos_task_completed_receipt
+
+            emit_sos_task_completed_receipt(
+                task,
+                result=result,
+                actor=actor,
+                tenant_id=tenant_id if tenant_id is not None else DEFAULT_TENANT_ID,
+            )
+        except Exception as exc:
+            log.debug("S037 receipt emit skipped for task %s: %s", task.id, exc)
+
         # Deliver result to customer project agent via bus
         project = task.project
         if project:
