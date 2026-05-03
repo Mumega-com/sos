@@ -167,10 +167,16 @@ _load_secrets()
 REDIS_PASSWORD: str = os.environ.get("REDIS_PASSWORD", "")
 MIRROR_URL: str = os.environ.get("MIRROR_URL", "http://localhost:8844")
 MIRROR_TOKEN: str = os.environ.get("MIRROR_TOKEN", "")
+# F-17: admin endpoints (e.g. /admin/outbox/status) require admin-typed token.
+MIRROR_ADMIN_TOKEN: str = os.environ.get("MIRROR_ADMIN_TOKEN", "")
 PORT: int = int(os.environ.get("SOS_MCP_PORT", "6070"))
 
 MIRROR_HEADERS = {
     "Authorization": f"Bearer {MIRROR_TOKEN}",
+    "Content-Type": "application/json",
+}
+MIRROR_ADMIN_HEADERS = {
+    "Authorization": f"Bearer {MIRROR_ADMIN_TOKEN}",
     "Content-Type": "application/json",
 }
 RATE_LIMIT_PER_MINUTE: int = int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60"))
@@ -915,6 +921,14 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "outbox_status",
+            "description": "Aggregate outbox/queue health across substrates (Mirror receipts, SOS bus events, Inkwell-incoming). S024 F-17. Returns per-substrate {kind, pending, in_flight, dlq} with `kind` ∈ real|best_effort|not_configured|error. Pages a substrate as 'real' only if it durably persists pending work. Use this to diagnose audit-write backlog or DLQ growth.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+        {
             "name": "code_mode",
             "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
             "inputSchema": {
@@ -1077,6 +1091,123 @@ def _get_systemd_health_sync() -> dict[str, str]:
         except Exception:
             result[label] = "unknown"
     return result
+
+
+# ---------------------------------------------------------------------------
+# Outbox status aggregator (S024 F-17)
+# ---------------------------------------------------------------------------
+#
+# Aggregates audit-write outbox health across the substrates that ought to
+# have one. Pages each substrate as one of:
+#
+#   - real:           durable pending row backed by a transactional store;
+#                     numbers are authoritative.
+#   - best_effort:    in-process queue without crash-survival; numbers are
+#                     a snapshot, not a guarantee.
+#   - not_configured: the substrate has no outbox today; reports zeros so
+#                     F-17 dashboards don't false-page.
+#   - error:          known-configured outbox failed to respond; numbers
+#                     are the last-known shape (zeros) and `last_error`
+#                     surfaces the failure mode.
+#
+# Only Mirror is `real` today (F-16 landed mig 052 + NativeSqlOutbox). SOS
+# bus and Inkwell-incoming are explicit `not_configured` placeholders so
+# the contract is named — when their outboxes ship they replace the
+# placeholder branch with a real query.
+
+
+OUTBOX_ALERT_THRESHOLDS = {
+    "dlq_count": 10,
+    "pending_count": 1000,
+    "stale_pending_seconds": 3600,
+}
+
+
+def _mirror_outbox_status_sync() -> dict[str, Any]:
+    """Query mirror's /admin/outbox/status and project to the F-17 component
+    schema (per v0.5 brief §6.6: `dlq_count`, `pending_count`, `backend`).
+    Intentionally swallows exceptions and emits `backend='error'` so a
+    Mirror outage doesn't break the aggregator."""
+    if not MIRROR_ADMIN_TOKEN:
+        return {
+            "dlq_count": 0,
+            "pending_count": 0,
+            "backend": "not_configured",
+            "last_error": "MIRROR_ADMIN_TOKEN not set in SOS MCP env",
+        }
+    try:
+        resp = requests.get(
+            f"{MIRROR_URL}/admin/outbox/status",
+            headers=MIRROR_ADMIN_HEADERS,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json() or {}
+    except Exception as exc:
+        return {
+            "dlq_count": 0,
+            "pending_count": 0,
+            "backend": "error",
+            "last_error": f"{type(exc).__name__}: {exc}",
+        }
+
+    if not data.get("enabled"):
+        return {
+            "dlq_count": 0,
+            "pending_count": 0,
+            "backend": "not_configured",
+            "last_error": "MIRROR_OUTBOX_ENABLED=0 (F-16 build present, flag off)",
+        }
+    return {
+        "dlq_count": int(data.get("dlq_count", 0)),
+        "pending_count": int(data.get("pending_count", 0)),
+        "backend": data.get("backend") or "unknown",
+    }
+
+
+def _sos_outbox_status_sync() -> dict[str, Any]:
+    """SOS bus has no audit-write outbox today (Redis stream is the
+    primary store; receipt durability is owned by downstream consumers).
+    Reported as `best_effort` per v0.5 brief F-17 placeholder contract."""
+    return {
+        "dlq_count": 0,
+        "pending_count": 0,
+        "backend": "best_effort",
+        "last_error": "SOS bus outbox not implemented; carry tracked in S024 Track F P2",
+    }
+
+
+def _inkwell_outbox_status_sync() -> dict[str, Any]:
+    """Inkwell-incoming outbox (CF Queues) is `not_configured` today;
+    ships as part of S025+ ingestion-hardening scope per brief §6.7."""
+    return {
+        "dlq_count": 0,
+        "pending_count": 0,
+        "backend": "not_configured",
+        "last_error": "Inkwell-incoming outbox not implemented; deferred to S025+ per brief §6.7",
+    }
+
+
+def _aggregate_outbox_status_sync() -> dict[str, Any]:
+    """Returns the F-17 contract shape (v0.5 brief §6.6):
+
+      {
+        "components": {
+          "mirror": {dlq_count, pending_count, backend},
+          "sos": {...},
+          "inkwell_incoming": {...},
+        },
+        "alert_thresholds": {dlq_count, pending_count, stale_pending_seconds},
+      }
+    """
+    return {
+        "components": {
+            "mirror": _mirror_outbox_status_sync(),
+            "sos": _sos_outbox_status_sync(),
+            "inkwell_incoming": _inkwell_outbox_status_sync(),
+        },
+        "alert_thresholds": dict(OUTBOX_ALERT_THRESHOLDS),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1441,6 +1572,10 @@ async def handle_tool(
 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
+    # outbox_status reads cross-substrate operator state (Mirror DLQ depth,
+    # last_error response text from upstream). Not for tenant tokens.
+    # Adversarial-gate hardening: BLOCK-P1-5 (G_S024_F16_F17_kasra_001).
+    STRICT_SYSTEM_ONLY_TOOLS = {"outbox_status"}
     WRITE_TOOLS = MCP_WRITE_TOOLS  # module-level constant (WARN-S013-005)
     # Tools classified as read-only — kept as a documented contract, even
     # though flow below only branches on SYSTEM_ONLY_TOOLS/WRITE_TOOLS.
@@ -1452,11 +1587,22 @@ async def handle_tool(
         "task_list",
         "status",
         "search_code",
+        "outbox_status",
     }
 
     if name in SYSTEM_ONLY_TOOLS and not auth.is_system:
         # onboard tool handles its own mode check, but log the attempt
         pass
+
+    # Strict gate — unlike SYSTEM_ONLY_TOOLS above, this set actually denies.
+    # outbox_status surfaces operator-only data (DLQ depths, upstream
+    # error-text echoes). A tenant token must never reach the dispatch
+    # branch.
+    if name in STRICT_SYSTEM_ONLY_TOOLS and not auth.is_system:
+        return _text(
+            f"Tool `{name}` is restricted to system tokens. "
+            "Contact your operator for outbox/queue health visibility."
+        )
 
     # LOCK-TENANT-B + LOCK-TENANT-C: dev-tenant activation window for OAuth customers.
     #
@@ -2303,6 +2449,46 @@ async def handle_tool(
                 for status, count in sorted(task_counts.items()):
                     lines.append(f"- {status}: {count}")
 
+            return _text("\n".join(lines))
+
+        # --- outbox_status (S024 F-17) ---
+        elif name == "outbox_status":
+            agg = await asyncio.get_event_loop().run_in_executor(
+                None, _aggregate_outbox_status_sync
+            )
+            backend_icon = {
+                "native": "🟢",        # Mirror NativeSqlOutbox — durable
+                "memory": "🟡",        # in-process — best_effort fallback
+                "best_effort": "🟡",   # SOS bus today
+                "not_configured": "⚪",
+                "disabled": "⚪",      # Mirror flag off
+                "error": "🔴",
+            }
+            thresholds = agg["alert_thresholds"]
+            lines = ["# Outbox Status\n"]
+            for sub_name, info in agg["components"].items():
+                backend = info.get("backend", "unknown")
+                icon = backend_icon.get(backend, "❓")
+                pending = info.get("pending_count", 0)
+                dlq = info.get("dlq_count", 0)
+                # Inline alert flagging — surface threshold breaches plainly.
+                alerts = []
+                if dlq >= thresholds["dlq_count"]:
+                    alerts.append(f"⚠ DLQ ≥ {thresholds['dlq_count']}")
+                if pending >= thresholds["pending_count"]:
+                    alerts.append(f"⚠ pending ≥ {thresholds['pending_count']}")
+                line = (
+                    f"{icon} **{sub_name}** [{backend}] — "
+                    f"pending={pending} dlq={dlq}"
+                )
+                if alerts:
+                    line += "  " + "  ".join(alerts)
+                if info.get("last_error"):
+                    line += f"\n    {info['last_error']}"
+                lines.append(line)
+            lines.append("\n```json")
+            lines.append(json.dumps(agg, indent=2))
+            lines.append("```")
             return _text("\n".join(lines))
 
         # --- browse_marketplace ---
