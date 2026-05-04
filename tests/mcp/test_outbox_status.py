@@ -148,13 +148,53 @@ def test_mirror_branch_error_when_5xx(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# SOS + Inkwell branches — explicit best_effort / not_configured per brief
+# SOS branch — S025 A-1 promoted from best_effort placeholder to native
+# durable counts via Redis Streams (XPENDING + dlq:* XLEN).
 # ---------------------------------------------------------------------------
 
 
-def test_sos_branch_best_effort():
+def test_sos_branch_native_when_redis_returns_zero(monkeypatch):
+    """Empty bus substrate ⇒ backend=native, pending=0, dlq=0.
+
+    "native" is the durability claim, not "non-zero numbers". A clean
+    substrate must report `native` so dashboards distinguish it from
+    `not_configured` (no outbox at all) or `error` (couldn't read).
+    """
+    monkeypatch.setattr(
+        "sos.services.bus.outbox_stats.collect_bus_outbox_stats_sync",
+        lambda client: {"pending_count": 0, "dlq_count": 0},
+    )
     result = sse._sos_outbox_status_sync()
-    assert result["backend"] == "best_effort"
+    assert result["backend"] == "native"
+    assert result["pending_count"] == 0
+    assert result["dlq_count"] == 0
+
+
+def test_sos_branch_native_passes_through_real_counts(monkeypatch):
+    monkeypatch.setattr(
+        "sos.services.bus.outbox_stats.collect_bus_outbox_stats_sync",
+        lambda client: {"pending_count": 7, "dlq_count": 3},
+    )
+    result = sse._sos_outbox_status_sync()
+    assert result["backend"] == "native"
+    assert result["pending_count"] == 7
+    assert result["dlq_count"] == 3
+
+
+def test_sos_branch_error_when_redis_raises(monkeypatch):
+    """Redis outage ⇒ backend=error; counts default to 0 so the
+    aggregator doesn't false-page on a transient hiccup."""
+
+    def boom(client):
+        raise ConnectionError("redis unreachable")
+
+    monkeypatch.setattr(
+        "sos.services.bus.outbox_stats.collect_bus_outbox_stats_sync",
+        boom,
+    )
+    result = sse._sos_outbox_status_sync()
+    assert result["backend"] == "error"
+    assert "redis unreachable" in result["last_error"]
     assert result["pending_count"] == 0
     assert result["dlq_count"] == 0
 
@@ -179,12 +219,17 @@ def test_aggregate_returns_brief_compliant_shape(monkeypatch):
         "in_flight_count": 0,
         "dlq_count": 0,
     }))
+    monkeypatch.setattr(
+        "sos.services.bus.outbox_stats.collect_bus_outbox_stats_sync",
+        lambda client: {"pending_count": 0, "dlq_count": 0},
+    )
     agg = sse._aggregate_outbox_status_sync()
     assert "components" in agg
     assert "alert_thresholds" in agg
     assert set(agg["components"].keys()) == {"mirror", "sos", "inkwell_incoming"}
     assert agg["components"]["mirror"]["backend"] == "native"
-    assert agg["components"]["sos"]["backend"] == "best_effort"
+    # S025 A-1 — SOS branch promoted from best_effort to native.
+    assert agg["components"]["sos"]["backend"] == "native"
     assert agg["components"]["inkwell_incoming"]["backend"] == "not_configured"
     # Alert thresholds match v0.5 brief §6.6 F-17 contract.
     assert agg["alert_thresholds"] == {

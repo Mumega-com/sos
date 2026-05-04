@@ -1110,10 +1110,11 @@ def _get_systemd_health_sync() -> dict[str, str]:
 #                     are the last-known shape (zeros) and `last_error`
 #                     surfaces the failure mode.
 #
-# Only Mirror is `real` today (F-16 landed mig 052 + NativeSqlOutbox). SOS
-# bus and Inkwell-incoming are explicit `not_configured` placeholders so
-# the contract is named — when their outboxes ship they replace the
-# placeholder branch with a real query.
+# Mirror branch promoted to `native` in S024 F-16 (mig 052 + NativeSqlOutbox).
+# SOS branch promoted to `native` in S025 A-1 (Redis Streams + RetryWorker +
+# DLQ already durable; A-1 wired the visibility surface, see
+# `sos.services.bus.outbox_stats`). Inkwell-incoming remains
+# `not_configured` until that substrate ships its own admin surface.
 
 
 OUTBOX_ALERT_THRESHOLDS = {
@@ -1166,14 +1167,37 @@ def _mirror_outbox_status_sync() -> dict[str, Any]:
 
 
 def _sos_outbox_status_sync() -> dict[str, Any]:
-    """SOS bus has no audit-write outbox today (Redis stream is the
-    primary store; receipt durability is owned by downstream consumers).
-    Reported as `best_effort` per v0.5 brief F-17 placeholder contract."""
+    """Read live SOS bus outbox counts from Redis Streams (S025 A-1).
+
+    The SOS bus already runs at-least-once delivery on Redis Streams +
+    a per-group RetryWorker + a `sos:stream:dlq:*` DLQ pattern (see
+    `sos.services.bus.retry` / `sos.services.bus.dlq`). Persistence is
+    owned by Redis. What was missing in F-17 P2 was the *visibility*
+    surface: the SOS branch reported `best_effort` placeholder counts.
+
+    A-1 promotes the branch to `native` by walking the live substrate:
+
+      pending_count = Σ XPENDING.pending across every (stream, group) pair
+      dlq_count     = Σ XLEN across every sos:stream:dlq:* stream
+
+    Failure modes are fail-safe (counts default to zero, `backend=error`
+    with `last_error` populated) so a Redis hiccup never false-pages a
+    healthy substrate.
+    """
+    try:
+        from sos.services.bus.outbox_stats import collect_bus_outbox_stats_sync
+        stats = collect_bus_outbox_stats_sync(_sync_redis)
+    except Exception as exc:
+        return {
+            "dlq_count": 0,
+            "pending_count": 0,
+            "backend": "error",
+            "last_error": f"{type(exc).__name__}: {exc}",
+        }
     return {
-        "dlq_count": 0,
-        "pending_count": 0,
-        "backend": "best_effort",
-        "last_error": "SOS bus outbox not implemented; carry tracked in S024 Track F P2",
+        "dlq_count": int(stats.get("dlq_count", 0)),
+        "pending_count": int(stats.get("pending_count", 0)),
+        "backend": "native",
     }
 
 
