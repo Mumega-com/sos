@@ -929,6 +929,20 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "tenant_canvas_read",
+            "description": "Read the tenant's business-model canvas (S026 A3 substrate primitive). Returns the canonical envelope {tenant_id, template_kind, blocks, inference_metadata}. Every agent serving a tenant SHOULD call this at task-start (or cache for short window) to align operating context to the tenant's declared business model. Manual edits override inference; confidence_per_block surfaces which blocks are operator-authoritative vs inferred. template_kind ∈ bmc|lean_canvas|vpc|service_blueprint. Returns canvas_not_initialized if onboarding has not yet seeded the row.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["tenant_id"],
+                "properties": {
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant TEXT PK from tenants(id). Required.",
+                    },
+                },
+            },
+        },
+        {
             "name": "code_mode",
             "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
             "inputSchema": {
@@ -2514,6 +2528,74 @@ async def handle_tool(
             lines.append(json.dumps(agg, indent=2))
             lines.append("```")
             return _text("\n".join(lines))
+
+        # --- tenant_canvas_read (S026 A3 substrate primitive) ---
+        elif name == "tenant_canvas_read":
+            tenant_id = args.get("tenant_id", "").strip()
+            if not tenant_id:
+                return _text("Error: tenant_id is required.")
+            if not INTERNAL_API_SECRET:
+                return _text(
+                    "Error: tenant_canvas_read disabled — INTERNAL_API_SECRET unset on MCP server."
+                )
+            import httpx
+            url = f"{INKWELL_API_URL}/api/tenant-profile/internal/{tenant_id}"
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {INTERNAL_API_SECRET}"},
+                    )
+                if resp.status_code == 404:
+                    return _text(
+                        f"Canvas not initialized for tenant {tenant_id}. "
+                        "POST /api/tenant-profile/init via the dashboard first."
+                    )
+                if resp.status_code == 401:
+                    return _text("Error: unauthorized — INTERNAL_API_SECRET mismatch.")
+                if resp.status_code != 200:
+                    return _text(
+                        f"Error: canvas read returned HTTP {resp.status_code}."
+                    )
+                envelope = resp.json()
+                # Format as readable summary + raw JSON.
+                lines = [
+                    f"# Tenant Canvas — {tenant_id}",
+                    f"Template: **{envelope.get('template_kind', '?')}**",
+                ]
+                meta = envelope.get("inference_metadata") or {}
+                last_run = meta.get("last_inference_run")
+                if last_run:
+                    from datetime import datetime, timezone
+                    ts = datetime.fromtimestamp(last_run, tz=timezone.utc).isoformat()
+                    lines.append(f"Last inference: {ts}")
+                else:
+                    lines.append("Last inference: never")
+                conf = meta.get("confidence_per_block") or {}
+                lines.append("")
+                blocks = envelope.get("blocks") or {}
+                for key in sorted(blocks.keys()):
+                    block_conf = conf.get(key)
+                    if block_conf is None:
+                        badge = "[empty]"
+                    elif block_conf >= 1.0:
+                        badge = "[manual]"
+                    else:
+                        badge = f"[inferred {int(block_conf * 100)}%]"
+                    lines.append(f"## {key} {badge}")
+                    val = blocks[key]
+                    if isinstance(val, list):
+                        for item in val:
+                            lines.append(f"- {item}")
+                    else:
+                        lines.append(str(val))
+                    lines.append("")
+                lines.append("```json")
+                lines.append(json.dumps(envelope, indent=2))
+                lines.append("```")
+                return _text("\n".join(lines))
+            except Exception as exc:  # noqa: BLE001
+                return _text(f"Error: canvas read failed — {exc}")
 
         # --- browse_marketplace ---
         elif name == "browse_marketplace":
