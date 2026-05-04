@@ -98,8 +98,15 @@ def validate_provision_body(body: dict) -> dict:
     if not display_name or len(display_name) > DISPLAY_NAME_MAX:
         raise ProvisionError(422, "invalid_display_name", f"display_name must be 1-{DISPLAY_NAME_MAX} chars after trim")
 
-    if not industry or not isinstance(industry, str) or not INDUSTRY_RE.match(industry):
-        raise ProvisionError(422, "invalid_industry", "industry must match ^[a-z0-9_]{1,32}$")
+    # industry is OPTIONAL (S027 iter-2 close, Athena BLOCKED 2026-05-04T21:57Z):
+    # D-1 may omit it or pass null when caller didn't supply one. We default to
+    # "general" rather than failing — template rendering needs *some* string but
+    # the actual industry vocabulary is enforced upstream by D-1's whitelist.
+    # When provided, the type+regex guard still applies (no silent typo fallback).
+    if industry is None:
+        industry = "general"
+    elif not isinstance(industry, str) or not INDUSTRY_RE.match(industry):
+        raise ProvisionError(422, "invalid_industry", "industry must match ^[a-z0-9_]{1,32}$ or be null")
 
     return {
         "tenant_id": tenant_id,
@@ -197,7 +204,11 @@ def mint_or_get_mirror_key(slug: str, display_name: str) -> tuple[str, bool]:
             existing_key = existing.get("key", "")
             if existing_key:
                 return existing_key, False
-            # Record exists but key field is empty — treat as corrupt; mint fresh below.
+            # Record exists but key field is empty — corrupt. Mark inactive BEFORE
+            # appending fresh, otherwise next call would find it again (still active=True
+            # with empty key) and unbounded-re-mint. (S027 iter-2 close P1-A,
+            # Athena BLOCKED 2026-05-04T21:57Z.)
+            existing["active"] = False
 
         new_key = f"sk-mumega-{slug}-{secrets.token_hex(8)}"
         new_record = {

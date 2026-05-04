@@ -163,6 +163,29 @@ class TestValidateProvisionBody:
             tp.validate_provision_body(b)
         assert e.value.code == "invalid_industry"
 
+    def test_industry_null_defaults_to_general(self):
+        # iter-2 P0-A close: D-1 may pass industry=null when caller omitted it.
+        # D-1b accepts null and defaults to "general" (template rendering needs string).
+        b = self._valid()
+        b["industry"] = None
+        out = tp.validate_provision_body(b)
+        assert out["industry"] == "general"
+
+    def test_industry_missing_defaults_to_general(self):
+        # iter-2 P0-A close: missing key (body.get returns None) is also acceptable.
+        b = self._valid()
+        del b["industry"]
+        out = tp.validate_provision_body(b)
+        assert out["industry"] == "general"
+
+    def test_bad_industry_type_still_fails(self):
+        # Defaulting only applies on None — non-string values still fail loud.
+        b = self._valid()
+        b["industry"] = 42  # type: ignore[assignment]
+        with pytest.raises(ProvisionError) as e:
+            tp.validate_provision_body(b)
+        assert e.value.code == "invalid_industry"
+
 
 # -----------------------------------------------------------------------
 # LOCK-D-1b-mirror-key-idempotent — 5 tests
@@ -222,6 +245,37 @@ class TestMirrorKeyIdempotent:
         data = json.loads(tmp_substrate["mirror_keys_path"].read_text())
         assert isinstance(data, list)
         assert len(data) == 1
+
+    def test_corrupt_empty_key_record_marked_inactive_no_remint_loop(self, tmp_substrate):
+        # iter-2 P1-A close: a record with active=True + empty key field used to
+        # cause unbounded re-mint (each call appended a new record without
+        # marking the corrupt one inactive). Verify the corrupt record is now
+        # flipped to active=False and only ONE fresh record appended per call.
+        seed = [{
+            "key": "",
+            "agent_slug": "acme",
+            "created_at": "2026-04-01T00:00:00+00:00",
+            "active": True,
+            "label": "corrupt empty",
+        }]
+        tmp_substrate["mirror_keys_path"].write_text(json.dumps(seed))
+
+        key1, minted1 = tp.mint_or_get_mirror_key("acme", "Acme Corp")
+        assert minted1 is True
+        # Re-invoke — should find the FRESH record, NOT re-mint again
+        key2, minted2 = tp.mint_or_get_mirror_key("acme", "Acme Corp")
+        assert minted2 is False
+        assert key1 == key2
+
+        data = json.loads(tmp_substrate["mirror_keys_path"].read_text())
+        # Exactly two records: the original (now inactive) + the fresh active one
+        assert len(data) == 2
+        corrupt = [r for r in data if r.get("key") == ""]
+        assert len(corrupt) == 1
+        assert corrupt[0]["active"] is False
+        active = [r for r in data if r.get("active") is True]
+        assert len(active) == 1
+        assert active[0]["key"] == key1
 
 
 # -----------------------------------------------------------------------
