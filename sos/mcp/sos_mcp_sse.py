@@ -922,7 +922,7 @@ def get_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "outbox_status",
-            "description": "Aggregate outbox/queue health across substrates (Mirror receipts, SOS bus events, Inkwell-incoming). S024 F-17. Returns per-substrate {kind, pending, in_flight, dlq} with `kind` ∈ real|best_effort|not_configured|error. Pages a substrate as 'real' only if it durably persists pending work. Use this to diagnose audit-write backlog or DLQ growth.",
+            "description": "Aggregate outbox/queue health across substrates (Mirror receipts, SOS bus events, Inkwell-incoming). S024 F-17 + S025 A-1 + S026 A-4. Returns per-substrate {kind, pending, in_flight, dlq} with `kind` ∈ native|best_effort|not_configured|error. Mirror = native (postgres outbox); SOS = native (Redis Streams + AOF/RDB + DLQ + RetryWorker); Inkwell-incoming = not_configured. `best_effort` is a historical placeholder kind retained for forward-compatibility — no current substrate reports it. Use this to diagnose audit-write backlog or DLQ growth.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -2481,9 +2481,9 @@ async def handle_tool(
                 None, _aggregate_outbox_status_sync
             )
             backend_icon = {
-                "native": "🟢",        # Mirror NativeSqlOutbox — durable
+                "native": "🟢",        # Mirror NativeSqlOutbox + SOS bus Redis Streams — both durable
                 "memory": "🟡",        # in-process — best_effort fallback
-                "best_effort": "🟡",   # SOS bus today
+                "best_effort": "🟡",   # historical placeholder (no current substrate reports this — S025 A-1 promoted SOS to native)
                 "not_configured": "⚪",
                 "disabled": "⚪",      # Mirror flag off
                 "error": "🔴",
