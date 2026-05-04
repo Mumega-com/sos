@@ -281,6 +281,15 @@ class BusHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+
+        # S027 D-1b — internal tenant provisioning endpoint.
+        # Auth domain split from tokens.json Bearer (identity domain): this endpoint
+        # uses INTERNAL_API_SECRET env var (s2s domain). Per Loom routing approval
+        # 2026-05-04 21:46Z. LOCK-D-1b-internal-bearer-fail-closed.
+        if path == "/api/internal/tenants/provision":
+            self._handle_tenant_provision()
+            return
+
         token = self._auth()
         if not token:
             return
@@ -402,6 +411,48 @@ class BusHandler(BaseHTTPRequestHandler):
 
         else:
             self._json(404, {"error": "Not found"})
+
+    def _handle_tenant_provision(self) -> None:
+        """S027 D-1b — POST /api/internal/tenants/provision.
+
+        Auth: INTERNAL_API_SECRET env-var Bearer (NOT tokens.json — separate s2s domain).
+        Body: { tenant_id, slug, display_name, industry }
+        Returns 200 with { mirror_key, bus_token, scaffold_path, idempotency: {...} }.
+
+        LOCK-D-1b-internal-bearer-fail-closed: missing env → 503 BEFORE any disk read.
+        Bad/missing Bearer → 401 BEFORE body parse. Body validation → 422 BEFORE disk write.
+        """
+        from sos.bus.tenant_provisioning import (
+            authenticate_bearer,
+            get_internal_secret,
+            provision_tenant,
+            ProvisionError,
+        )
+
+        # 1. Substrate misconfiguration check — fail-closed BEFORE any work
+        if not get_internal_secret():
+            self._json(503, {"error": "internal_secret_unconfigured"})
+            return
+
+        # 2. Bearer auth — constant-time compare in authenticate_bearer
+        auth = self.headers.get("Authorization", "")
+        if not authenticate_bearer(auth):
+            self._json(401, {"error": "unauthorized"})
+            return
+
+        # 3. Body parse + validate (validation lives inside provision_tenant)
+        try:
+            body = self._body()
+        except (json.JSONDecodeError, ValueError):
+            self._json(422, {"error": "invalid_json_body"})
+            return
+
+        # 4. Provision (validation + 3 idempotent steps)
+        try:
+            result = provision_tenant(body)
+            self._json(200, result)
+        except ProvisionError as e:
+            self._json(e.status, {"error": e.code, "message": e.message})
 
     def log_message(self, format, *args) -> None:
         pass
