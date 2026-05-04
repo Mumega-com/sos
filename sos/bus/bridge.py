@@ -290,6 +290,16 @@ class BusHandler(BaseHTTPRequestHandler):
             self._handle_tenant_provision()
             return
 
+        # S027 D-2b — internal tenant agent activation endpoint.
+        # Path: /api/internal/tenants/:id/agents/activate (parameterized URL).
+        # Auth: INTERNAL_API_SECRET (same s2s domain as D-1b).
+        # Athena brief-shape gate iter-2 GREEN 2026-05-04T22:33Z.
+        import re as _re
+        _activate_match = _re.match(r"^/api/internal/tenants/([^/]+)/agents/activate$", path)
+        if _activate_match:
+            self._handle_tenant_agent_activate(_activate_match.group(1))
+            return
+
         token = self._auth()
         if not token:
             return
@@ -411,6 +421,67 @@ class BusHandler(BaseHTTPRequestHandler):
 
         else:
             self._json(404, {"error": "Not found"})
+
+    def _handle_tenant_agent_activate(self, url_tenant_id: str) -> None:
+        """S027 D-2b — POST /api/internal/tenants/:id/agents/activate.
+
+        Auth: INTERNAL_API_SECRET env-var Bearer.
+        Body: {tenant_id, tenant_slug, agent_kind, actor_token_hash}
+              OR {tenant_id, tenant_slug, agent_kind, actor_type: "platform-admin"}
+        Returns 200 with {agent_name, qnft_seed_hex, token_hash, scaffold_path,
+                          idempotency: {qnft_minted, token_minted, routing_registered, scaffold_created}}.
+
+        7 invariants enforced (L-1..L-7). Athena REFINE-1: D-2b is the real claim
+        validator. URL :id is cross-checked against body.tenant_id (defense-in-depth
+        per Athena P2-note from kasra_s027_d2_d2b_brief_gate_002 GREEN).
+        """
+        from sos.bus.tenant_agent_activation import (
+            activate_tenant_agent,
+        )
+        from sos.bus.tenant_provisioning import (
+            authenticate_bearer,
+            get_internal_secret,
+            ProvisionError,
+        )
+
+        # 1. Substrate misconfiguration check — fail-closed BEFORE any work
+        if not get_internal_secret():
+            self._json(503, {"error": "internal_secret_unconfigured"})
+            return
+
+        # 2. Bearer auth — constant-time compare
+        auth = self.headers.get("Authorization", "")
+        if not authenticate_bearer(auth):
+            self._json(401, {"error": "unauthorized"})
+            return
+
+        # 3. Body parse
+        try:
+            body = self._body()
+        except (json.JSONDecodeError, ValueError):
+            self._json(422, {"error": "invalid_json_body"})
+            return
+
+        # 4. URL :id ↔ body.tenant_id consistency (defense-in-depth per Athena P2)
+        if not isinstance(body, dict):
+            self._json(422, {"error": "invalid_body", "message": "body must be a JSON object"})
+            return
+        if body.get("tenant_id") != url_tenant_id:
+            self._json(
+                403,
+                {
+                    "error": "tenant_id_url_body_mismatch",
+                    "message": "URL :id and body.tenant_id must match",
+                },
+            )
+            return
+
+        # 5. Activate (validation + 4 idempotent substrate steps + 1 claim validator)
+        try:
+            result = activate_tenant_agent(body)
+            self._json(200, result)
+        except ProvisionError as e:
+            self._json(e.status, {"error": e.code, "message": e.message})
 
     def _handle_tenant_provision(self) -> None:
         """S027 D-1b — POST /api/internal/tenants/provision.

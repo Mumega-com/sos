@@ -240,7 +240,12 @@ class MCPAuthContext:
         return self.active_project or self.tenant_id
 
     agent_name: str = ""  # Explicit agent identity from token
-    scope: str = ""  # "customer" for external customers; empty for internal agents
+    scope: str = ""  # "customer" for external customers; "tenant-agent" for tenant-scoped agent forks; empty for internal agents
+    # S027 D-2 L-7 RLS: tenant-agent tokens carry agent_kind (base agent kind:
+    # athena|kasra|calliope|...) so the bus can enforce that only senders/recipients
+    # with matching tenant_slug+agent_kind+agent_name reach each other. Empty for
+    # non-tenant-agent tokens.
+    agent_kind: str = ""
     plan: str | None = None  # starter | growth | scale | None (system)
     role: str = "admin"  # admin | editor | viewer
     dev_mode: bool = False  # LOCK-TENANT-C: True while knight is activating (first-call window)
@@ -460,6 +465,9 @@ class _TokenCacheWithHotReload:
                 project = item.get("project") or None
                 agent_name = item.get("agent", "")
                 scope = item.get("scope", "")
+                # S027 D-2 L-7: tenant-agent tokens carry agent_kind discriminator.
+                # Substrate "agent" tokens default to empty string.
+                agent_kind = item.get("agent_kind", "") if scope == "tenant-agent" else ""
                 plan = item.get("plan") or None
                 role = item.get("role", "admin")
                 cache[hash_key] = MCPAuthContext(
@@ -469,6 +477,7 @@ class _TokenCacheWithHotReload:
                     source="bus_tokens",
                     agent_name=agent_name,
                     scope=scope,
+                    agent_kind=agent_kind,
                     plan=plan,
                     role=role,
                 )
@@ -623,6 +632,76 @@ def _require_same_tenant_agent(auth: MCPAuthContext, requested: str | None) -> s
     if requested and not hmac.compare_digest(requested, tenant_agent):
         raise HTTPException(status_code=403, detail="cross_tenant_agent_access")
     return tenant_agent
+
+
+# S027 D-2 L-7 — Substrate-only agent kinds. Tenant-agent tokens may target these
+# as coordination peers (loom routes briefs, mizan handles business cadence, etc.)
+# even though they live in a different scope. Names match SUBSTRATE_ONLY_KINDS in
+# sos/bus/tenant_agent_activation.py — keep in sync.
+_TENANT_AGENT_SUBSTRATE_PEERS: frozenset[str] = frozenset(
+    {"loom", "athena", "kasra", "mumega", "river", "mizan", "sol", "hermes", "codex",
+     "calliope", "worker", "gemma", "sos-mcp-sse"}
+)
+
+
+def _peer_tenant_meta(peer_agent_name: str) -> tuple[str, str, str] | None:
+    """S027 D-2 L-7 — return (scope, tenant_slug, agent_kind) for a peer agent name.
+
+    Looks up the FIRST active token entry whose `agent` field matches.
+    Returns None if no active token claims this name (e.g. ad-hoc substrate agent
+    with env-token only). Caller must treat None as "non-tenant-agent peer".
+    """
+    cache = _local_token_cache.get()
+    for ctx in cache.values():
+        if ctx.agent_name == peer_agent_name:
+            return (ctx.scope, ctx.tenant_id or "", ctx.agent_kind)
+    return None
+
+
+def _enforce_tenant_agent_rls(auth: MCPAuthContext, target_agent: str) -> None:
+    """S027 D-2 L-7 — block cross-tenant message sends from tenant-agent tokens.
+
+    Rule: when sender's token has scope='tenant-agent', the target peer must
+    either (a) share the same tenant_slug, or (b) be a recognized substrate
+    coordination agent. Anything else = different tenant boundary, raise 403.
+
+    Defense layer pairs with Worker-side D-1b auth + URL/body cross-check:
+    Worker validates the token belongs to the tenant; this layer prevents the
+    same token from broadcasting cross-tenant once on the bus.
+
+    Spoofed-tenant-slug-with-valid-agent-name attack: token claims
+    tenant_slug=acme + agent_name=athena-acme; target=athena-other (a real
+    agent in tenant=other). Without this check, athena-acme's message lands in
+    athena-other's inbox stream → cross-tenant leak. With this check, peer
+    lookup resolves athena-other to tenant_slug=other → mismatch → 403.
+    """
+    if auth.scope != "tenant-agent":
+        return
+    if not auth.tenant_id or not auth.agent_kind:
+        # Defensive: a malformed tenant-agent token (no tenant_slug or no
+        # agent_kind) cannot prove same-scope. Reject all sends.
+        raise HTTPException(
+            status_code=403, detail="tenant_agent_token_missing_discriminators"
+        )
+    # Substrate coordination peer (by name) — allowed regardless of token shape.
+    if target_agent in _TENANT_AGENT_SUBSTRATE_PEERS:
+        return
+    peer = _peer_tenant_meta(target_agent)
+    if peer is None:
+        # No active token claims this name. Allow only if it's a substrate
+        # coordination name; otherwise reject — we won't deliver to phantom
+        # tenant-agents.
+        raise HTTPException(
+            status_code=403, detail="tenant_agent_unknown_peer"
+        )
+    peer_scope, peer_tenant_slug, _peer_kind = peer
+    if peer_scope != "tenant-agent":
+        # Peer is a substrate agent (validated via real token entry). Allowed.
+        return
+    if not hmac.compare_digest(peer_tenant_slug, auth.tenant_id):
+        raise HTTPException(
+            status_code=403, detail="cross_tenant_send_blocked"
+        )
 
 
 def _scoped_context_id(auth: MCPAuthContext, value: str | None) -> str:
@@ -1713,7 +1792,11 @@ async def handle_tool(
 
         # --- send ---
         elif name == "send":
-            to = _require_same_tenant_agent(auth, args.get("to"))
+            to = args.get("to")
+            # S027 D-2 L-7: tenant-agent senders cannot send to peers in a
+            # different tenant_slug (substrate coordination peers exempt).
+            _enforce_tenant_agent_rls(auth, to or "")
+            to = _require_same_tenant_agent(auth, to)
             text = args["text"]
             # System tokens (internal agents connecting via MCP env token) route
             # to the global agent stream with synthetic scope so enforce_scope

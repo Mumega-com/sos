@@ -64,6 +64,7 @@ AGENT_ROUTING = {
     "hermes":   "tmux",    # Ops + architecture review (home: mumega.com/agents/hermes/)
     "kaveh":    "tmux",    # First customer knight — GAF/SR&ED
     "lex-knight": "tmux",  # Lex Ace knight — PEI regional activator + partner pipeline
+    "calliope": "tmux",    # Mumega content writer — Sonnet via Claude Code (home: mumega.com/agents/calliope/). Provisioned 2026-05-04.
 }
 
 # Tmux session name override (if different from agent name)
