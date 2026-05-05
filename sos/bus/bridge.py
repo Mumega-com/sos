@@ -225,6 +225,74 @@ def _rate_check(token: dict, endpoint: str) -> dict:
         return {"rate_verdict": "skip", "rate_reason": f"err:{type(exc).__name__}"}
 
 
+# LOCK-S028-B-1.1-caller-identity-binding (sub-LOCK; Phase 3 hard gate)
+#
+# Phase 3 (S028 B2) enforces that the caller-asserted identity in the
+# request body/query equals the token-bound identity. Five endpoints:
+#   /send       body.from
+#   /broadcast  body.from
+#   /announce   body.agent
+#   /inbox      query.agent
+#   /heartbeat  body.agent
+#
+# Mismatch → 403 identity_binding_mismatch BEFORE any business logic.
+# Malformed token (token.agent missing/empty) → 403 malformed_token_record
+# UNCONDITIONALLY. AGD canon: silent-fail-open-at-contract-boundaries
+# is a third-instance violation; never log-and-continue here.
+#
+# No backwards-compat shim. Hard cutover at Phase 3 (Athena verdict
+# 2026-05-05T02:56Z, brief stub L-1.1.d). The Phase 1+2 audit stream
+# binding_match field made the would-block delta observable across the
+# shadow window; Phase 3 trips the gate.
+class _IdentityBindingError(Exception):
+    """Raised by `_assert_caller` on identity-binding violation.
+
+    Attributes:
+        code:    "identity_binding_mismatch" or "malformed_token_record"
+        message: human-readable explanation; safe to surface to caller.
+    """
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+        self.message = message
+
+
+def _assert_caller(token: dict, claimed_agent: str | None) -> None:
+    """Raise _IdentityBindingError if caller-asserted identity does not
+    match the token-bound identity.
+
+    Returns None on match (callable as an assertion).
+
+    Raises:
+        _IdentityBindingError(code="malformed_token_record")
+            when token.get("agent") is None/empty (fail-closed; AGD canon).
+        _IdentityBindingError(code="identity_binding_mismatch")
+            when claimed_agent is None/empty OR != token.agent.
+    """
+    token_agent = token.get("agent") if isinstance(token, dict) else None
+    if not token_agent:
+        # Fail-closed: token records lacking an agent field cannot be
+        # used to assert any identity. Never log-and-continue.
+        raise _IdentityBindingError(
+            "malformed_token_record",
+            "token record missing 'agent' field",
+        )
+    if not claimed_agent:
+        # Phase 3 hard gate: every sensitive endpoint MUST claim an
+        # identity. Empty/None claim is a binding mismatch (cannot be
+        # verified to match the token).
+        raise _IdentityBindingError(
+            "identity_binding_mismatch",
+            "request did not claim an agent identity",
+        )
+    if claimed_agent != token_agent:
+        raise _IdentityBindingError(
+            "identity_binding_mismatch",
+            f"token bound to '{token_agent}', request claims '{claimed_agent}'",
+        )
+
+
 def sos_msg(msg_type: str, source: str, target: str, text: str, project: str | None = None) -> dict:
     """v0.4.0: build a v1-shaped bus message using Pydantic contracts.
 
@@ -282,6 +350,22 @@ class BusHandler(BaseHTTPRequestHandler):
             self._json(401, {"error": "Invalid token"})
             return None
         return token
+
+    def _enforce_caller(self, token: dict, claimed: str | None) -> bool:
+        """LOCK-S028-B-1.1 hard gate. Returns True if caller-asserted
+        identity matches token-bound identity. On mismatch, emits 403 and
+        returns False; the handler MUST `return` immediately on False.
+
+        Audit emission for the violation is the caller's responsibility —
+        most handlers already emit before this gate (Phase 1+2 audit). The
+        405-style sequence is: rate-check → audit → enforce → business.
+        """
+        try:
+            _assert_caller(token, claimed)
+            return True
+        except _IdentityBindingError as exc:
+            self._json(403, {"error": exc.code, "message": exc.message})
+            return False
 
     def _project(self, token: dict, requested: str | None = None) -> str | None:
         """Resolve project scope. Token project wins if set."""
@@ -346,6 +430,10 @@ class BusHandler(BaseHTTPRequestHandler):
             # LOCK-S028-B-1 L-3 audit log + L-1 rate verdict (Phase 1+2; shadow).
             _audit_emit(token, "/inbox", claimed=agent, target=agent,
                         extra=_rate_check(token, "/inbox"))
+            # LOCK-S028-B-1.1 Phase 3 hard gate — must follow audit so that
+            # binding violations land in the audit stream BEFORE we 403.
+            if not self._enforce_caller(token, agent):
+                return
             stream = _agent_stream(agent, project)
             entries = r.xrevrange(stream, count=limit)
             # Legacy fallback for global scope
@@ -440,6 +528,9 @@ class BusHandler(BaseHTTPRequestHandler):
             project = self._project(token, body.get("project"))
             # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
             _audit_emit(token, "/announce", claimed=agent, target=agent, extra={"tool": tool})
+            # LOCK-S028-B-1.1 Phase 3 hard gate.
+            if not self._enforce_caller(token, agent):
+                return
             ts = now_iso()
             reg_key = _registry_key(agent, project)
             r.hset(reg_key, mapping={
@@ -468,6 +559,9 @@ class BusHandler(BaseHTTPRequestHandler):
             # LOCK-S028-B-1 L-3 audit log + L-1 rate verdict (Phase 1+2; shadow).
             _audit_emit(token, "/send", claimed=from_agent, target=to_agent,
                         extra=_rate_check(token, "/send"))
+            # LOCK-S028-B-1.1 Phase 3 hard gate.
+            if not self._enforce_caller(token, from_agent):
+                return
             if not to_agent or not text:
                 self._json(400, {"error": "Missing 'to' or 'text'"})
                 return
@@ -513,6 +607,9 @@ class BusHandler(BaseHTTPRequestHandler):
                 target=(f"squad:{squad}" if squad else "broadcast"),
                 extra=_rate_check(token, "/broadcast"),
             )
+            # LOCK-S028-B-1.1 Phase 3 hard gate.
+            if not self._enforce_caller(token, from_agent):
+                return
             if not text:
                 self._json(400, {"error": "Missing 'text'"})
                 return
@@ -561,6 +658,9 @@ class BusHandler(BaseHTTPRequestHandler):
             project = self._project(token, body.get("project"))
             # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
             _audit_emit(token, "/heartbeat", claimed=agent, target=agent)
+            # LOCK-S028-B-1.1 Phase 3 hard gate.
+            if not self._enforce_caller(token, agent):
+                return
             reg_key = _registry_key(agent, project)
             r.hset(reg_key, "last_seen", now_iso())
             r.expire(reg_key, 600)
