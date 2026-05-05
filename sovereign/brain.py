@@ -787,16 +787,40 @@ def report_to_inkwell(action: dict, result: dict, cycle_ms: int) -> None:
 
 
 def report_to_discord(action: dict, result: dict):
-    """Post brain cycle result to Discord #control."""
+    """Post brain cycle result to Discord #control.
+
+    S028 A3 — emit format follows brain-emit-format-canon-2026-05-04.md §2.
+    Replaces ambiguous `Agent: <coordinator>` with explicit Decided-by /
+    Proposed-action / Routes-through / Status / Reason fields. Disambiguates
+    autonomous-decision origin (this daemon) from coordinator-of-record (the
+    agent named in `action.agent`) so receivers don't have to guess whether
+    a destructive op was already executed by Loom or merely proposed.
+    """
     if not DISCORD_BOT_TOKEN:
         return
 
-    now = datetime.now(timezone.utc).strftime("%H:%M")
-    status = "✅" if result.get("success") else "❌"
+    now = datetime.now(timezone.utc)
+    cycle_id = f"brain.py:cycle_{now.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    success = bool(result.get("success"))
+    status_word = "executed" if success else "failed"
+    status_emoji = "✅" if success else "❌"
+    summary = action.get("action", "?")
+    method = action.get("method", "?")
+    details = action.get("details", "")
+    proposed_action = f"{method}({details[:80]})" if details else method
+    routes_through = action.get("agent", "?")
+    reason_line = ""
+    if not success:
+        reason_text = str(result.get("result", "?"))[:200]
+        reason_line = f"\nReason: {reason_text}"
+
     msg = (
-        f"`{now}` **[BRAIN]** {status} {action.get('action', '?')}\n"
-        f"Agent: {action.get('agent', '?')} | Method: {action.get('method', '?')}\n"
-        f"Result: {result.get('result', '?')[:200]}"
+        f"`{now.strftime('%H:%M')}` **[BRAIN]** {status_emoji} {summary}\n"
+        f"Decided-by: {cycle_id}\n"
+        f"Proposed-action: {proposed_action}\n"
+        f"Routes-through: {routes_through}\n"
+        f"Status: {status_word}"
+        f"{reason_line}"
     )
 
     try:
