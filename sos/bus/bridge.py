@@ -101,6 +101,61 @@ def _legacy_stream(agent: str) -> str:
     return f"sos:stream:sos:channel:private:agent:{agent}"
 
 
+# LOCK-S028-B-1-bus-bridge-public-hardening — L-3 (audit log additive)
+#
+# Phase 1 (S028 B2) emits a structured record per sensitive-endpoint
+# invocation to the Redis stream `sos:audit:bridge:v1`. Pure observation:
+# no behavioral change. Enables (a) shadow-audit window for B-1.2 grants
+# backfill, and (b) pre-binding observation for B-1.1 — see how often
+# tokens claim agent != token.get("agent") today before the hard gate
+# lands at Phase 3.
+#
+# Audit failures must NEVER block business logic in Phase 1 (observability,
+# not enforcement). XADD failure is logged via `print` to stderr and the
+# request continues. From Phase 3 onward, identity-binding is enforced by
+# `_assert_caller`, not by audit-log success.
+def _audit_emit(
+    token: dict,
+    endpoint: str,
+    claimed: str | None = None,
+    target: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    try:
+        token_agent = str(token.get("agent", "") or "")
+        token_hash = str(token.get("token_hash") or token.get("hash", "") or "")
+        token_hash_short = token_hash[:16] if token_hash else ""
+        claimed_str = str(claimed or "")
+        record: dict[str, str] = {
+            "ts": now_iso(),
+            "endpoint": endpoint,
+            "token_agent": token_agent,
+            "token_hash_short": token_hash_short,
+            "claimed_agent": claimed_str,
+            "target": str(target or ""),
+            # Phase-1 observation: would_block_at_phase_3 = caller's claimed
+            # identity does not match token-bound identity. Empty (not
+            # evaluable) when either side is absent — no identity claimed
+            # (e.g. /heartbeat without body.agent) OR malformed token record
+            # missing `agent`. "0" reserved strictly for evaluated mismatch.
+            "binding_match": (
+                "1" if (claimed_str and token_agent and claimed_str == token_agent)
+                else ("0" if (claimed_str and token_agent) else "")
+            ),
+        }
+        if extra:
+            for k, v in extra.items():
+                record[str(k)] = str(v)
+        # MAXLEN cap: bridge is hot path; cap stream at ~100k entries
+        # (approximate trim) to keep memory bounded. Operators can copy
+        # to durable storage out-of-band.
+        r.xadd("sos:audit:bridge:v1", record, maxlen=100000, approximate=True)
+    except Exception as exc:  # pragma: no cover — audit must not block
+        # Defense-in-depth: never raise from audit. Log to stderr so
+        # operators see failures.
+        print(f"[bridge] audit emit failed for {endpoint}: {exc}")
+
+
 def sos_msg(msg_type: str, source: str, target: str, text: str, project: str | None = None) -> dict:
     """v0.4.0: build a v1-shaped bus message using Pydantic contracts.
 
@@ -219,6 +274,8 @@ class BusHandler(BaseHTTPRequestHandler):
             agent = params.get("agent", "unknown")
             limit = int(params.get("limit", "10"))
             project = self._project(token, params.get("project"))
+            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            _audit_emit(token, "/inbox", claimed=agent, target=agent)
             stream = _agent_stream(agent, project)
             entries = r.xrevrange(stream, count=limit)
             # Legacy fallback for global scope
@@ -311,6 +368,8 @@ class BusHandler(BaseHTTPRequestHandler):
             tool = body.get("tool", "remote")
             summary = body.get("summary", f"{tool} session")
             project = self._project(token, body.get("project"))
+            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            _audit_emit(token, "/announce", claimed=agent, target=agent, extra={"tool": tool})
             ts = now_iso()
             reg_key = _registry_key(agent, project)
             r.hset(reg_key, mapping={
@@ -336,6 +395,8 @@ class BusHandler(BaseHTTPRequestHandler):
             text = body.get("text", "")
             project = self._project(token, body.get("project"))
             wait_for_delivery = body.get("wait_for_delivery", False)
+            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            _audit_emit(token, "/send", claimed=from_agent, target=to_agent)
             if not to_agent or not text:
                 self._json(400, {"error": "Missing 'to' or 'text'"})
                 return
@@ -374,6 +435,12 @@ class BusHandler(BaseHTTPRequestHandler):
             text = body.get("text", "")
             squad = body.get("squad")
             project = self._project(token, body.get("project"))
+            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            _audit_emit(
+                token, "/broadcast",
+                claimed=from_agent,
+                target=(f"squad:{squad}" if squad else "broadcast"),
+            )
             if not text:
                 self._json(400, {"error": "Missing 'text'"})
                 return
@@ -414,6 +481,8 @@ class BusHandler(BaseHTTPRequestHandler):
         elif path == "/heartbeat":
             agent = body.get("agent", "unknown")
             project = self._project(token, body.get("project"))
+            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            _audit_emit(token, "/heartbeat", claimed=agent, target=agent)
             reg_key = _registry_key(agent, project)
             r.hset(reg_key, "last_seen", now_iso())
             r.expire(reg_key, 600)
