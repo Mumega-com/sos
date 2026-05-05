@@ -336,6 +336,21 @@ def scaffold_or_skip(slug: str, display_name: str, industry: str) -> tuple[Path,
             content = tpl_path.read_text(encoding="utf-8")
             rendered = _render_template(content, slug, display_name, industry)
             dest.write_text(rendered, encoding="utf-8")
+
+        # S028 A5 P2-B — emit .tenant.json so D-2b _resolve_tenant_metadata()
+        # reads {display_name, industry} for agent-fork scaffold rendering
+        # instead of falling through to (slug, "general"). Idempotent: skip if
+        # operator has hand-edited the file.
+        tenant_meta_path = target / ".tenant.json"
+        if not tenant_meta_path.exists():
+            tenant_meta_path.write_text(
+                json.dumps(
+                    {"slug": slug, "display_name": display_name, "industry": industry},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
         return target, created
     except OSError as e:
         raise ProvisionError(500, "scaffold_io_error", f"scaffold IO: {e}") from e
