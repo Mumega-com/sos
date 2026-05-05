@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -156,6 +157,74 @@ def _audit_emit(
         print(f"[bridge] audit emit failed for {endpoint}: {exc}")
 
 
+# LOCK-S028-B-1-bus-bridge-public-hardening — L-1 (rate-limit shadow)
+#
+# Phase 2 (S028 B2) computes a per-token rate verdict per request and
+# records it in the same `sos:audit:bridge:v1` stream via _audit_emit's
+# extra-fields slot. Pure observation; never blocks. Phase 4 flips to
+# enforce: 429 with Retry-After once the shadow window confirms limits
+# don't trip legitimate tokens.
+#
+# Window: fixed per-minute buckets keyed
+#   bus:ratelimit:{token_hash}:{epoch_minute}
+# INCR + EXPIRE 90s (1.5x window) so a request landing on the boundary
+# does not lose state if a partner request hits the next bucket
+# immediately.
+#
+# Caps: default 60/min. Tokens with top-level field
+#   rate_limit_class: "elevated"
+# raised to 600/min. `rate_limit_class` is a top-level token field
+# (capacity), orthogonal to `grants` array (capability). Pinned by
+# Athena P2 carry verdict 2026-05-05T03:00Z.
+RATE_LIMIT_DEFAULT = 60
+RATE_LIMIT_ELEVATED = 600
+RATE_LIMIT_WINDOW_SEC = 60
+RATE_LIMIT_TTL_SEC = 90  # > window so boundary state survives next-bucket race
+
+
+def _rate_limit_for(token: dict) -> int:
+    cls = str(token.get("rate_limit_class", "") or "")
+    if cls == "elevated":
+        return RATE_LIMIT_ELEVATED
+    return RATE_LIMIT_DEFAULT
+
+
+def _rate_check(token: dict, endpoint: str) -> dict:
+    """Compute Phase-2 rate verdict (shadow). NEVER blocks.
+
+    Returns a dict suitable to spread into `_audit_emit(extra=...)` so the
+    verdict lands in the same audit record as the endpoint event.
+
+    Verdicts:
+      allow         — count <= limit
+      would_block   — count > limit (Phase 4 will return 429 here)
+      skip          — observability surface unable to evaluate (no
+                      token_hash, or Redis error). Defense-in-depth: never
+                      raise from rate-check; never let it block traffic.
+    """
+    try:
+        token_hash = str(token.get("token_hash") or token.get("hash") or "")
+        if not token_hash:
+            return {"rate_verdict": "skip", "rate_reason": "no_token_hash"}
+        bucket = int(time.time()) // RATE_LIMIT_WINDOW_SEC
+        key = f"bus:ratelimit:{token_hash}:{bucket}"
+        count = r.incr(key)
+        # Set TTL only on first INCR of the bucket — saves a write per
+        # subsequent request in the same window.
+        if count == 1:
+            r.expire(key, RATE_LIMIT_TTL_SEC)
+        limit = _rate_limit_for(token)
+        verdict = "allow" if count <= limit else "would_block"
+        return {
+            "rate_verdict": verdict,
+            "rate_count": str(count),
+            "rate_limit": str(limit),
+            "rate_endpoint": endpoint,
+        }
+    except Exception as exc:  # pragma: no cover — observability never blocks
+        return {"rate_verdict": "skip", "rate_reason": f"err:{type(exc).__name__}"}
+
+
 def sos_msg(msg_type: str, source: str, target: str, text: str, project: str | None = None) -> dict:
     """v0.4.0: build a v1-shaped bus message using Pydantic contracts.
 
@@ -274,8 +343,9 @@ class BusHandler(BaseHTTPRequestHandler):
             agent = params.get("agent", "unknown")
             limit = int(params.get("limit", "10"))
             project = self._project(token, params.get("project"))
-            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
-            _audit_emit(token, "/inbox", claimed=agent, target=agent)
+            # LOCK-S028-B-1 L-3 audit log + L-1 rate verdict (Phase 1+2; shadow).
+            _audit_emit(token, "/inbox", claimed=agent, target=agent,
+                        extra=_rate_check(token, "/inbox"))
             stream = _agent_stream(agent, project)
             entries = r.xrevrange(stream, count=limit)
             # Legacy fallback for global scope
@@ -395,8 +465,9 @@ class BusHandler(BaseHTTPRequestHandler):
             text = body.get("text", "")
             project = self._project(token, body.get("project"))
             wait_for_delivery = body.get("wait_for_delivery", False)
-            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
-            _audit_emit(token, "/send", claimed=from_agent, target=to_agent)
+            # LOCK-S028-B-1 L-3 audit log + L-1 rate verdict (Phase 1+2; shadow).
+            _audit_emit(token, "/send", claimed=from_agent, target=to_agent,
+                        extra=_rate_check(token, "/send"))
             if not to_agent or not text:
                 self._json(400, {"error": "Missing 'to' or 'text'"})
                 return
@@ -435,11 +506,12 @@ class BusHandler(BaseHTTPRequestHandler):
             text = body.get("text", "")
             squad = body.get("squad")
             project = self._project(token, body.get("project"))
-            # LOCK-S028-B-1 L-3 audit log (Phase 1; observation only).
+            # LOCK-S028-B-1 L-3 audit log + L-1 rate verdict (Phase 1+2; shadow).
             _audit_emit(
                 token, "/broadcast",
                 claimed=from_agent,
                 target=(f"squad:{squad}" if squad else "broadcast"),
+                extra=_rate_check(token, "/broadcast"),
             )
             if not text:
                 self._json(400, {"error": "Missing 'text'"})
@@ -457,6 +529,12 @@ class BusHandler(BaseHTTPRequestHandler):
         elif path == "/ask":
             agent = body.get("agent", "")
             message = body.get("message", "")
+            # LOCK-S028-B-1 L-1 rate verdict on highest-amplification endpoint.
+            # /ask is not in the L-3 5-endpoint identity-binding scope (no
+            # caller-asserted identity claim), but rate observation is required
+            # before Phase 4 enforce-flip + L-2 concurrency cap.
+            _audit_emit(token, "/ask", claimed=None, target=agent,
+                        extra=_rate_check(token, "/ask"))
             if not agent or not message:
                 self._json(400, {"error": "Missing 'agent' or 'message'"})
                 return
