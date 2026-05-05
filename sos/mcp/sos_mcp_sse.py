@@ -186,6 +186,7 @@ RATE_LIMIT_PER_MINUTE: int = int(os.environ.get("MCP_RATE_LIMIT_PER_MINUTE", "60
 MCP_WRITE_TOOLS: frozenset[str] = frozenset({
     "send", "broadcast", "remember", "squad_remember",
     "task_create", "task_update", "request",
+    "as_agent",  # S027 D-5 — session-identity mutation; rate-limit + audit-emit
 })
 
 # WARN-S013-004 fix: module-level sync Redis client for _enforce_rate_limit.
@@ -261,6 +262,14 @@ class MCPAuthContext:
     email: str | None = None
     email_verified: bool = False
     agent_identity_id: str | None = None
+    # S027 D-5 L-4 — `as_agent` MCP primitive: per-SSE-connection identity
+    # mutation. When `as_agent_active=True`, subsequent send/broadcast/inbox
+    # tool calls attribute to `as_agent_name` instead of the caller's default
+    # `agent_scope`. Cleared on as_agent({name: ""}), sign_out, or disconnect.
+    as_agent_active: bool = False
+    as_agent_name: str | None = None
+    as_agent_kind: str | None = None
+    as_agent_tenant_slug: str | None = None
 
     @property
     def is_customer(self) -> bool:
@@ -269,6 +278,12 @@ class MCPAuthContext:
 
     @property
     def agent_scope(self) -> str:
+        # S027 D-5 L-4 — when `as_agent` is active on this SSE connection,
+        # subsequent send/broadcast/inbox tool calls attribute to the target
+        # tenant agent rather than the caller's default identity. Per-SSE-
+        # connection only — never persists across reconnect.
+        if self.as_agent_active and self.as_agent_name:
+            return self.as_agent_name
         if self.agent_name:
             return self.agent_name
         return AGENT_SELF if self.is_system else (self.tenant_id or AGENT_SELF)
@@ -1022,6 +1037,31 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "as_agent",
+            "description": (
+                "S027 D-5 — Load a tenant-scoped agent's canon (scaffold + cause + recent engrams) "
+                "into the current MCP session and operate as that agent on subsequent send/broadcast/inbox. "
+                "Per-SSE-connection only — never persists across reconnect. "
+                "Pass {name: ''} to clear and revert to default identity. "
+                "Authority required: substrate / platform-admin / tenant-admin (owner). "
+                "tenant-admin can only as_agent into agents in their own tenant; "
+                "tenant-agent and customer scopes cannot use this primitive."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Agent name (e.g. athena-acme). Must be a tenant-scoped agent "
+                            "(scope='tenant-agent' in tokens.json). Pass empty string to clear."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
             "name": "code_mode",
             "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
             "inputSchema": {
@@ -1538,10 +1578,356 @@ async def _handle_sign_out(
     session_id: str | None,
 ) -> dict[str, Any]:
     auth.active_project = None
+    # S027 D-5 L-4 — sign_out clears `as_agent` mutation alongside active_project.
+    _clear_as_agent_state(auth, session_id)
     if session_id:
         _session_signed_in.discard(session_id)
         await _push_tools_list_changed(session_id)
     return _text(json.dumps({"ok": True, "signed_out": True}, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# S027 D-5 — `as_agent` MCP primitive (LOCK-S027-D-5-as-agent-mcp-primitive)
+# ---------------------------------------------------------------------------
+
+
+def _clear_as_agent_state(auth: MCPAuthContext, session_id: str | None) -> None:
+    """Helper — clear in-memory + module-level as_agent state (no audit emit).
+
+    Used by sign_out, SSE disconnect, and as_agent({name: ""}) reset.
+    """
+    auth.as_agent_active = False
+    auth.as_agent_name = None
+    auth.as_agent_kind = None
+    auth.as_agent_tenant_slug = None
+    if session_id:
+        _session_as_agent.pop(session_id, None)
+
+
+def _load_qnft_registry_for_as_agent() -> dict[str, Any]:
+    """Best-effort QNFT registry read. Mirrors `_load_qnft_registry` in
+    `sos/bus/tenant_agent_activation.py` — kept local to avoid circular import
+    pressure on the MCP module. Returns {} on any failure.
+    """
+    try:
+        from sos.bus.tenant_agent_activation import _load_qnft_registry  # type: ignore
+        data = _load_qnft_registry()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _as_agent_error(code: str, **extra: Any) -> dict[str, Any]:
+    """Standard MCP error tool-result shape with named error code (D-5 §1)."""
+    payload: dict[str, Any] = {"ok": False, "error": code}
+    if extra:
+        payload.update(extra)
+    return _text(json.dumps(payload, indent=2))
+
+
+async def _handle_as_agent(
+    auth: MCPAuthContext,
+    args: dict[str, Any],
+    session_id: str | None,
+) -> dict[str, Any]:
+    """S027 D-5 — load tenant-scoped agent canon into MCP session.
+
+    LOCKs enforced:
+      L-1 — Layer A (caller scope class) + Layer B (target-tenant match for
+            tenant-admin path only). Order split by caller scope so tenant-admin
+            callers cannot distinguish "agent doesn't exist" from "you can't
+            access it" (agent-existence oracle leak closure).
+      L-2 — Mirror engram fetch tenant-scoped (project=target_tenant_slug).
+      L-3 — Scaffold-missing failure mode: re-render via D-2b
+            scaffold_or_skip_agent_fork; if template also missing → fail loud
+            with `scaffold_missing` (no silent empty content).
+      L-4 — Per-SSE-connection session-identity mutation (cleared on
+            disconnect / sign_out / explicit reset). NOT keyed by token hash —
+            two connections sharing one token get distinct session_ids.
+      L-5 — Mandatory audit row (fire-and-forget, fail-open).
+    """
+    target_name = str(args.get("name", "")).strip()
+
+    # ----------------------------------------------------------------- reset
+    # `as_agent({name: ""})` clears state, emits a reset audit row, returns ok.
+    # Idempotent — works even when no swap is currently active.
+    if not target_name:
+        from_label = (
+            auth.as_agent_name
+            or auth.agent_name
+            or (auth.scope or "system")
+        )
+        was_active = auth.as_agent_active
+        prev_target = auth.as_agent_name
+        prev_tenant = auth.as_agent_tenant_slug
+        _clear_as_agent_state(auth, session_id)
+        # L-5 — reset audit row (fail-open).
+        try:
+            asyncio.create_task(_emit_audit(AuditChainEvent(
+                stream_id="mcp",
+                actor_id=auth.agent_name or auth.scope or "system",
+                actor_type="session_identity_swap",
+                action="mcp.as_agent.reset",
+                resource=f"agent:{prev_target or ''}",
+                payload={
+                    "from_agent": from_label,
+                    "to_agent": "",
+                    "tenant_slug": prev_tenant or "",
+                    "session_id": session_id or "",
+                    "caller_scope": auth.scope or "system",
+                    "was_active": was_active,
+                },
+            )))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("as_agent reset audit emit failed: %s", exc)
+        return _text(json.dumps({
+            "ok": True,
+            "reset": True,
+            "session_identity_set": False,
+            "session_id": session_id or "",
+        }, indent=2))
+
+    # --------------------------------------------------------- L-1 Layer A
+    caller_scope = auth.scope or ""
+    if caller_scope == "customer":
+        return _as_agent_error("customer_token_forbidden")
+    if caller_scope == "tenant-agent":
+        return _as_agent_error("tenant_agent_token_cannot_escalate")
+    if caller_scope == "tenant":
+        # Owner-only v1 (S028 carry: editor permission if surfaced).
+        if (auth.role or "").lower() != "owner":
+            return _as_agent_error(
+                "tenant_admin_role_insufficient",
+                role=auth.role or "viewer",
+            )
+    # else: scope="" (substrate) or is_system=True (ADMIN_API_SECRET) — permitted.
+
+    is_tenant_admin = (caller_scope == "tenant")
+    # Substrate path: scope="" or is_system token.
+    is_substrate = (auth.is_system or caller_scope == "")
+
+    # ----------------------------------------------------------- target lookup
+    # Reuse the same _peer_tenant_meta helper used by L-7 RLS — single source
+    # of truth for "does this name resolve to a tenant-agent token, and what
+    # are its (scope, tenant_slug, agent_kind) discriminators?"
+    target_meta = _peer_tenant_meta(target_name)
+
+    # --------------------------------------------------------- L-1 Layer B
+    # ORDER SPLIT BY CALLER SCOPE — tenant-admin callers MUST NOT learn whether
+    # a phantom name exists. Substrate callers (full authority) get distinct
+    # error codes (no leak concern).
+    if is_tenant_admin:
+        if target_meta is None:
+            # Phantom OR cross-tenant — caller cannot distinguish.
+            return _as_agent_error("not_authorized")
+        target_scope, target_tenant_slug, target_agent_kind = target_meta
+        if not auth.tenant_id or not hmac.compare_digest(
+            auth.tenant_id, target_tenant_slug or ""
+        ):
+            return _as_agent_error("not_authorized")
+        if target_scope != "tenant-agent":
+            # Caller has proven authority over this tenant; substrate-name
+            # selection is a different rejection class (intent-clarification).
+            return _as_agent_error("not_a_tenant_agent")
+    else:
+        # substrate / platform-admin path — distinct codes OK
+        if target_meta is None:
+            return _as_agent_error("agent_not_found")
+        target_scope, target_tenant_slug, target_agent_kind = target_meta
+        if target_scope != "tenant-agent":
+            return _as_agent_error("not_a_tenant_agent")
+
+    # Defensive: tenant-agent must have non-empty discriminators in tokens.json
+    if not target_tenant_slug or not target_agent_kind:
+        return _as_agent_error(
+            "not_a_tenant_agent",
+            reason="target token missing tenant_slug or agent_kind discriminator",
+        )
+
+    # ------------------------------------------------------------------ L-3
+    # Scaffold load — re-render via D-2b idempotent function if missing.
+    customers_root = Path.home() / ".mumega" / "customers"
+    scaffold_path = (
+        customers_root / target_tenant_slug / "agents" / target_agent_kind / "CLAUDE.md"
+    )
+    qnft_registry = _load_qnft_registry_for_as_agent()
+    qnft_record = qnft_registry.get(target_name) or {}
+    qnft_seed_hex = qnft_record.get("seed_hex", "")
+
+    if not scaffold_path.exists():
+        try:
+            from sos.bus.tenant_agent_activation import (
+                scaffold_or_skip_agent_fork,
+                _resolve_tenant_metadata,
+            )
+            display_name, industry = _resolve_tenant_metadata(target_tenant_slug)
+            scaffold_path, _created = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: scaffold_or_skip_agent_fork(
+                    agent_name=target_name,
+                    agent_kind=target_agent_kind,
+                    tenant_slug=target_tenant_slug,
+                    tenant_display_name=display_name,
+                    industry=industry,
+                    qnft_seed_hex=qnft_seed_hex,
+                    mint_date=qnft_record.get("minted_at", ""),
+                ),
+            )
+        except Exception as exc:  # ProvisionError or OSError
+            # Template missing OR scaffold-write IO failure — fail loud, never
+            # return silent empty content.
+            return _as_agent_error(
+                "scaffold_missing",
+                kind=target_agent_kind,
+                expected_path=str(scaffold_path),
+                io_error=str(exc),
+            )
+
+    if not scaffold_path.exists():
+        # Re-render returned but file still missing — defensive belt-and-braces.
+        return _as_agent_error(
+            "scaffold_missing",
+            kind=target_agent_kind,
+            expected_path=str(scaffold_path),
+        )
+
+    try:
+        scaffold_content = scaffold_path.read_text(encoding="utf-8")
+        scaffold_loaded = True
+    except OSError as exc:
+        return _as_agent_error(
+            "scaffold_missing",
+            kind=target_agent_kind,
+            expected_path=str(scaffold_path),
+            io_error=str(exc),
+        )
+
+    # ---------------------------- QNFT cause (registry first, cause.md second)
+    cause_loaded = False
+    cause_content = ""
+    cause_source = ""
+    if qnft_record.get("cause"):
+        cause_content = str(qnft_record["cause"])
+        cause_source = "registry"
+        cause_loaded = True
+    else:
+        cause_md_path = Path.home() / ".claude" / "qnft" / target_name / "cause.md"
+        if cause_md_path.exists():
+            try:
+                cause_content = cause_md_path.read_text(encoding="utf-8")
+                cause_source = "cause_md"
+                cause_loaded = True
+            except OSError:
+                pass  # cause is informational; absence does not block swap
+
+    # ------------------------------------------------------------------ L-2
+    # Mirror recent engrams scoped to (agent_name, project=target_tenant_slug).
+    # Defensive: even though _mirror_db.recent_engrams accepts a `project`
+    # filter, double-filter the result list — naming convention {kind}-{slug}
+    # makes agent_name effectively scoped, but L-2 invariant must enforce
+    # explicit project filtering, NOT rely on naming uniqueness.
+    try:
+        engram_limit = int(args.get("engram_limit") or 20)
+    except (TypeError, ValueError):
+        engram_limit = 20
+    engram_limit = max(1, min(engram_limit, 100))
+    recent_engrams: list[dict[str, Any]] = []
+    if _mirror_db is not None:
+        try:
+            loop = asyncio.get_event_loop()
+            rows = await loop.run_in_executor(
+                _mirror_executor,
+                lambda: _mirror_db.recent_engrams(
+                    agent=target_name,
+                    limit=engram_limit,
+                    project=target_tenant_slug,
+                ),
+            )
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                row_project = row.get("project")
+                # Defensive double-filter — L-2 invariant.
+                if row_project and row_project != target_tenant_slug:
+                    continue
+                recent_engrams.append(row)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "as_agent Mirror engram fetch failed for %s: %s",
+                target_name, exc,
+            )
+            recent_engrams = []
+
+    # --------------------------------- snapshot caller pre-mutation for audit
+    # `auth.agent_scope` honors as_agent_active, so capture the caller's
+    # default identity BEFORE flipping the flag (else audit row's actor_id
+    # would point at the target, not the caller).
+    pre_swap_actor = auth.agent_scope
+    pre_swap_from = auth.agent_name or (auth.scope or "system") or "unknown"
+    if auth.is_system and not auth.agent_name:
+        pre_swap_from = "system"
+
+    # ------------------------------------------------------------------ L-4
+    # Per-SSE-connection session-identity mutation. Module-level dict mirrors
+    # for cross-handler lookup; `session_id` is the per-CONNECTION uuid4
+    # assigned at SSE accept (not token-hash-keyed) — two simultaneous
+    # connections sharing a Bearer get distinct session_ids and cannot bleed.
+    auth.as_agent_active = True
+    auth.as_agent_name = target_name
+    auth.as_agent_kind = target_agent_kind
+    auth.as_agent_tenant_slug = target_tenant_slug
+    if session_id:
+        _session_as_agent[session_id] = {
+            "as_agent_active": True,
+            "as_agent_name": target_name,
+            "as_agent_kind": target_agent_kind,
+            "as_agent_tenant_slug": target_tenant_slug,
+            "caller_token_hash": auth.token,
+            "caller_scope": auth.scope,
+            "caller_tenant_id": auth.tenant_id,
+            "caller_agent_name": auth.agent_name,
+        }
+
+    # ------------------------------------------------------------------ L-5
+    # Mandatory audit row. Fire-and-forget — failure does NOT block the swap
+    # (in-memory state is canonical until next attributed tool call). Substrate
+    # callers ALSO emit (Athena clause: higher privilege = MORE traceability).
+    try:
+        asyncio.create_task(_emit_audit(AuditChainEvent(
+            stream_id="mcp",
+            actor_id=pre_swap_actor,
+            actor_type="session_identity_swap",
+            action="mcp.as_agent",
+            resource=f"agent:{target_name}",
+            payload={
+                "from_agent": pre_swap_from,
+                "to_agent": target_name,
+                "tenant_slug": target_tenant_slug,
+                "session_id": session_id or "",
+                "caller_scope": auth.scope or "system",
+            },
+        )))
+    except Exception as exc:  # noqa: BLE001
+        # Fail-open: log + continue. The swap is in effect; only the durable
+        # trail is missing for this single call.
+        log.warning("as_agent audit emit failed: %s", exc)
+
+    return _text(json.dumps({
+        "ok": True,
+        "agent_name": target_name,
+        "tenant_slug": target_tenant_slug,
+        "agent_kind": target_agent_kind,
+        "qnft_seed_hex": qnft_seed_hex,
+        "scaffold_loaded": scaffold_loaded,
+        "scaffold_path": str(scaffold_path),
+        "scaffold_content": scaffold_content,
+        "cause_loaded": cause_loaded,
+        "cause_source": cause_source,
+        "cause_content": cause_content,
+        "recent_engrams": recent_engrams,
+        "session_identity_set": True,
+        "session_id": session_id or "",
+    }, indent=2))
 
 
 async def _handle_invite(
@@ -1666,6 +2052,11 @@ async def handle_tool(
         return await _handle_sign_out(auth, session_id)
     if name == "invite":
         return await _handle_invite(auth, args)
+    # S027 D-5 — `as_agent` MCP primitive. Dispatched ahead of the WRITE_TOOLS
+    # rate-limit branch so its own per-tool audit row is the authoritative
+    # signal (the generic write-path audit fires after; both are fine).
+    if name == "as_agent":
+        return await _handle_as_agent(auth, args, session_id)
 
     # Log tool invocation
     await _publish_log("info", "mcp", f"tool:{name} by {agent_scope}", agent=agent_scope)
@@ -3018,6 +3409,15 @@ _session_auth: dict[str, MCPAuthContext] = {}
 # lets Step 5's tools/list filter on "is signed in" without a None-vs-set
 # ambiguity. Cleared on sign_out and on session disconnect.
 _session_signed_in: set[str] = set()
+# S027 D-5 L-4 — `as_agent` session-identity mutation registry.
+# Keyed by per-SSE-connection session_id (uuid4 at SSE accept, line ~4250),
+# NOT by token hash — multiple simultaneous connections sharing the same
+# bearer token must NOT share as_agent state, otherwise as_agent on conn-A
+# bleeds into send/broadcast issued on conn-B.
+# Value: dict with as_agent_active/name/kind/tenant_slug + caller's original
+# (token_hash, scope_class, tenant_id) for audit chain attribution.
+# Cleared on as_agent({name: ""}), sign_out, or SSE disconnect.
+_session_as_agent: dict[str, dict[str, Any]] = {}
 # REMOVED 2026-04-26 (S013 WARN-1, Athena adversarial): process-local rate-limit dict.
 # _token_windows was bypassable via concurrent connections (single INCR per-process,
 # multiple processes = no shared state). Replaced with Redis INCR + EXPIRE in both
@@ -4300,6 +4700,8 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
             _sessions.pop(session_id, None)
             _session_auth.pop(session_id, None)
             _session_signed_in.discard(session_id)
+            # S027 D-5 L-4 — clear per-SSE-connection as_agent state on disconnect.
+            _session_as_agent.pop(session_id, None)
             log.info("SSE client disconnected, session=%s", session_id)
 
     return EventSourceResponse(event_generator())
