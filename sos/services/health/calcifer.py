@@ -77,6 +77,13 @@ STALE_IN_PROGRESS_HOURS = int(os.environ.get("CALCIFER_STALE_IN_PROGRESS_HOURS",
 CLAIMED_STALE_HOURS = int(os.environ.get("CALCIFER_CLAIMED_STALE_HOURS", "1"))
 OPENCLAW_UNRESPONSIVE_MINUTES = int(os.environ.get("CALCIFER_OPENCLAW_UNRESPONSIVE_MINUTES", "60"))
 DISCORD_ALERT_SCRIPT = str(Path.home() / "scripts" / "discord-reply.sh")
+# LOCK-S027-C-1.1 — mumega.com blog directory for post indexing.
+# Structural absence is fail-safe: missing dir → metrics return (0, None), warn
+# only. Default points at the canonical content tree; tests inject via env.
+MUMEGA_BLOG_DIR = Path(os.environ.get(
+    "MUMEGA_BLOG_DIR",
+    str(Path.home() / "mumega.com" / "content" / "en" / "blog"),
+))
 SYSTEMD_RESTART_UNITS = {
     "mirror": "mirror.service",
     "squad": "sos-squad.service",
@@ -539,6 +546,77 @@ def check_tmux_session(session_name: str) -> bool:
         return False
 
 
+def index_mumega_posts(blog_dir: Path | None = None) -> dict:
+    """LOCK-S027-C-1.1 — count published posts + last publish timestamp.
+
+    Walks `MUMEGA_BLOG_DIR` for `*.md` files with frontmatter `status: published`.
+    Returns:
+        {
+          "mumega_posts_total": int,                      # count of published posts
+          "mumega_posts_last_publish_ts": str | None,     # ISO 8601 UTC of max date, or None
+        }
+
+    Failure modes (correctness-only — never raises):
+      - Blog dir missing → (0, None) + warn
+      - Frontmatter parse error on individual file → skip that file + warn
+      - No `status: published` files → (0, None)
+    """
+    target = blog_dir if blog_dir is not None else MUMEGA_BLOG_DIR
+    result = {"mumega_posts_total": 0, "mumega_posts_last_publish_ts": None}
+
+    if not target.exists() or not target.is_dir():
+        logger.warning(f"mumega blog dir missing: {target}")
+        return result
+
+    try:
+        import yaml  # local import — health surface should not hard-require yaml at module load
+    except ImportError:
+        logger.warning("PyYAML missing — skipping post indexing")
+        return result
+
+    total = 0
+    max_date: Optional[str] = None
+
+    for md_path in sorted(target.glob("*.md")):
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"post-index: read failed {md_path.name}: {e}")
+            continue
+
+        # Frontmatter is YAML between two `---` lines at the top.
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 4)
+        if end == -1:
+            logger.warning(f"post-index: malformed frontmatter (no close) {md_path.name}")
+            continue
+        fm_text = text[3:end]
+        try:
+            fm = yaml.safe_load(fm_text) or {}
+        except yaml.YAMLError as e:
+            logger.warning(f"post-index: yaml parse failed {md_path.name}: {e}")
+            continue
+        if not isinstance(fm, dict):
+            continue
+
+        if fm.get("status") != "published":
+            continue
+        total += 1
+
+        date_val = fm.get("date")
+        if date_val is None:
+            continue
+        # Normalize to ISO string for comparison (string compare is fine for ISO-8601).
+        date_str = str(date_val)
+        if max_date is None or date_str > max_date:
+            max_date = date_str
+
+    result["mumega_posts_total"] = total
+    result["mumega_posts_last_publish_ts"] = max_date
+    return result
+
+
 def run_health_checks() -> dict:
     health = {
         "mirror": check_mirror(),
@@ -547,6 +625,8 @@ def run_health_checks() -> dict:
         "openclaw": check_openclaw(),
         "agents": {},
     }
+    # LOCK-S027-C-1.1 — post indexing metrics (correctness-only, fail-safe).
+    health.update(index_mumega_posts())
     agents = get_registered_agents()
     for agent_id, config in agents.items():
         if config.get("type") == "tmux":
