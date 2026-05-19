@@ -95,4 +95,4 @@ By contributing, you agree:
 
 ## Questions
 
-Ping `loom` on the bus or email hadi@digid.ca.
+Ping `loom` on the bus or open a GitHub issue.
