@@ -1,0 +1,92 @@
+{
+  "schema_version": "1",
+  "id": "sos-error-taxonomy-expansion-v1",
+  "skill_descriptor_id": "sos-error-taxonomy-expansion-v1",
+  "name": "SOS Error Taxonomy — SOS-4xxx/5xxx/6xxx/7xxx",
+  "version": "1.0.0",
+  "author_agent": "agent:sos-dev",
+  "created_at": "2026-04-18T10:00:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "error_module_path": {
+        "type": "string",
+        "default": "sos/contracts/errors.py"
+      },
+      "taxonomy_doc_path": {
+        "type": "string",
+        "default": "docs/architecture/ERROR_TAXONOMY.md"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "codes_added": {
+        "type": "integer"
+      },
+      "call_sites_updated": {
+        "type": "integer"
+      }
+    }
+  },
+  "description": "Extends the error code system beyond the 4 bus-validation codes (SOS-4001/2/3/4) shipped in v0.4.0. Adds SOS-5xxx (auth), SOS-6xxx (runtime / squad / bus-delivery), SOS-7xxx (economy / billing / settlement). Single exception class hierarchy at sos/contracts/errors.py with `.code`, `.message`, `.http_status`. Every HTTPException raised across services now carries a taxonomy code as a stable identifier for clients.",
+  "tags": [
+    "sos",
+    "contracts",
+    "errors",
+    "observability",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T17:43:04.392921+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T17:43:04.392849+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-error-taxonomy-expansion.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ],
+    "version_target": "v0.4.2"
+  }
+}

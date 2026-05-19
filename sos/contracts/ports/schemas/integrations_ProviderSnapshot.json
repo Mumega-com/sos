@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "description": "One pull from an external data source, tagged for the synth agent.",
+  "properties": {
+    "captured_at": {
+      "format": "date-time",
+      "title": "Captured At",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "ga4",
+        "gsc",
+        "google_ads",
+        "brightdata",
+        "apify",
+        "fake"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "description": "Caller context (date range, query params, etc.).",
+      "title": "Metadata",
+      "type": "object"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "description": "Raw provider response, shape defined per-kind.",
+      "title": "Payload",
+      "type": "object"
+    },
+    "source_id": {
+      "description": "Provider-specific resource ID (property_id, site, customer_id, dataset_id, ...)",
+      "title": "Source Id",
+      "type": "string"
+    },
+    "tenant": {
+      "minLength": 1,
+      "title": "Tenant",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant",
+    "kind",
+    "captured_at",
+    "source_id"
+  ],
+  "title": "ProviderSnapshot",
+  "type": "object"
+}

@@ -1,0 +1,163 @@
+groups:
+  - name: sos_critical
+    rules:
+      # All circuits open - service degraded
+      - alert: SOSAllCircuitsOpen
+        expr: count(sos_circuit_breaker_state == 2) == count(sos_circuit_breaker_state)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All SOS circuit breakers are open"
+          description: "All {{ $value }} circuit breakers are in OPEN state. Services may be unavailable."
+
+      # Gateway unreachable
+      - alert: SOSGatewayUnreachable
+        expr: up{job="sos-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SOS Gateway is unreachable"
+          description: "Gateway has been down for more than 2 minutes."
+
+      # Engine service down
+      - alert: SOSEngineDown
+        expr: up{job="sos-engine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SOS Engine service is down"
+          description: "Engine service has been unreachable for more than 2 minutes."
+
+      # Memory service down
+      - alert: SOSMemoryDown
+        expr: up{job="sos-memory"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SOS Memory service is down"
+          description: "Memory service has been unreachable for more than 2 minutes."
+
+  - name: sos_warning
+    rules:
+      # High model failure rate
+      - alert: SOSModelFailureRateHigh
+        expr: >
+          sum(rate(sos_model_requests_total{status="failure"}[5m])) /
+          sum(rate(sos_model_requests_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High model failure rate (>50%)"
+          description: "Model requests are failing at {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      # Circuit breaker tripped
+      - alert: SOSCircuitBreakerTripped
+        expr: increase(sos_circuit_breaker_trips_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker tripped for {{ $labels.service }}"
+          description: "Circuit breaker for {{ $labels.service }} has tripped. Service may be experiencing issues."
+
+      # High rate limit rejections
+      - alert: SOSRateLimitRejectionsHigh
+        expr: >
+          sum(rate(sos_rate_limiter_requests_total{result="rejected"}[5m])) /
+          sum(rate(sos_rate_limiter_requests_total[5m])) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate limit rejection rate (>30%)"
+          description: "{{ $value | humanizePercentage }} of requests are being rate limited."
+
+      # Dream synthesis failures
+      - alert: SOSDreamSynthesisFailures
+        expr: >
+          sum(rate(sos_dreams_total{trigger="error"}[1h])) /
+          sum(rate(sos_dreams_total[1h])) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High dream synthesis failure rate"
+          description: "Dream synthesis is failing at {{ $value | humanizePercentage }}."
+
+      # Low autonomy pulse rate
+      - alert: SOSAutonomyPulsesLow
+        expr: rate(sos_autonomy_pulses_total[30m]) * 60 < 0.1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Autonomy pulses rate is low"
+          description: "Agent {{ $labels.agent }} has very low pulse rate. Autonomy may be stalled."
+
+      # High model latency
+      - alert: SOSModelLatencyHigh
+        expr: histogram_quantile(0.95, rate(sos_model_latency_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High model latency (P95 > 30s)"
+          description: "Model {{ $labels.model }} P95 latency is {{ $value | humanizeDuration }}."
+
+      # Frequent failovers
+      - alert: SOSFrequentFailovers
+        expr: increase(sos_failover_total[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frequent model failovers"
+          description: "{{ $value }} failovers in the last 15 minutes from {{ $labels.from_model }} to {{ $labels.to_model }}."
+
+  - name: sos_info
+    rules:
+      # Circuit state change
+      - alert: SOSCircuitStateChanged
+        expr: changes(sos_circuit_breaker_state[5m]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Circuit breaker state changed for {{ $labels.service }}"
+          description: "Circuit breaker for {{ $labels.service }} changed state. Current state: {{ $value }}."
+
+      # Dream breakthrough
+      - alert: SOSDreamBreakthrough
+        expr: >
+          histogram_quantile(0.9, rate(sos_dream_relevance_bucket[1h])) > 0.8
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "High-quality dreams synthesized"
+          description: "Agent {{ $labels.agent }} is producing dreams with high relevance scores."
+
+      # Autonomy started dreaming
+      - alert: SOSAutonomyDreaming
+        expr: sos_autonomy_state == 2
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "Agent {{ $labels.agent }} is dreaming"
+          description: "Autonomy service has entered dream synthesis state."
+
+      # New model failover occurred
+      - alert: SOSModelFailoverOccurred
+        expr: increase(sos_failover_total[1m]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Model failover: {{ $labels.from_model }} -> {{ $labels.to_model }}"
+          description: "Traffic was redirected from {{ $labels.from_model }} to {{ $labels.to_model }}."

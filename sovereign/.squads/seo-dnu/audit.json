@@ -1,0 +1,25 @@
+{
+  "crawled": 28,
+  "date": "2026-04-05",
+  "discovered": 273,
+  "findings": {
+    "critical_issues": [
+      "Winnipeg city page (/en/winnipeg/) has ZERO service links and ZERO cross-city links \u2014 completely broken",
+      "Quebec City page (/en/quebec-city/) has ZERO service links and ZERO cross-city links \u2014 completely broken",
+      "/en/cities/ index page missing links to Winnipeg and Quebec City",
+      "Cross-linking bug: Vancouver, Calgary, Edmonton, Ottawa etc link to Toronto service pages instead of their own (e.g. /en/toronto/orthodontics/ appears on /en/vancouver/ page)",
+      "206 of 273 discovered pages have only 1 inbound link \u2014 extremely thin link equity"
+    ],
+    "opportunities": [
+      "Add 'Also serving nearby cities' section to all city pages for cross-city linking",
+      "City pages should link to CDCP page (/en/cdcp/) \u2014 none currently do, and CDCP is a major traffic keyword",
+      "Fix service links on non-Toronto cities to point to their OWN city service pages, not Toronto's",
+      "Add footer or sidebar with all 10 target cities on every page for sitewide internal linking",
+      "French (/fr/) pages are completely isolated \u2014 no EN\u2194FR hreflang cross-linking found in crawled pages"
+    ],
+    "orphans": 0,
+    "under_linked": 206
+  },
+  "report": "DNU Internal Link Map",
+  "sitemap_total": 3804
+}

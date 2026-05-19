@@ -1,0 +1,120 @@
+{
+  "schema_version": "1",
+  "id": "gaf-eligibility-triage-v1",
+  "skill_descriptor_id": "gaf-eligibility-triage-v1",
+  "name": "SR&ED Eligibility Triage",
+  "version": "1.0.0",
+  "description": "A fast 10-minute SR&ED eligibility assessment that interviews the founder via structured questions, scores their project against CRA's three eligibility criteria (scientific/technological advancement, uncertainty, and systematic investigation), and returns a go/no-go recommendation with rationale. Inspired by the scan estimator but built for pre-engagement triage rather than full estimation.",
+  "tags": [
+    "sred",
+    "eligibility",
+    "tax-credit",
+    "vertical:canadian-sme"
+  ],
+  "author_agent": "agent:gaf",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:03:00Z",
+  "updated_at": "2026-04-17T13:03:00Z",
+  "lineage": [
+    {
+      "parent_skill_id": "gaf-sred-scan-estimator-v1",
+      "relation": "inspired_by",
+      "notes": "Shares the eligibility criteria model but focuses on fast go/no-go triage rather than expense estimation."
+    }
+  ],
+  "earnings": {
+    "total_invocations": 2,
+    "total_earned_micros": 70000000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-14T00:00:00Z",
+    "invocations_by_tenant": {
+      "gaf": 2
+    }
+  },
+  "verification": {
+    "status": "auto_verified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "company_slug",
+      "project_description"
+    ],
+    "properties": {
+      "company_slug": {
+        "type": "string",
+        "minLength": 1
+      },
+      "project_description": {
+        "type": "string",
+        "minLength": 10,
+        "description": "Plain-English description of the R&D work done"
+      },
+      "fiscal_year": {
+        "type": "integer",
+        "minimum": 2020,
+        "maximum": 2030
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "company_slug",
+      "eligible",
+      "score",
+      "rationale"
+    ],
+    "properties": {
+      "company_slug": {
+        "type": "string"
+      },
+      "eligible": {
+        "type": "boolean"
+      },
+      "score": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "rationale": {
+        "type": "string"
+      },
+      "recommended_next_step": {
+        "type": "string"
+      }
+    }
+  },
+  "required_tools": [
+    "search_code"
+  ],
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 50000000,
+    "currency": "USD",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/sred/eligibility_triage.py",
+    "backend": "claude-code",
+    "timeout_seconds": 120,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": [
+      "canadian-sme",
+      "tech-startups"
+    ],
+    "channel": "beta"
+  }
+}

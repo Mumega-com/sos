@@ -1,0 +1,33 @@
+{
+  "theme_primary": "#D4A017",
+  "theme_secondary": "#06B6D4",
+  "collections": [
+    "blog",
+    "team",
+    "programs"
+  ],
+  "agent_role": "grant pipeline coordinator",
+  "agent_cause": "Helps businesses find, apply for, and win government funding. Never misses a deadline.",
+  "ruliads_enabled": [
+    "first-hello",
+    "learn-rhythm",
+    "first-insight",
+    "earn-trust",
+    "new-contact-detected",
+    "relationship-mapped",
+    "warm-intro-opportunity",
+    "stale-deal-nudge",
+    "hot-opportunity-flag",
+    "missing-action-alert",
+    "daily-priority-summary",
+    "upsell-signal",
+    "seasonal-pattern",
+    "milestone-celebrate",
+    "weekend-silence",
+    "comeback",
+    "gratitude"
+  ],
+  "compliance": [
+    "PIPEDA"
+  ]
+}

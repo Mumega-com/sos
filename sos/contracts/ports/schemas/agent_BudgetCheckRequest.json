@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": {
+      "title": "Agent Id",
+      "type": "string"
+    },
+    "cost": {
+      "description": "Proposed cost in cents \u2014 will it fit the budget?",
+      "minimum": 0,
+      "title": "Cost",
+      "type": "integer"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "agent_id",
+    "cost"
+  ],
+  "title": "BudgetCheckRequest",
+  "type": "object"
+}

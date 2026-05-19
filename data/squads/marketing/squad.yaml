@@ -1,0 +1,88 @@
+name: mumega-marketing
+display: "Mumega Marketing Squad"
+description: "Automated digital marketing team. Content, analytics, outreach, bulk generation."
+
+# Compute hierarchy — Claude budget is precious, Codex + Gemma are free
+# Haiku coordinator: ~$0.50/day for 50 decisions
+# Codex executors: $0 (GitHub included, 3x capacity)
+# Gemma bulk: $0 (free tier, 1500 req/day)
+
+agents:
+  mkt-lead:
+    model: claude-haiku-4-5
+    runtime: openclaw  # Cheapest Claude, coordinator role
+    role: coordinator
+    skills: [marketing-strategy, content-planning, campaign-management, analytics-review]
+    mcp_access:
+      - sos           # Bus communication
+      - notion        # Content calendar, campaign docs
+      - gmail         # Review drafts, approvals
+      - analytics     # Read reports (read-only)
+    description: "Plans campaigns, reviews content, approves outreach. The brain."
+
+  mkt-content:
+    model: gpt-5.4-mini
+    runtime: codex-cli  # 3x capacity, $0
+    role: executor
+    skills: [blog-writing, social-media, seo-content, email-copy, landing-pages]
+    mcp_access:
+      - sos           # Bus communication
+      - mumcp         # WordPress page building
+      - canva         # Design assets (when available)
+    description: "Writes blog posts, social captions, email sequences, landing page copy."
+
+  mkt-analytics:
+    model: gpt-5.4-mini
+    runtime: codex-cli
+    role: executor
+    skills: [ga4, gsc, gcloud, clarity, data-analysis, reporting]
+    mcp_access:
+      - sos           # Bus communication
+      - google-cloud  # GA4 API, GSC API, BigQuery
+      - clarity       # Microsoft Clarity
+    description: "Pulls analytics data, generates reports, identifies trends. Only agent with GCloud access."
+
+  mkt-outreach:
+    model: gpt-5.4-mini
+    runtime: codex-cli
+    role: executor
+    skills: [lead-generation, cold-email, linkedin, ghl-automation, crm]
+    mcp_access:
+      - sos           # Bus communication
+      - gmail         # Send outreach (with approval)
+      - ghl           # GoHighLevel CRM
+    description: "Generates leads, drafts outreach emails, manages CRM pipeline."
+
+  mkt-gemma:
+    model: gemma-4-27b
+    runtime: openclaw  # Free tier
+    role: executor
+    skills: [bulk-content, variations, translation, reformatting, social-captions]
+    mcp_access:
+      - sos           # Bus communication only — no external tools
+    description: "Bulk generator. 50 social captions, email variations, content reformats. Fine-tunable on winning content."
+
+# MCP access control — who can access what
+mcp_scopes:
+  sos: [mkt-lead, mkt-content, mkt-analytics, mkt-outreach, mkt-gemma]
+  notion: [mkt-lead]
+  gmail: [mkt-lead, mkt-outreach]
+  mumcp: [mkt-content]
+  google-cloud: [mkt-analytics]
+  clarity: [mkt-analytics]
+  ghl: [mkt-outreach]
+  canva: [mkt-content]
+
+# Hierarchy — delegation chain
+hierarchy:
+  coordinator: mkt-lead
+  executors: [mkt-content, mkt-analytics, mkt-outreach]
+  bulk: [mkt-gemma]
+  delegation_flow: "mkt-lead plans → executors do → mkt-gemma bulk-generates"
+
+# Budget constraints
+budget:
+  claude_daily_max_usd: 0.50  # Haiku coordinator only
+  codex_daily_tasks: 200      # ~200 prompts across 3 Codex agents
+  gemma_daily_requests: 1500  # Free tier max
+  total_monthly_target: 15.00 # $15/mo for a 5-agent marketing team

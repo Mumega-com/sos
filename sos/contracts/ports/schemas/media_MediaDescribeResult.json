@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Vision-model analysis output for an image asset.",
+  "properties": {
+    "altText": {
+      "title": "Alttext",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "nsfwScore": {
+      "title": "Nsfwscore",
+      "type": "number"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    }
+  },
+  "required": [
+    "altText",
+    "description",
+    "tags",
+    "nsfwScore"
+  ],
+  "title": "MediaDescribeResult",
+  "type": "object"
+}

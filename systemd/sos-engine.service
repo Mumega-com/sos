@@ -1,0 +1,29 @@
+[Unit]
+Description=SOS Engine Service (Orchestration & Multi-Model Routing)
+After=network.target
+
+[Service]
+Type=simple
+User=mumega
+Group=mumega
+WorkingDirectory=/home/sos/SOS
+Environment=PYTHONPATH=/home/sos/SOS
+Environment=SOS_ENGINE_PORT=6060
+# API keys loaded from .env file (not committed)
+EnvironmentFile=-/home/sos/SOS/.env
+
+ExecStart=/usr/bin/python3 -m sos.services.engine
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sos-engine
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

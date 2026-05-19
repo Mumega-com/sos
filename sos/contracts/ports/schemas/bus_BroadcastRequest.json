@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "project": {
+      "description": "Soft grouping inside a tenant. Required.",
+      "title": "Project",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "project"
+  ],
+  "title": "BroadcastRequest",
+  "type": "object"
+}

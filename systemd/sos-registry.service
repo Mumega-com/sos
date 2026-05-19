@@ -1,0 +1,32 @@
+[Unit]
+Description=SOS Registry Service (Agent mesh + /mesh/enroll + heartbeat pruner)
+After=network.target
+
+[Service]
+Type=simple
+User=mumega
+Group=mumega
+WorkingDirectory=/home/sos/SOS
+Environment=PYTHONPATH=/home/sos/SOS
+Environment=SOS_REGISTRY_PORT=6067
+# API keys loaded from .env file (not committed).
+# v0.9.2.1 — prefer SOS_REGISTRY_TOKEN (scoped to registry:*) over the
+# mesh-wide SOS_SYSTEM_TOKEN so a compromised registry host cannot
+# impersonate the saas / billing / squad services.
+EnvironmentFile=-/home/sos/SOS/.env
+
+ExecStart=/usr/bin/python3 -m sos.services.registry.app
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sos-registry
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

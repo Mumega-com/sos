@@ -1,0 +1,132 @@
+# Mumega's own marketing operation — runs on itself
+# This is how mumega.com acquires customers autonomously
+
+product: mumega-self-marketing
+objective: "Drive traffic to mumega.com, convert visitors to trial, close subscriptions"
+schedule: "0 9,15 * * *"  # 2x daily: 9am and 3pm UTC
+
+team:
+  - role: strategist
+    model: gemini-flash
+    task: |
+      You are the marketing strategist for mumega.com — an AI marketing service
+      that runs digital marketing for small businesses.
+
+      Our customers are: small business owners (dental, legal, education, retail,
+      consulting) who need marketing but can't afford a full team or agency.
+
+      Pick ONE topic from this rotation that would attract our ideal customer.
+      The topic must be something they'd Google:
+
+      TOPIC CATEGORIES (rotate through):
+      1. "How to" posts (practical): "How to write blog posts that get traffic",
+         "How to run social media without spending hours", "How to get found on Google"
+      2. Pain point posts: "Why your website isn't getting leads",
+         "The real cost of NOT doing SEO", "What happens when you stop posting on social"
+      3. Comparison posts: "AI marketing vs hiring a freelancer",
+         "DIY marketing vs managed service", "What $500/mo of AI marketing actually gets you"
+      4. Industry-specific: "Marketing for dental practices in 2026",
+         "How education companies get more students online",
+         "Digital marketing for law firms that actually works"
+      5. Case study style: "We published 30 blog posts in 30 days — here's what happened",
+         "What automated SEO audits found on 50 small business websites"
+
+      Output: topic title + target keyword + which category + CTA (link to mumega.com/marketplace)
+    max_tokens: 500
+
+  - role: writer
+    model: gemma-4-31b
+    task: |
+      Write a blog post for mumega.com.
+      Topic: {topic}
+      Target keyword: {keyword}
+
+      RULES:
+      - Write for a small business owner, not a developer
+      - No jargon. No "sovereign systems". No "microkernel".
+      - Practical, actionable, specific
+      - 800-1200 words
+      - Include the target keyword in title, first paragraph, one subheading
+      - End with a CTA: "Want this done for you? See our AI marketing plans at mumega.com/marketplace"
+      - Subheadings every 200 words
+      - One real example or statistic per section
+
+      Brand voice: Professional but approachable. Like a smart friend who runs a marketing agency.
+    max_tokens: 3000
+    temperature: 0.8
+
+  - role: seo_reviewer
+    model: gemini-flash
+    task: |
+      Review this blog post for SEO and conversion:
+      1. Does the title contain the target keyword? (must)
+      2. Is the keyword in the first 100 words? (must)
+      3. Are there 4+ subheadings? (must)
+      4. Is it 800+ words? (must)
+      5. Is there a CTA to mumega.com/marketplace? (must)
+      6. Would a small business owner find this useful? (must)
+      7. Readability: short paragraphs, no walls of text? (must)
+      Score 0-100. If below 75, list exactly what to fix.
+    max_tokens: 800
+
+  - role: social_creator
+    model: gemini-flash
+    task: |
+      Create 3 social media posts promoting this blog article:
+      1. Twitter/X (280 chars max, punchy, include link)
+      2. LinkedIn (100-200 words, professional, thought leadership angle)
+      3. Facebook (50-100 words, conversational, question hook)
+
+      Blog title: {title}
+      Blog URL: https://mumega.com/blog/{slug}
+      Key takeaway: {takeaway}
+    max_tokens: 1000
+
+phases:
+  - name: strategize
+    roles: [strategist]
+    output_key: strategy
+
+  - name: write
+    roles: [writer]
+    input_key: strategy
+    output_key: article
+
+  - name: review
+    roles: [seo_reviewer]
+    input_key: article
+    output_key: reviewed
+    gate:
+      metric: score
+      operator: ">="
+      threshold: 75
+
+  - name: publish_blog
+    roles: []
+    input_key: reviewed
+    output_key: blog_url
+    # Publishes to Supabase cms_pages (same as daily-blog.py)
+
+  - name: create_social
+    roles: [social_creator]
+    input_key: blog_url
+    output_key: social_posts
+
+  - name: publish_social
+    roles: []
+    input_key: social_posts
+    output_key: social_urls
+    # Posts to Discord/social channels
+
+deliverables:
+  - type: blog_post
+    target: supabase_cms
+    frequency: per_run
+  - type: social_posts
+    target: discord_social
+    frequency: per_run
+
+budget:
+  tokens_per_run: 6000
+  cost_per_run_usd: 0.0
+  monthly_cap_usd: 0.0  # all free models

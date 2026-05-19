@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "Input to `IntelligenceProvider.pull`.\n\nProviders pick the fields they care about and ignore the rest \u2014 this\nkeeps the port signature stable as new providers land.",
+  "properties": {
+    "extra": {
+      "additionalProperties": true,
+      "title": "Extra",
+      "type": "object"
+    },
+    "range_days": {
+      "default": 30,
+      "maximum": 365,
+      "minimum": 1,
+      "title": "Range Days",
+      "type": "integer"
+    },
+    "source_id": {
+      "description": "property_id (GA4) / site URL (GSC) / customer_id (Ads) / dataset_id (BD/Apify)",
+      "title": "Source Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_id"
+  ],
+  "title": "ProviderParams",
+  "type": "object"
+}

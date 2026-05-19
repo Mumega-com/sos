@@ -1,0 +1,137 @@
+{
+  "schema_version": "1",
+  "id": "gaf-full-claim-drafter-v1",
+  "skill_descriptor_id": "gaf-full-claim-drafter-v1",
+  "name": "SR&ED Full Claim Drafter",
+  "version": "1.0.0",
+  "description": "Produces a complete, CRA-ready SR&ED claim package — project narratives, T661 line-item breakdown, eligible expenditure schedule, and a plain-English summary memo for the founder. Forked from the SR&ED Credit Scan Estimator and extended with narrative generation, CRA form mapping, and a multi-pass consistency checker. Designed for the GAF squad to hand directly to the preparer or submit as a preparer-reviewed draft.",
+  "tags": [
+    "sred",
+    "tax-credit",
+    "grant-funding",
+    "claim-drafting",
+    "vertical:canadian-sme"
+  ],
+  "author_agent": "agent:gaf",
+  "authored_by_ai": true,
+  "created_at": "2026-04-17T13:02:00Z",
+  "updated_at": "2026-04-17T13:02:00Z",
+  "lineage": [
+    {
+      "parent_skill_id": "gaf-sred-scan-estimator-v1",
+      "relation": "forked",
+      "notes": "Extends the estimator with full T661 narrative generation and CRA form mapping."
+    }
+  ],
+  "earnings": {
+    "total_invocations": 3,
+    "total_earned_micros": 3150000000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-15T00:00:00Z",
+    "invocations_by_tenant": {
+      "gaf": 2,
+      "digid": 1
+    }
+  },
+  "verification": {
+    "status": "human_verified",
+    "sample_output_refs": [
+      "engram:gaf-claim-draft-metrobit-2025",
+      "engram:gaf-claim-draft-digid-2025"
+    ],
+    "verified_by": [
+      "human:hadi",
+      "human:hossein"
+    ],
+    "verified_at": "2026-04-16T00:00:00Z"
+  },
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "company_slug",
+      "fiscal_year"
+    ],
+    "properties": {
+      "company_slug": {
+        "type": "string",
+        "minLength": 1
+      },
+      "fiscal_year": {
+        "type": "integer",
+        "minimum": 2020,
+        "maximum": 2030
+      },
+      "estimator_output_path": {
+        "type": "string",
+        "description": "Path to prior scan estimator output (speeds up narrative gen)"
+      },
+      "qbo_report_path": {
+        "type": "string",
+        "description": "Optional QBO export path"
+      },
+      "github_org": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "company_slug",
+      "fiscal_year",
+      "t661_sections",
+      "eligible_expenditures_cents"
+    ],
+    "properties": {
+      "company_slug": {
+        "type": "string"
+      },
+      "fiscal_year": {
+        "type": "integer"
+      },
+      "t661_sections": {
+        "type": "object",
+        "description": "Keyed by CRA T661 section letter (A through J)"
+      },
+      "eligible_expenditures_cents": {
+        "type": "integer"
+      },
+      "summary_memo": {
+        "type": "string"
+      }
+    }
+  },
+  "required_tools": [
+    "qbo_reader",
+    "github_activity",
+    "linear_reader",
+    "search_code"
+  ],
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 1500000000,
+    "currency": "USD",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/sred/full_claim_drafter.py",
+    "backend": "claude-code",
+    "timeout_seconds": 600,
+    "memory_mb": 1024
+  },
+  "metadata": {
+    "verticals": [
+      "canadian-sme",
+      "tech-startups"
+    ],
+    "channel": "beta"
+  }
+}

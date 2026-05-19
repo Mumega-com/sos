@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Outbound message payload.",
+  "properties": {
+    "body": {
+      "title": "Body",
+      "type": "string"
+    },
+    "channel": {
+      "description": "'email' | 'sms' | 'whatsapp' | 'telegram' | adapter-specific.",
+      "title": "Channel",
+      "type": "string"
+    },
+    "subject": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subject"
+    }
+  },
+  "required": [
+    "channel",
+    "body"
+  ],
+  "title": "MessageContent",
+  "type": "object"
+}

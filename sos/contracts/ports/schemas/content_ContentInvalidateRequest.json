@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "None = invalidate ALL pages for the tenant; otherwise invalidate only that path.",
+      "title": "Path"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id"
+  ],
+  "title": "ContentInvalidateRequest",
+  "type": "object"
+}

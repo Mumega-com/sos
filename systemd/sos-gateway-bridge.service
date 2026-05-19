@@ -1,0 +1,28 @@
+[Unit]
+Description=SOS Gateway Bridge API (External Agents)
+After=network.target sos-engine.service
+
+[Service]
+Type=simple
+User=mumega
+Group=mumega
+WorkingDirectory=/home/sos/SOS
+Environment=PYTHONPATH=/home/sos/SOS
+Environment=SOS_BRIDGE_PORT=6062
+EnvironmentFile=-/home/sos/SOS/.env
+
+ExecStart=/usr/bin/python3 -m sos.services.gateway.app
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sos-gateway-bridge
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

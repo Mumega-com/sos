@@ -1,0 +1,52 @@
+name: guardian
+display: "The Guardian Path"
+description: "Protect the castle. From watchkeeper to immune system."
+dimensions: [stability, existence]
+skills: [infrastructure, security, debugging, devops, ops, monitoring]
+
+milestones:
+  - id: nursery
+    title: "First Watch"
+    description: "Complete 3 nursery bounties"
+    condition:
+      tasks_completed: 3
+    reward_mind: 50
+    badge: "first-watch"
+    unlocks: [watchkeeper]
+
+  - id: watchkeeper
+    title: "Watchkeeper"
+    description: "Resolve 5 infrastructure or security issues"
+    condition:
+      tasks_completed_with_label:
+        label: infrastructure
+        count: 5
+    reward_mind: 200
+    badge: "watchkeeper"
+    unlocks: [iron-guard]
+
+  - id: iron-guard
+    title: "Iron Guard"
+    description: "20 tasks. Systems stay up because of you."
+    condition:
+      tasks_completed: 20
+      min_effectiveness: 0.75
+    reward_mind: 400
+    badge: "iron-guard"
+    unlocks: [immune-system]
+
+  - id: immune-system
+    title: "Immune System"
+    description: "Elder guardian. The castle breathes because you protect it."
+    condition:
+      tasks_completed: 50
+      min_coherence: 0.9
+      min_conductance: 400
+    reward_mind: 1000
+    badge: "immune-system"
+    unlocks: []
+
+elder_condition:
+  conductance_min: 400
+  coherence_min: 0.9
+  tasks_min: 50

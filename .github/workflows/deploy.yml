@@ -1,0 +1,29 @@
+name: Deploy SOS Services
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'sos/**'
+      - 'sovereign/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull latest
+        run: git pull origin ${{ github.ref_name }}
+      - name: Restart services
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart sos-mcp-sse
+          XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart sos-saas
+          XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart sos-squad
+      - name: Wait for services
+        run: sleep 3
+      - name: Health check - MCP
+        run: curl -sf http://localhost:6070/health || echo "MCP health check failed"
+      - name: Health check - Squad
+        run: curl -sf http://localhost:8060/health || echo "Squad health check failed"
+      - name: Health check - SaaS
+        run: curl -sf http://localhost:8090/health || echo "SaaS health check failed"

@@ -1,0 +1,33 @@
+# SOS Self-Hosted Cloudflare Worker
+# Customer deploys this to THEIR Cloudflare account
+# Mumega keeps NOTHING
+
+name = "sos-agent"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# Customer's own D1 database - we never see it
+[[d1_databases]]
+binding = "DB"
+database_name = "sos-memory"
+database_id = "${D1_DATABASE_ID}"  # Replaced during init
+
+# Customer's own KV namespace
+[[kv_namespaces]]
+binding = "SESSION"
+id = "${KV_NAMESPACE_ID}"  # Replaced during init
+
+# Customer's own secrets - we NEVER see these
+# Set via: wrangler secret put GEMINI_API_KEY
+[vars]
+AGENT_ID = "${AGENT_ID}"
+YELLOW_PAGES_ENABLED = "false"  # Opt-in only
+
+# AI bindings (optional - customer's choice)
+[ai]
+binding = "AI"
+
+# Routes
+[[routes]]
+pattern = "*.pages.dev/*"
+zone_name = "pages.dev"

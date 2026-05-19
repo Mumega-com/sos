@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "minLength": 1,
+      "title": "Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
+  ],
+  "title": "SessionGetRequest",
+  "type": "object"
+}

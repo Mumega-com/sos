@@ -1,0 +1,21 @@
+{
+  "url": "https://dentalnearyou.ca",
+  "project": "dentalnearyou",
+  "cities": [
+    "Toronto",
+    "Vancouver",
+    "Calgary",
+    "Edmonton",
+    "Ottawa",
+    "Mississauga",
+    "Hamilton",
+    "Winnipeg",
+    "Montreal",
+    "Quebec City"
+  ],
+  "keywords": [
+    "dentist [city]",
+    "emergency dentist [city]",
+    "dentist accepting new patients [city]"
+  ]
+}

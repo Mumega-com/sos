@@ -1,0 +1,124 @@
+openapi: "3.1.0"
+info:
+  title: Mumega Dashboard
+  version: "0.4.3"
+  description: Dashboard service API — operator and UI observability endpoints.
+servers:
+  - url: http://localhost:8090
+security:
+  - BearerAuth: []
+paths:
+  /sos/brain:
+    get:
+      operationId: getBrainSnapshot
+      summary: Get BrainService snapshot
+      description: Returns the observable in-memory state of BrainService (queue, in-flight tasks, recent routes, event counters).
+      tags:
+        - sos
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Brain snapshot returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrainSnapshot"
+        "401":
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
+                    const: unauthorized
+        "503":
+          description: Brain snapshot unavailable (BrainService not running or not reachable).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
+                    description: Human-readable reason the snapshot is unavailable.
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    BrainSnapshot:
+      type: object
+      title: BrainSnapshot v1
+      description: Observable snapshot of BrainService in-memory state.
+      additionalProperties: false
+      required:
+        - queue_size
+        - in_flight
+        - recent_routes
+        - events_by_type
+        - last_update_ts
+      properties:
+        queue_size:
+          type: integer
+          minimum: 0
+          description: Number of tasks currently waiting in the priority queue.
+        in_flight:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[a-zA-Z0-9_-]+$"
+          description: task_ids created but not yet completed/failed.
+        recent_routes:
+          type: array
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/RoutingDecision"
+          description: Last 50 routing decisions, newest-first.
+        events_by_type:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+          description: Per-message-type counters.
+        events_seen:
+          type: integer
+          minimum: 0
+          description: Total events consumed since service start.
+        last_update_ts:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp of the most recent event.
+        service_started_at:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp BrainService started.
+    RoutingDecision:
+      type: object
+      additionalProperties: false
+      required:
+        - task_id
+        - agent_name
+        - score
+        - routed_at
+      properties:
+        task_id:
+          type: string
+          pattern: "^[a-zA-Z0-9_-]+$"
+        agent_name:
+          type: string
+          pattern: "^[a-z][a-z0-9-]*$"
+        score:
+          type: number
+          minimum: 0
+        routed_at:
+          type: string
+          format: date-time

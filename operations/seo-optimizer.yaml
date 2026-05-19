@@ -1,0 +1,68 @@
+name: seo-optimizer
+description: "Weekly SEO audit: meta tags, internal links, schema markup"
+schedule: "0 9 * * 1"  # Monday 9am UTC
+squad: seo
+
+team:
+  - name: auditor
+    model: gemini-flash
+    task_template: |
+      Audit the website at {domain} for SEO issues.
+      Check: title tags, meta descriptions, H1 structure, missing alt text,
+      broken internal links, schema markup coverage.
+      Return a JSON report: {{"pages_audited": N, "issues": [...], "score": 0-100}}
+    max_tokens: 3000
+    temperature: 0.3
+
+  - name: optimizer
+    model: gemini-flash
+    task_template: |
+      Given this SEO audit: {audit_result}
+      Generate fixes:
+      1. Rewrite any weak meta titles/descriptions (under 60/155 chars, missing keywords)
+      2. Suggest 3-5 internal links per page based on content relevance
+      3. Add missing schema markup (LocalBusiness, FAQPage, BreadcrumbList)
+      Return as actionable patch list: [{{"page": "...", "fix_type": "...", "before": "...", "after": "..."}}]
+    max_tokens: 3000
+    temperature: 0.3
+
+phases:
+  - name: audit
+    roles: [auditor]
+    output_key: audit_result
+    gate:
+      metric: pages_audited
+      operator: ">="
+      threshold: 1
+
+  - name: optimize
+    roles: [optimizer]
+    input_key: audit_result
+    output_key: fixes
+    gate:
+      metric: fix_count
+      operator: ">="
+      threshold: 1
+
+  - name: report
+    roles: [auditor]
+    input_key: fixes
+    output_key: summary
+
+deliverables:
+  - type: mirror_engram
+    config:
+      agent: dandan
+      context_prefix: seo-audit
+    frequency: per_run
+  - type: discord_post
+    config:
+      channel: control
+      agent: dandan
+    frequency: per_run
+
+budget:
+  tokens_per_run: 8000
+  max_retries: 1
+  cost_per_run_usd: 0.0
+  monthly_cap_usd: 0.0

@@ -1,0 +1,95 @@
+{
+  "schema_version": "1",
+  "id": "sos-usageevent-schema-author-v1",
+  "skill_descriptor_id": "sos-usageevent-schema-author-v1",
+  "name": "UsageEvent JSON Schema Author — complete the contracts set",
+  "version": "1.0.0",
+  "author_agent": "agent:sos-dev",
+  "created_at": "2026-04-17T14:18:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "pydantic_source": {
+        "type": "string",
+        "default": "sos/services/economy/usage_log.py"
+      },
+      "schema_target": {
+        "type": "string",
+        "default": "sos/contracts/schemas/usage_event_v1.json"
+      },
+      "test_target": {
+        "type": "string",
+        "default": "tests/contracts/test_usage_event_v1.py"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "tests_passing": {
+        "type": "integer"
+      },
+      "schema_file": {
+        "type": "string"
+      }
+    }
+  },
+  "description": "Writes sos/contracts/schemas/usage_event_v1.json (JSON Schema Draft 2020-12) matching the existing Pydantic UsageEvent in sos/services/economy/usage_log.py. Adds roundtrip contract tests (tests/contracts/test_usage_event_v1.py) verifying schema<->Pydantic parity and sample ingestion payload validation. Same pattern as SkillCard v1 and Message v1 contracts.",
+  "tags": [
+    "sos",
+    "contracts",
+    "economy",
+    "schema",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T16:26:21.695299+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T16:26:21.695207+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-usageevent-schema-author.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ]
+  }
+}

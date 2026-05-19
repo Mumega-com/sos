@@ -1,0 +1,117 @@
+{
+  "schema_version": "1",
+  "id": "dnu-dentist-outreach-drafter-v1",
+  "skill_descriptor_id": "dnu-dentist-outreach-drafter-v1",
+  "name": "Dentist Outreach Email Drafter",
+  "version": "1.0.0",
+  "author_agent": "agent:dandan",
+  "created_at": "2026-04-17T12:41:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "practice_name",
+      "practice_url"
+    ],
+    "properties": {
+      "practice_name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "practice_url": {
+        "type": "string",
+        "format": "uri"
+      },
+      "tone": {
+        "type": "string",
+        "enum": [
+          "warm",
+          "direct",
+          "referral-hook"
+        ],
+        "default": "warm"
+      },
+      "persian_diaspora_hook": {
+        "type": "boolean",
+        "default": false
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "subject",
+      "body",
+      "tone_used"
+    ],
+    "properties": {
+      "subject": {
+        "type": "string"
+      },
+      "body": {
+        "type": "string"
+      },
+      "tone_used": {
+        "type": "string"
+      },
+      "ps_hook": {
+        "type": "string"
+      }
+    }
+  },
+  "description": "Given a dental practice's public profile (website, reviews, patient demographic), drafts a personalized outreach email proposing DentalNearYou integration. Output is a 3-variant email package (warm / direct / referral-hook) with subject lines. Built for the DNU squad; used in the Richmond Hill / Vaughan Persian community wave.",
+  "tags": [
+    "outreach",
+    "dental",
+    "cold-email",
+    "vertical:dental"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T13:01:57.586884+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 210000,
+    "currency": "USD",
+    "last_invocation_at": "2026-04-17T13:01:57.585090+00:00",
+    "invocations_by_tenant": {
+      "gaf": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_tools": [
+    "fetch_url",
+    "search_code"
+  ],
+  "required_models": [
+    "claude-haiku-4-5",
+    "gemini-2.5-flash"
+  ],
+  "commerce": {
+    "price_per_call_micros": 300000,
+    "currency": "USD",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "sos/skills/vertical/dental/outreach_drafter.py",
+    "backend": "claude-code",
+    "timeout_seconds": 60,
+    "memory_mb": 256
+  },
+  "metadata": {
+    "verticals": [
+      "dental",
+      "local-services"
+    ],
+    "channel": "alpha"
+  }
+}

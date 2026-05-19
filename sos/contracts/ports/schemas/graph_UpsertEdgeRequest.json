@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "GraphEdge": {
+      "additionalProperties": false,
+      "description": "Directly mirrors Inkwell's GraphEdge.",
+      "properties": {
+        "source": {
+          "description": "Source node slug.",
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target node slug.",
+          "title": "Target",
+          "type": "string"
+        },
+        "tenant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tenant"
+        },
+        "type": {
+          "enum": [
+            "wikilink",
+            "tag",
+            "series",
+            "backlink",
+            "cross-tenant"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "type"
+      ],
+      "title": "GraphEdge",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "edge": {
+      "$ref": "#/$defs/GraphEdge"
+    },
+    "tenant_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant Id"
+    }
+  },
+  "required": [
+    "edge"
+  ],
+  "title": "UpsertEdgeRequest",
+  "type": "object"
+}

@@ -1,0 +1,72 @@
+product: seo-analyst
+slug: seo-analyst
+price_monthly: 70000  # cents ($700)
+objective_template: "Weekly SEO audit and optimization for {customer_url}"
+schedule: "0 6 * * 1"  # Every Monday 6am
+
+team:
+  - role: crawler
+    tool: web_fetch
+    task: "Fetch {customer_url} sitemap, check page speeds, find broken links"
+    max_tokens: 2000
+
+  - role: analyst
+    model: gemma-4-31b
+    task: |
+      Analyze the crawl results for {customer_url}.
+      Produce:
+      1. Top 5 pages by traffic potential (based on content + keywords)
+      2. Technical issues (broken links, slow pages, missing meta)
+      3. Keyword opportunities (what they rank for, what they should target)
+      4. Competitor gap (what similar sites rank for that they don't)
+      Score each area 0-100. Overall SEO health score.
+    max_tokens: 3000
+
+  - role: optimizer
+    model: gemini-flash
+    task: |
+      From the analysis, generate:
+      1. Rewritten meta titles + descriptions for top 5 pages
+      2. Internal linking suggestions (3 per page)
+      3. Content brief for highest-opportunity keyword
+      Keep it actionable — customer should be able to implement in 30 min.
+    max_tokens: 2000
+
+phases:
+  - name: crawl
+    roles: [crawler]
+    output_key: crawl_data
+
+  - name: analyze
+    roles: [analyst]
+    input_key: crawl_data
+    output_key: analysis
+
+  - name: optimize
+    roles: [optimizer]
+    input_key: analysis
+    output_key: recommendations
+
+  - name: report
+    roles: []
+    input_key: recommendations
+    output_key: report
+
+deliverables:
+  - type: email_report
+    frequency: weekly
+    config:
+      template: seo_weekly_report
+      include: [health_score, issues, recommendations, keyword_opportunities]
+
+budget:
+  tokens_per_run: 8000
+  max_retries: 1
+  cost_per_run_usd: 0.0
+  monthly_cap_usd: 15.0
+
+onboarding_fields:
+  - customer_url (required)
+  - competitor_urls (optional, comma-separated)
+  - target_keywords (optional)
+  - customer_email (required)

@@ -1,0 +1,90 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Builds
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# IDEs / agent CLIs (per-machine state, never commit)
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+.windsurfrules
+.claude/
+.mcp.json
+.opencode.json
+.mkt-lead-claude.md
+*.swp
+*.swo
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+.data/
+data/**/*.db
+
+# System
+.sos/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Generated / caches
+graphify-out/
+graphify-out-*/
+.wrangler/
+.remember/
+.code-review-graph/
+
+# OS
+Thumbs.db
+*~
+
+# Secrets (never commit)
+*.pem
+*.key
+credentials.json
+artifacts/
+souls/
+
+# Secrets & local config
+sos/bus/tokens.json
+sos/bus/tokens.json.backup
+sos/bus/tokens.json.backup-*
+sos/bus/tokens.json.bak-*
+sos/bus/.tenant_mint.lock
+workers/*/wrangler.toml
+.mumega/
+# Added by code-review-graph
+.code-review-graph/
+
+# Graph/task artifacts (regenerated from code-review-graph MCP)
+docs/task-graph.json
+docs/task-graph.mermaid
+.worktrees/
+
+# Runtime artifacts (generated at runtime, never commit)
+.sprint_markers/
+.codex/

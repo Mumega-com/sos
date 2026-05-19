@@ -1,0 +1,28 @@
+[Unit]
+Description=SOS Memory Service (Vector DB & Retrieval)
+After=network.target
+
+[Service]
+Type=simple
+User=mumega
+Group=mumega
+WorkingDirectory=/home/sos/SOS
+Environment=PYTHONPATH=/home/sos/SOS
+Environment=SOS_MEMORY_PORT=6061
+EnvironmentFile=-/home/sos/SOS/.env
+
+ExecStart=/usr/bin/python3 -m sos.services.memory
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sos-memory
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

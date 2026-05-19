@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOS Atelier | Subconscious Stream</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="atelier-container">
+        <header>
+            <div class="logo">
+                <span class="dot"></span>
+                <h1>ATELIER</h1>
+            </div>
+            <div class="status-badge" id="service-status">DISCONNECTED</div>
+        </header>
+
+        <main>
+            <div class="visualizer-stage">
+                <canvas id="subconscious-canvas"></canvas>
+                <div class="core-overlay">
+                    <div class="drift-value" id="alpha-drift">0.0000</div>
+                    <div class="regime-label" id="regime">STABLE</div>
+                </div>
+            </div>
+
+            <section class="metrics-panel">
+                <div class="metric-card glass">
+                    <label>COGNITIVE REGIME</label>
+                    <div class="value" id="metric-regime">STABLE</div>
+                </div>
+                <div class="metric-card glass">
+                    <label>ALPHA DRIFT</label>
+                    <div class="value" id="metric-alpha">0.0000</div>
+                </div>
+                <div class="metric-card glass" id="dream-status-card">
+                    <label>DREAM STATE</label>
+                    <div class="value" id="metric-dreaming">INACTIVE</div>
+                </div>
+                <div class="metric-card glass" id="witness-status-card">
+                    <label>WAVE STATUS</label>
+                    <div class="value" id="metric-witness">OBSERVED</div>
+                </div>
+            </section>
+
+            <div id="superposition-overlay" class="hidden">
+                <div class="superposition-message">
+                    <h2>PENDING COLLAPSE</h2>
+                    <p>Click to Witness the Thought</p>
+                </div>
+            </div>
+        </main>
+
+        <aside class="stream-log glass">
+            <h3>SUBCONSCIOUS LOG</h3>
+            <div id="log-entries" class="log-container">
+                <!-- Log entries will appear here -->
+            </div>
+        </aside>
+
+        <footer>
+            <div class="system-info">SOS ENGINE v0.1.0 // SUB-STREAM: 8020</div>
+        </footer>
+    </div>
+    <script src="/static/visualizer.js"></script>
+</body>
+
+</html>

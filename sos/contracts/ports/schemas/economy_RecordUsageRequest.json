@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "description": "One metered-usage event for a tenant (credits, tokens, etc.).",
+  "properties": {
+    "amount": {
+      "description": "Integer amount in the smallest unit for `type`.",
+      "title": "Amount",
+      "type": "integer"
+    },
+    "tenant_id": {
+      "minLength": 1,
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "type": {
+      "description": "Usage category: 'tokens', 'api_call', 'storage_gb_day', ...",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "type",
+    "amount"
+  ],
+  "title": "RecordUsageRequest",
+  "type": "object"
+}

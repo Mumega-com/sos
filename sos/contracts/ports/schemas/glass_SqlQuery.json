@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Execute parameterized SQL against a named service's database.",
+  "properties": {
+    "kind": {
+      "const": "sql",
+      "title": "Kind",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    },
+    "service": {
+      "description": "Target service name, e.g. 'economy'.",
+      "title": "Service",
+      "type": "string"
+    },
+    "statement": {
+      "description": "Parameterized SQL, e.g. 'SELECT * FROM t WHERE id=:id'.",
+      "title": "Statement",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "service",
+    "statement"
+  ],
+  "title": "SqlQuery",
+  "type": "object"
+}

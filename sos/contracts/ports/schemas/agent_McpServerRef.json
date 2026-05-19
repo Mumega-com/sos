@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "token": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Token"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "title": "McpServerRef",
+  "type": "object"
+}

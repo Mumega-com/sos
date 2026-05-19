@@ -1,0 +1,49 @@
+{
+  "$defs": {
+    "BatchStatement": {
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Params"
+        },
+        "sql": {
+          "minLength": 1,
+          "title": "Sql",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "title": "BatchStatement",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Atomic multi-statement write.",
+  "properties": {
+    "statements": {
+      "items": {
+        "$ref": "#/$defs/BatchStatement"
+      },
+      "minItems": 1,
+      "title": "Statements",
+      "type": "array"
+    }
+  },
+  "required": [
+    "statements"
+  ],
+  "title": "BatchRequest",
+  "type": "object"
+}

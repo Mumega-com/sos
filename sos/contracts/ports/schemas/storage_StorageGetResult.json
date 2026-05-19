@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "Object contents + content-type. `body` is raw bytes; adapters that\nstream should spool chunks into bytes at this boundary (ports are strict,\nstreaming is an adapter-internal optimization).",
+  "properties": {
+    "body": {
+      "format": "binary",
+      "title": "Body",
+      "type": "string"
+    },
+    "content_type": {
+      "default": "application/octet-stream",
+      "title": "Content Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "body"
+  ],
+  "title": "StorageGetResult",
+  "type": "object"
+}

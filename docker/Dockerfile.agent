@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /agent
+
+# Install base deps
+RUN pip install --no-cache-dir httpx pydantic python-dotenv
+
+# Copy SOS adapters (the bus client)
+COPY sos/adapters/ ./sos/adapters/
+
+# Install framework-specific deps based on build arg
+ARG FRAMEWORK=custom
+RUN if [ "$FRAMEWORK" = "langgraph" ]; then pip install --no-cache-dir langgraph langchain-core; fi
+RUN if [ "$FRAMEWORK" = "crewai" ]; then pip install --no-cache-dir crewai; fi
+
+# Copy user's agent code
+COPY agent/ ./agent/
+
+# Default: run the agent
+ENV SOS_AGENT_NAME=my-agent
+ENV SOS_TOKEN=""
+ENV SOS_BUS_URL=http://host.docker.internal:6380
+
+CMD ["python", "-m", "agent"]

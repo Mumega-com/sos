@@ -1,0 +1,146 @@
+{
+  "id": "f31d0c2a-7ce5-4ae1-824a-d0d9faf15d0f",
+  "project": "dentalnearyou",
+  "brief": {
+    "project": "dentalnearyou",
+    "url": "https://dentalnearyou.ca",
+    "target_cities": [
+      "Toronto",
+      "Vancouver",
+      "Calgary",
+      "Edmonton",
+      "Ottawa",
+      "Mississauga",
+      "Hamilton",
+      "Winnipeg",
+      "Montreal",
+      "Quebec City"
+    ],
+    "key_pages": [
+      "/en",
+      "/en/[city]",
+      "/en/[city]/[service]",
+      "/en/dentist/[slug]",
+      "/en/topics",
+      "/en/cdcp"
+    ],
+    "kpis": [
+      "organic traffic",
+      "keyword rankings",
+      "pages indexed",
+      "backlinks"
+    ],
+    "primary_keywords": [
+      "dentist [city]",
+      "emergency dentist [city]",
+      "dentist accepting new patients [city]"
+    ],
+    "business_model": "Lead generation \u2014 connects patients to dentists in Canadian cities",
+    "generated_at": "2026-04-05T15:46:18.010543+00:00"
+  },
+  "objectives": [
+    {
+      "id": "33e8a579",
+      "title": "Technical SEO audit",
+      "description": "Crawl https://dentalnearyou.ca \u2014 identify broken links, missing meta, slow pages, duplicate content, canonical issues.",
+      "role": "analyst",
+      "effort": "high",
+      "token_budget": 40000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "2f74aec6",
+      "title": "City page audit (10 cities)",
+      "description": "Review /en/[city] pages for Toronto, Vancouver, Calgary, Edmonton, Ottawa and more. Check H1, meta title, meta description, and keyword density per primary keyword.",
+      "role": "analyst",
+      "effort": "medium",
+      "token_budget": 15000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "ca34fb0a",
+      "title": "Meta tag optimisation",
+      "description": "Rewrite title tags and meta descriptions for all city and service pages. Target primary keywords: dentist [city], emergency dentist [city], dentist accepting new patients [city].",
+      "role": "optimizer",
+      "effort": "medium",
+      "token_budget": 15000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "b7d71944",
+      "title": "Internal link map",
+      "description": "Build a complete internal link graph for https://dentalnearyou.ca. Identify orphan pages, link equity gaps, and opportunities for city-to-service linking.",
+      "role": "analyst",
+      "effort": "medium",
+      "token_budget": 15000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "1bd48e74",
+      "title": "Content gap analysis",
+      "description": "Compare existing topic coverage against top 10 SERP competitors. List missing topics per city and service combination.",
+      "role": "writer",
+      "effort": "high",
+      "token_budget": 40000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "3e055651",
+      "title": "CDCP page optimisation",
+      "description": "Optimise /en/cdcp for 'Canada Dental Care Plan' queries. Update content, schema markup, and internal links.",
+      "role": "optimizer",
+      "effort": "low",
+      "token_budget": 5000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "0c9fae3b",
+      "title": "Schema markup audit",
+      "description": "Check LocalBusiness and Dentist schema on city pages. Generate schema snippets where missing.",
+      "role": "optimizer",
+      "effort": "low",
+      "token_budget": 5000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "8e575754",
+      "title": "Backlink profile review",
+      "description": "Export current backlink profile. Identify toxic links, lost links, and high-value acquisition targets.",
+      "role": "analyst",
+      "effort": "medium",
+      "token_budget": 15000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "931dd45a",
+      "title": "KPI baseline report",
+      "description": "Pull baseline metrics for: organic traffic, keyword rankings, pages indexed, backlinks. Set targets per city. Deliver as CSV + summary.",
+      "role": "reporter",
+      "effort": "low",
+      "token_budget": 5000,
+      "task_id": null,
+      "status": "blocked"
+    },
+    {
+      "id": "a3d0e517",
+      "title": "Quick-win keyword targeting",
+      "description": "Find keywords ranking positions 11\u201320. Produce a list of 20 pages with highest traffic-on-nudge potential.",
+      "role": "optimizer",
+      "effort": "medium",
+      "token_budget": 15000,
+      "task_id": null,
+      "status": "blocked"
+    }
+  ],
+  "status": "blocked",
+  "total_token_budget": 170000,
+  "created_at": "2026-04-05T15:46:18.011177+00:00"
+}

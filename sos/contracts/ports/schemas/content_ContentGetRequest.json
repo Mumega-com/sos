@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "description": "URL path, e.g. '/about'.",
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "path"
+  ],
+  "title": "ContentGetRequest",
+  "type": "object"
+}

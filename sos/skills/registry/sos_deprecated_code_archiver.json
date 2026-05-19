@@ -1,0 +1,88 @@
+{
+  "schema_version": "1",
+  "id": "sos-deprecated-code-archiver-v1",
+  "skill_descriptor_id": "sos-deprecated-code-archiver-v1",
+  "name": "Deprecated Code Archiver — move legacy to deprecated/",
+  "version": "1.0.0",
+  "author_agent": "agent:sos-dev",
+  "created_at": "2026-04-17T14:19:00Z",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "archive_targets": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "commit_hash"
+    ],
+    "properties": {
+      "commit_hash": {
+        "type": "string"
+      },
+      "files_moved": {
+        "type": "integer"
+      },
+      "imports_cleaned": {
+        "type": "integer"
+      }
+    }
+  },
+  "description": "Moves flagged deprecated modules (sos/mcp/redis_bus.py, sos/mcp/sos_mcp.py stdio path, sos/mcp/remote.js legacy) into a sos/deprecated/ folder via git mv so history is preserved. Adds sos/deprecated/README.md explaining why each was retired, when, and what replaced it. Updates any remaining imports to the new path or removes them.",
+  "tags": [
+    "sos",
+    "housekeeping",
+    "cleanup",
+    "internal"
+  ],
+  "authored_by_ai": true,
+  "lineage": [],
+  "updated_at": "2026-04-17T16:27:39.898290+00:00",
+  "earnings": {
+    "total_invocations": 1,
+    "total_earned_micros": 0,
+    "currency": "MIND",
+    "last_invocation_at": "2026-04-17T16:27:39.898198+00:00",
+    "invocations_by_tenant": {
+      "mumega": 1
+    }
+  },
+  "verification": {
+    "status": "unverified",
+    "sample_output_refs": [],
+    "verified_by": []
+  },
+  "required_models": [
+    "claude-sonnet-4-6"
+  ],
+  "commerce": {
+    "price_per_call_micros": 0,
+    "currency": "MIND",
+    "revenue_split": {
+      "author": 0.85,
+      "operator": 0.15
+    },
+    "marketplace_listed": true
+  },
+  "runtime": {
+    "entry_point": "docs/skills/internal/sos-deprecated-code-archiver.md",
+    "backend": "claude-code",
+    "timeout_seconds": 1800,
+    "memory_mb": 512
+  },
+  "metadata": {
+    "internal": true,
+    "channel": "alpha",
+    "verticals": [
+      "sos-infrastructure"
+    ]
+  }
+}

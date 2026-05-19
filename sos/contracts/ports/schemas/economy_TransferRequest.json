@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "exclusiveMinimum": 0,
+      "title": "Amount",
+      "type": "integer"
+    },
+    "from_tenant": {
+      "minLength": 1,
+      "title": "From Tenant",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 280,
+      "title": "Reason",
+      "type": "string"
+    },
+    "to_tenant": {
+      "minLength": 1,
+      "title": "To Tenant",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from_tenant",
+    "to_tenant",
+    "amount",
+    "reason"
+  ],
+  "title": "TransferRequest",
+  "type": "object"
+}

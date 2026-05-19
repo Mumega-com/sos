@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "McpServerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "McpServerRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Partial update for an AgentConfig. All fields optional.",
+  "properties": {
+    "budget_per_day": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Budget Per Day"
+    },
+    "budget_per_month": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Budget Per Month"
+    },
+    "mcp_servers": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/McpServerRef"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mcp Servers"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "enum": [
+            "haiku",
+            "sonnet",
+            "opus"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "active",
+            "paused",
+            "provisioning",
+            "error"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    },
+    "system_prompt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "System Prompt"
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tools"
+    }
+  },
+  "title": "AgentConfigPatch",
+  "type": "object"
+}

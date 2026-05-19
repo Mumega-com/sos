@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "anyOf": [
+        {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    },
+    "query": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "RecallRequest",
+  "type": "object"
+}

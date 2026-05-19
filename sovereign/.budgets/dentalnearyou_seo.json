@@ -1,0 +1,45 @@
+{
+  "project": "dentalnearyou",
+  "squad": "seo",
+  "cycle_start": "2026-04-05T16:05:48.644389+00:00",
+  "budget_cents": 0.0,
+  "spent_cents": 0.0,
+  "tasks_dispatched": 2,
+  "tasks_done": 0,
+  "executions": [
+    {
+      "task_id": "worker-20260405-160548-930983",
+      "engagement_id": "9ab89832",
+      "project": "dentalnearyou",
+      "squad": "seo",
+      "role": "analyst",
+      "title": "[SCHED:SEO:W1] analyst: Pull Search Console data, find keyword opportunities, track ",
+      "model": "gemma-4-31b-it",
+      "fuel_grade": "diesel",
+      "tokens_budgeted": 40000,
+      "tokens_used": 0,
+      "cost_usd": 0.0,
+      "score": 0.0,
+      "status": "pending",
+      "dispatched_at": "2026-04-05T16:05:49.075000+00:00",
+      "completed_at": null
+    },
+    {
+      "task_id": "worker-20260405-160554-879955",
+      "engagement_id": "9ab89832",
+      "project": "dentalnearyou",
+      "squad": "seo",
+      "role": "optimizer",
+      "title": "[SCHED:SEO:W2] optimizer: Audit pages, fix meta tags, suggest internal links",
+      "model": "gemma-4-31b-it",
+      "fuel_grade": "diesel",
+      "tokens_budgeted": 40000,
+      "tokens_used": 0,
+      "cost_usd": 0.0,
+      "score": 0.0,
+      "status": "pending",
+      "dispatched_at": "2026-04-05T16:05:55.172337+00:00",
+      "completed_at": null
+    }
+  ]
+}

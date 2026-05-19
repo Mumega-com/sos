@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SovereignOS</title>
+  <style>
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-card: #1a1a24;
+      --text-primary: #e4e4e7;
+      --text-secondary: #a1a1aa;
+      --accent: #8b5cf6;
+      --accent-dim: #6d28d9;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --border: #27272a;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      -webkit-app-region: drag;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+    }
+
+    .logo-text {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-card);
+      border-radius: 20px;
+      font-size: 13px;
+      -webkit-app-region: no-drag;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.offline { background: var(--error); animation: none; }
+    .status-dot.warning { background: var(--warning); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Main Content */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 20px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Services Grid */
+    .services-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .service-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+
+    .service-item:hover {
+      background: var(--bg-primary);
+    }
+
+    .service-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .service-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--accent-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    .service-name {
+      font-weight: 500;
+    }
+
+    .service-port {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .service-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    .service-status.running { color: var(--success); }
+    .service-status.stopped { color: var(--error); }
+
+    /* Metrics */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .metric-card {
+      text-align: center;
+      padding: 16px;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+    }
+
+    .metric-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .metric-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    /* Coherence Bar */
+    .coherence-bar {
+      margin-top: 16px;
+    }
+
+    .coherence-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .coherence-track {
+      height: 8px;
+      background: var(--bg-secondary);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .coherence-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+      border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+
+    /* Chat Section */
+    .chat-section {
+      grid-column: 1 / -1;
+    }
+
+    .chat-messages {
+      height: 200px;
+      overflow-y: auto;
+      padding: 12px;
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    .message {
+      padding: 8px 12px;
+      margin-bottom: 8px;
+      border-radius: 8px;
+      max-width: 80%;
+    }
+
+    .message.user {
+      background: var(--accent-dim);
+      margin-left: auto;
+    }
+
+    .message.assistant {
+      background: var(--bg-card);
+    }
+
+    .chat-input-container {
+      display: flex;
+      gap: 12px;
+    }
+
+    .chat-input {
+      flex: 1;
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+      outline: none;
+    }
+
+    .chat-input:focus {
+      border-color: var(--accent);
+    }
+
+    .chat-input::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .btn {
+      padding: 12px 24px;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn:hover {
+      background: var(--accent-dim);
+    }
+
+    .btn-secondary {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-card);
+    }
+
+    /* Model Selector */
+    .model-selector {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .model-btn {
+      padding: 8px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .model-btn:hover, .model-btn.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--text-primary);
+    }
+
+    /* Actions */
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="logo">
+      <div class="logo-icon">S</div>
+      <span class="logo-text">SovereignOS</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div class="status-badge" style="cursor: pointer; -webkit-app-region: no-drag;" onclick="toggleServerMode()" title="Click to switch mode">
+        <span id="serverModeLabel">Local</span>
+      </div>
+      <div class="status-badge">
+        <div class="status-dot" id="globalStatus"></div>
+        <span id="globalStatusText">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- Services Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Services</span>
+        <button class="btn btn-secondary" onclick="refreshServices()" style="padding: 6px 12px; font-size: 12px;">Refresh</button>
+      </div>
+      <div class="services-grid" id="servicesGrid">
+        <div class="service-item">
+          <div class="service-info">
+            <div class="service-icon">E</div>
+            <div>
+              <div class="service-name">Engine</div>
+              <div class="service-port">:8000</div>
+            </div>
+          </div>
+          <div class="service-status stopped" id="engineStatus">
+            <div class="status-dot offline"></div>
+            Checking...
+          </div>
+        </div>
+        <div class="service-item">
+          <div class="service-info">
+            <div class="service-icon">M</div>
+            <div>
+              <div class="service-name">Memory</div>
+              <div class="service-port">:8001</div>
+            </div>
+          </div>
+          <div class="service-status stopped" id="memoryStatus">
+            <div class="status-dot offline"></div>
+            Checking...
+          </div>
+        </div>
+        <div class="service-item">
+          <div class="service-info">
+            <div class="service-icon">$</div>
+            <div>
+              <div class="service-name">Economy</div>
+              <div class="service-port">:8002</div>
+            </div>
+          </div>
+          <div class="service-status stopped" id="economyStatus">
+            <div class="status-dot offline"></div>
+            Checking...
+          </div>
+        </div>
+        <div class="service-item">
+          <div class="service-info">
+            <div class="service-icon">L</div>
+            <div>
+              <div class="service-name">Local AI</div>
+              <div class="service-port">:1234</div>
+            </div>
+          </div>
+          <div class="service-status stopped" id="localAIStatus">
+            <div class="status-dot offline"></div>
+            Checking...
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" onclick="startAllServices()">Start All</button>
+        <button class="btn btn-secondary" onclick="stopAllServices()">Stop All</button>
+      </div>
+    </div>
+
+    <!-- Metrics Card -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Metrics</span>
+      </div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-value" id="mindBalance">0.00</div>
+          <div class="metric-label">$MIND Balance</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="witnessCount">0</div>
+          <div class="metric-label">Witnesses</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="memoryCount">0</div>
+          <div class="metric-label">Memories</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="taskCount">0</div>
+          <div class="metric-label">Tasks</div>
+        </div>
+      </div>
+      <div class="coherence-bar">
+        <div class="coherence-header">
+          <span>Coherence</span>
+          <span id="coherenceValue">0%</span>
+        </div>
+        <div class="coherence-track">
+          <div class="coherence-fill" id="coherenceFill" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Section -->
+    <div class="card chat-section">
+      <div class="card-header">
+        <span class="card-title">Chat</span>
+      </div>
+      <div class="model-selector">
+        <button class="model-btn active" data-model="gemini-3-flash-preview">Gemini</button>
+        <button class="model-btn" data-model="local">Local AI</button>
+        <button class="model-btn" data-model="local-code">Local Code</button>
+        <button class="model-btn" data-model="local-reasoning">Local Reasoning</button>
+      </div>
+      <div class="chat-messages" id="chatMessages">
+        <div class="message assistant">Welcome to SovereignOS. How can I help you today?</div>
+      </div>
+      <div class="chat-input-container">
+        <input type="text" class="chat-input" id="chatInput" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
+        <button class="btn" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // State
+    let selectedModel = 'gemini-3-flash-preview';
+    let serverMode = 'local'; // 'local' or 'cloud'
+
+    // Server configurations
+    const SERVERS = {
+      local: {
+        ENGINE_URL: 'http://localhost:8000',
+        MEMORY_URL: 'http://localhost:8001',
+        ECONOMY_URL: 'http://localhost:8002',
+        LOCAL_AI_URL: 'http://localhost:8080',  // MLX server
+      },
+      cloud: {
+        ENGINE_URL: 'https://mumega.com/mirror',
+        MEMORY_URL: 'https://mumega.com/mirror',
+        ECONOMY_URL: 'https://mumega.com/mirror',
+        LOCAL_AI_URL: null, // No local AI in cloud mode
+      }
+    };
+
+    // Dynamic URLs based on mode
+    const getUrls = () => SERVERS[serverMode];
+
+    // Auto-detect: if on mobile or localhost fails, try cloud
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      serverMode = 'cloud';
+      document.getElementById('localAIStatus')?.closest('.service-item')?.remove();
+    }
+
+    // Model selector
+    document.querySelectorAll('.model-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedModel = btn.dataset.model;
+      });
+    });
+
+    // Check service health
+    async function checkService(url, elementId) {
+      const el = document.getElementById(elementId);
+      if (!el || !url) return false;
+
+      try {
+        const resp = await fetch(`${url}/health`, { method: 'GET', mode: 'cors' });
+        if (resp.ok) {
+          el.innerHTML = '<div class="status-dot"></div> Running';
+          el.className = 'service-status running';
+          return true;
+        }
+      } catch (e) {
+        // Try v1/models for OpenAI-compatible servers
+        try {
+          const resp = await fetch(`${url}/v1/models`, { method: 'GET', mode: 'cors' });
+          if (resp.ok) {
+            el.innerHTML = '<div class="status-dot"></div> Running';
+            el.className = 'service-status running';
+            return true;
+          }
+        } catch (e2) {}
+      }
+      el.innerHTML = '<div class="status-dot offline"></div> Offline';
+      el.className = 'service-status stopped';
+      return false;
+    }
+
+    // Refresh all services
+    async function refreshServices() {
+      const urls = getUrls();
+      const checks = [
+        checkService(urls.ENGINE_URL, 'engineStatus'),
+        checkService(urls.MEMORY_URL, 'memoryStatus'),
+        checkService(urls.ECONOMY_URL, 'economyStatus'),
+      ];
+
+      // Only check local AI in local mode
+      if (urls.LOCAL_AI_URL) {
+        checks.push(checkService(urls.LOCAL_AI_URL, 'localAIStatus'));
+      }
+
+      const results = await Promise.all(checks);
+
+      const running = results.filter(r => r).length;
+      const total = results.length;
+      const globalDot = document.getElementById('globalStatus');
+      const globalText = document.getElementById('globalStatusText');
+
+      if (running === total) {
+        globalDot.className = 'status-dot';
+        globalText.textContent = serverMode === 'cloud' ? 'Connected to Cloud' : 'All Systems Operational';
+      } else if (running > 0) {
+        globalDot.className = 'status-dot warning';
+        globalText.textContent = `${running}/${total} Services Running`;
+      } else {
+        globalDot.className = 'status-dot offline';
+        globalText.textContent = serverMode === 'cloud' ? 'Cloud Offline' : 'All Services Offline';
+      }
+
+      // Update metrics if engine is running
+      if (results[0]) {
+        fetchMetrics();
+      }
+    }
+
+    // Fetch metrics
+    async function fetchMetrics() {
+      const urls = getUrls();
+      try {
+        // Get wallet balance
+        const walletResp = await fetch(`${urls.ECONOMY_URL}/wallet/system`);
+        if (walletResp.ok) {
+          const wallet = await walletResp.json();
+          document.getElementById('mindBalance').textContent = (wallet.balance || 0).toFixed(2);
+        }
+      } catch (e) {}
+
+      // Simulate other metrics for now
+      document.getElementById('coherenceValue').textContent = '94%';
+      document.getElementById('coherenceFill').style.width = '94%';
+    }
+
+    // Send chat message
+    async function sendMessage() {
+      const urls = getUrls();
+      const input = document.getElementById('chatInput');
+      const message = input.value.trim();
+      if (!message) return;
+
+      // Add user message
+      addMessage(message, 'user');
+      input.value = '';
+
+      try {
+        const resp = await fetch(`${urls.ENGINE_URL}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: message,
+            agent_id: 'desktop-user',
+            model: selectedModel,
+            memory_enabled: true
+          })
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          addMessage(data.content, 'assistant');
+        } else {
+          addMessage('Error: Could not reach SOS Engine. Is it running?', 'assistant');
+        }
+      } catch (e) {
+        addMessage(`Error: ${e.message}. Make sure SOS services are running.`, 'assistant');
+      }
+    }
+
+    function addMessage(text, role) {
+      const container = document.getElementById('chatMessages');
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.textContent = text;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function handleKeyPress(e) {
+      if (e.key === 'Enter') sendMessage();
+    }
+
+    // Start/Stop services (via Tauri commands)
+    async function startAllServices() {
+      if (window.__TAURI__) {
+        try {
+          await window.__TAURI__.core.invoke('start_services');
+        } catch (e) {
+          alert('Starting services... Run: docker-compose up -d');
+        }
+      } else {
+        alert('To start services, run:\ncd /path/to/sos && docker-compose up -d');
+      }
+      setTimeout(refreshServices, 2000);
+    }
+
+    async function stopAllServices() {
+      if (window.__TAURI__) {
+        try {
+          await window.__TAURI__.core.invoke('stop_services');
+        } catch (e) {
+          alert('Stopping services... Run: docker-compose down');
+        }
+      } else {
+        alert('To stop services, run:\ncd /path/to/sos && docker-compose down');
+      }
+      setTimeout(refreshServices, 2000);
+    }
+
+    // Toggle between local and cloud mode
+    function toggleServerMode() {
+      serverMode = serverMode === 'local' ? 'cloud' : 'local';
+      document.getElementById('serverModeLabel').textContent = serverMode === 'local' ? 'Local' : 'Cloud';
+
+      // Show/hide local AI based on mode
+      const localAIItem = document.getElementById('localAIStatus')?.closest('.service-item');
+      if (localAIItem) {
+        localAIItem.style.display = serverMode === 'local' ? 'flex' : 'none';
+      }
+
+      // Refresh with new mode
+      refreshServices();
+    }
+
+    // Initial load
+    document.getElementById('serverModeLabel').textContent = serverMode === 'local' ? 'Local' : 'Cloud';
+    refreshServices();
+    setInterval(refreshServices, 10000); // Refresh every 10 seconds
+  </script>
+</body>
+</html>

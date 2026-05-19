@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+  sos-engine:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  sos-memory:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  sos-economy:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  sos-tools:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  sos-identity:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  sos-voice:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  redis:
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp

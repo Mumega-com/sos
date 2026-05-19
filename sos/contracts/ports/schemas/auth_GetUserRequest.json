@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "description": "Input to getUser / requireUser.",
+  "properties": {
+    "request_token": {
+      "description": "Raw Authorization header value or signed session cookie.",
+      "minLength": 1,
+      "title": "Request Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_token"
+  ],
+  "title": "GetUserRequest",
+  "type": "object"
+}

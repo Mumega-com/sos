@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "description": "Outcome of a charge or transfer.",
+  "properties": {
+    "charged": {
+      "title": "Charged",
+      "type": "boolean"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Populated when charged=False (e.g. 'insufficient funds').",
+      "title": "Reason"
+    },
+    "remaining_balance": {
+      "title": "Remaining Balance",
+      "type": "integer"
+    },
+    "tx_id": {
+      "title": "Tx Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "charged",
+    "tx_id",
+    "remaining_balance"
+  ],
+  "title": "ChargeResult",
+  "type": "object"
+}

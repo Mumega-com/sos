@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "Auto-generated chapter marker inside a video/audio transcript.",
+  "properties": {
+    "time": {
+      "description": "Seconds from start of asset",
+      "title": "Time",
+      "type": "number"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "time",
+    "title"
+  ],
+  "title": "MediaChapter",
+  "type": "object"
+}

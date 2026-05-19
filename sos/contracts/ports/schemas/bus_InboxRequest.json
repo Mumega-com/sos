@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "anyOf": [
+        {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    }
+  },
+  "title": "InboxRequest",
+  "type": "object"
+}

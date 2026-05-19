@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "doc_id": {
+      "minLength": 1,
+      "title": "Doc Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "doc_id"
+  ],
+  "title": "DeleteSearchRequest",
+  "type": "object"
+}

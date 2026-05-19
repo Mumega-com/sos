@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "variant": {
+      "description": "Variant name e.g. 'thumbnail', 'hero', 'og'",
+      "title": "Variant",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "variant"
+  ],
+  "title": "MediaTransformRequest",
+  "type": "object"
+}

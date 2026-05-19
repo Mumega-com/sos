@@ -1,0 +1,205 @@
+openapi: "3.1.0"
+info:
+  title: Mumega SaaS
+  version: "0.1.0"
+  description: SaaS service API — agent pairing and tenant management endpoints.
+servers:
+  - url: http://localhost:8080
+paths:
+  /sos/pairing/nonce:
+    get:
+      operationId: getPairingNonce
+      summary: Issue a short-lived nonce for agent pairing
+      description: >
+        Step 1 of the pairing protocol. The agent requests a nonce bound to its
+        agent_name. The nonce expires in 300 seconds. The agent must sign it with
+        its ed25519 private key and POST the result to /sos/pairing.
+      tags:
+        - pairing
+      parameters:
+        - name: agent_name
+          in: query
+          required: true
+          description: >
+            The name the agent will register under. Must match pattern
+            ^[a-z][a-z0-9-]*$ and be 2–64 characters.
+          schema:
+            type: string
+            pattern: "^[a-z][a-z0-9-]*$"
+            minLength: 2
+            maxLength: 64
+      responses:
+        "200":
+          description: Nonce issued successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NonceResponse"
+        "400":
+          description: Invalid agent_name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+  /sos/pairing:
+    post:
+      operationId: acceptPairing
+      summary: Accept a signed pairing request and mint a bearer token
+      description: >
+        Step 3 of the pairing protocol. The agent submits its public key, the
+        nonce it received, and an ed25519 signature over the nonce. If the
+        signature is valid the service registers the agent in tokens.json (hash
+        only, never plaintext) and returns a bearer token.
+        This endpoint does NOT require authentication — it is how agents obtain
+        their first bearer token.
+      tags:
+        - pairing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairingRequest"
+      responses:
+        "200":
+          description: Pairing accepted; bearer token returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingResponse"
+        "400":
+          description: Nonce unknown, expired, or issued for a different agent_name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+        "401":
+          description: Signature verification failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    NonceResponse:
+      type: object
+      title: NonceResponse
+      description: Short-lived nonce issued by the server for agent pairing step 1.
+      additionalProperties: false
+      required:
+        - nonce
+        - expires_at
+      properties:
+        nonce:
+          type: string
+          minLength: 16
+          maxLength: 128
+          description: Random nonce to be signed by the agent's ed25519 private key.
+        expires_at:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp after which the nonce is invalid.
+    PairingRequest:
+      type: object
+      title: PairingRequest
+      description: Agent pairing request — proves control of an ed25519 keypair.
+      additionalProperties: false
+      required:
+        - agent_name
+        - pubkey
+        - skills
+        - model_provider
+        - nonce
+        - signature
+      properties:
+        agent_name:
+          type: string
+          pattern: "^[a-z][a-z0-9-]*$"
+          minLength: 2
+          maxLength: 64
+        pubkey:
+          type: string
+          pattern: "^ed25519:[A-Za-z0-9+/=]{40,88}$"
+          description: "ed25519 public key, base64-encoded with ed25519: prefix."
+        skills:
+          type: array
+          items:
+            type: string
+            pattern: "^[a-z][a-z0-9-]*$"
+          minItems: 1
+          uniqueItems: true
+          description: Non-empty list of unique skill slugs the agent possesses.
+        model_provider:
+          type: string
+          pattern: "^[a-z][a-z0-9-]*:[a-z][a-z0-9.-]*$"
+          description: "Model provider identifier, e.g. 'anthropic:claude-opus-4-7'."
+        nonce:
+          type: string
+          minLength: 16
+          maxLength: 128
+          description: The nonce issued by GET /sos/pairing/nonce.
+        signature:
+          type: string
+          pattern: "^ed25519:[A-Za-z0-9+/=]{40,128}$"
+          description: "ed25519 signature over the nonce bytes, base64-encoded with ed25519: prefix."
+        role:
+          type: string
+          enum:
+            - specialist
+            - coordinator
+            - executor
+            - oracle
+          default: specialist
+          description: Agent role within the SOS swarm.
+    PairingResponse:
+      type: object
+      title: PairingResponse
+      description: Bearer token returned on successful pairing.
+      additionalProperties: false
+      required:
+        - token
+        - agent_id
+        - issued_at
+        - expires_at
+      properties:
+        token:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+          description: >
+            64-hex-char bearer token. The sha256 of this value is stored
+            server-side in tokens.json; the plaintext is never persisted.
+        agent_id:
+          type: string
+          pattern: "^[A-Za-z][A-Za-z0-9_]*$"
+          description: "Canonical agent id, e.g. 'Hermes_sos_007'."
+        issued_at:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp when the token was issued.
+        expires_at:
+          type: string
+          format: date-time
+          description: ISO-8601 UTC timestamp when the token expires (far-future if non-expiring).
+        scope:
+          type: string
+          enum:
+            - agent
+            - customer
+            - admin
+          default: agent
+          description: Token scope — always 'agent' for paired agents.
+    ErrorDetail:
+      type: object
+      title: ErrorDetail
+      description: Standard FastAPI error response body.
+      additionalProperties: false
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error message.

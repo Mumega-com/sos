@@ -1,0 +1,173 @@
+{
+  "$defs": {
+    "BusTailQuery": {
+      "additionalProperties": false,
+      "description": "Read the most recent N entries from a Redis stream.",
+      "properties": {
+        "kind": {
+          "const": "bus_tail",
+          "title": "Kind",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "stream": {
+          "description": "Redis stream name, e.g. 'audit:decisions:acme'.",
+          "title": "Stream",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "stream"
+      ],
+      "title": "BusTailQuery",
+      "type": "object"
+    },
+    "HttpQuery": {
+      "additionalProperties": false,
+      "description": "Proxy a GET request to another SOS service.",
+      "properties": {
+        "kind": {
+          "const": "http",
+          "title": "Kind",
+          "type": "string"
+        },
+        "method": {
+          "const": "GET",
+          "default": "GET",
+          "title": "Method",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path starting with '/', e.g. '/squad/acme/status'.",
+          "title": "Path",
+          "type": "string"
+        },
+        "service": {
+          "description": "Target service name, e.g. 'registry'.",
+          "title": "Service",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "service",
+        "path"
+      ],
+      "title": "HttpQuery",
+      "type": "object"
+    },
+    "SqlQuery": {
+      "additionalProperties": false,
+      "description": "Execute parameterized SQL against a named service's database.",
+      "properties": {
+        "kind": {
+          "const": "sql",
+          "title": "Kind",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "service": {
+          "description": "Target service name, e.g. 'economy'.",
+          "title": "Service",
+          "type": "string"
+        },
+        "statement": {
+          "description": "Parameterized SQL, e.g. 'SELECT * FROM t WHERE id=:id'.",
+          "title": "Statement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "service",
+        "statement"
+      ],
+      "title": "SqlQuery",
+      "type": "object"
+    },
+    "TileTemplate": {
+      "enum": [
+        "number",
+        "sparkline",
+        "progress_bar",
+        "event_log",
+        "status_light",
+        "chart"
+      ],
+      "title": "TileTemplate",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A single dashboard tile declaration.",
+  "properties": {
+    "id": {
+      "description": "Slug \u2014 lowercase alphanumeric + hyphens only.",
+      "pattern": "^[a-z0-9-]+$",
+      "title": "Id",
+      "type": "string"
+    },
+    "query": {
+      "discriminator": {
+        "mapping": {
+          "bus_tail": "#/$defs/BusTailQuery",
+          "http": "#/$defs/HttpQuery",
+          "sql": "#/$defs/SqlQuery"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SqlQuery"
+        },
+        {
+          "$ref": "#/$defs/BusTailQuery"
+        },
+        {
+          "$ref": "#/$defs/HttpQuery"
+        }
+      ],
+      "title": "Query"
+    },
+    "refresh_interval_s": {
+      "default": 60,
+      "maximum": 3600,
+      "minimum": 5,
+      "title": "Refresh Interval S",
+      "type": "integer"
+    },
+    "template": {
+      "$ref": "#/$defs/TileTemplate"
+    },
+    "tenant": {
+      "title": "Tenant",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "query",
+    "template",
+    "tenant"
+  ],
+  "title": "Tile",
+  "type": "object"
+}

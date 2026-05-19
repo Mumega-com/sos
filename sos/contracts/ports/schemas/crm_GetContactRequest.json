@@ -1,0 +1,19 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "contact_id": {
+      "title": "Contact Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "contact_id"
+  ],
+  "title": "GetContactRequest",
+  "type": "object"
+}

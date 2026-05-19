@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "anyOf": [
+        {
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    },
+    "query": {
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    },
+    "tenant": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "MediaSearchRequest",
+  "type": "object"
+}

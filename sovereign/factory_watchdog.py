@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+Factory Watchdog — Token Flow Monitor
+
+Ensures the system NEVER stops flowing tokens.
+Monitors every model source. Detects quota exhaustion.
+Auto-switches to fallback. Alerts Hadi when a source drops.
+Restarts agents that get stuck in loops.
+
+Runs every 5 minutes as systemd service.
+
+The factory floor:
+  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
+  │ Gemini  │   │ GitHub  │   │ Gemma 4 │   │  CF AI  │
+  │  CLI    │   │ Models  │   │ Studio  │   │ Workers │
+  └────┬────┘   └────┬────┘   └────┬────┘   └────┬────┘
+       │             │             │             │
+       └─────────────┴──────┬──────┴─────────────┘
+                            │
+                     ┌──────▼──────┐
+                     │  WATCHDOG   │
+                     │  monitors   │
+                     │  switches   │
+                     │  alerts     │
+                     │  restarts   │
+                     └─────────────┘
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import subprocess
+import requests
+from datetime import datetime, timezone
+from pathlib import Path
+
+import sys, os as _os
+_SOVEREIGN_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _SOVEREIGN_DIR not in sys.path:
+    sys.path.insert(0, _SOVEREIGN_DIR)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [WATCHDOG] %(message)s")
+logger = logging.getLogger("watchdog")
+
+from model_config import get as _model_cfg
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+
+# Gemini key rotation pool — lazy-loaded on first use so dotenv has time to run.
+_GEMINI_KEY_POOL: list[str] = []
+_GEMINI_KEY_EXHAUSTED_UNTIL: dict[str, float] = {}  # key → unix timestamp
+
+
+def _gemini_key_pool() -> list[str]:
+    """Return the key pool, building it lazily from env on first call."""
+    global _GEMINI_KEY_POOL
+    if not _GEMINI_KEY_POOL:
+        _GEMINI_KEY_POOL = [
+            k for k in [
+                os.environ.get("GEMINI_API_KEY", ""),
+                os.environ.get("GEMINI_API_KEY_1", ""),
+                os.environ.get("GEMINI_API_KEY_2", ""),
+                os.environ.get("GEMINI_API_KEY_3", ""),
+                os.environ.get("GEMINI_API_KEY_4", ""),
+            ] if k
+        ]
+    return _GEMINI_KEY_POOL
+
+
+# Single key alias for backwards compat
+def _gemini_primary_key() -> str:
+    pool = _gemini_key_pool()
+    return pool[0] if pool else ""
+
+GEMINI_API_KEY = ""  # populated lazily via _gemini_primary_key()
+
+
+def _mark_gemini_key_exhausted(key: str) -> None:
+    pool = _gemini_key_pool()
+    _GEMINI_KEY_EXHAUSTED_UNTIL[key] = time.time() + QUOTA_COOLDOWN_SECS
+    idx = pool.index(key) if key in pool else -1
+    now = time.time()
+    next_key = next((k for k in pool if _GEMINI_KEY_EXHAUSTED_UNTIL.get(k, 0) < now), None)
+    next_idx = pool.index(next_key) if next_key else -1
+    logger.warning("Gemini key[%d] quota exhausted — rotated to key[%s]", idx, next_idx)
+
+STATE_FILE = Path("/home/sos/.mumega/watchdog_state.json")
+STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except:
+        return {"sources": {}, "last_alert": "", "consecutive_failures": {}}
+
+
+def save_state(state: dict):
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def alert_hadi(message: str):
+    """Alert via SOS bus (Redis), falling back to Discord + Telegram."""
+    from kernel.bus import send as bus_send
+    if not bus_send(to="kasra", text=message):
+        # fallback: Discord
+        subprocess.run(
+            ["bash", "/home/sos/scripts/discord-reply.sh", "system", "alerts", message],
+            capture_output=True, timeout=10,
+        )
+    logger.warning(message)
+
+
+QUOTA_COOLDOWN_SECS = 86400  # Skip quota-exhausted sources for 24 hours
+
+
+def check_source(name: str, test_fn, state: dict | None = None) -> dict:
+    """Test a model source. Returns {available, latency_ms, error}.
+
+    If the source hit quota on a previous check, skip retesting for
+    QUOTA_COOLDOWN_SECS to avoid burning more attempts.
+    """
+    # Check if this source is in quota cooldown
+    if state is not None:
+        quota_until = state.get("quota_cooldown", {}).get(name, 0)
+        if time.time() < quota_until:
+            remaining = int(quota_until - time.time())
+            return {
+                "available": False,
+                "latency_ms": 0,
+                "error": f"QUOTA: cooldown active ({remaining}s remaining — skipped)",
+            }
+
+    start = time.time()
+    try:
+        result = test_fn()
+        latency = (time.time() - start) * 1000
+        if result:
+            # Clear any prior quota cooldown on success
+            if state is not None:
+                state.setdefault("quota_cooldown", {}).pop(name, None)
+            return {"available": True, "latency_ms": round(latency), "error": None}
+        return {"available": False, "latency_ms": round(latency), "error": "Empty response"}
+    except Exception as e:
+        latency = (time.time() - start) * 1000
+        error = str(e)
+        # Detect quota exhaustion — back off for 1 hour
+        if any(kw in error.lower() for kw in ["quota", "rate limit", "429", "resource exhausted", "too many"]):
+            if state is not None:
+                state.setdefault("quota_cooldown", {})[name] = time.time() + QUOTA_COOLDOWN_SECS
+            return {"available": False, "latency_ms": round(latency), "error": f"QUOTA: {error[:100]}"}
+        return {"available": False, "latency_ms": round(latency), "error": error[:100]}
+
+
+def _gemini_generate(model: str, prompt: str = "Say OK") -> bool:
+    """Try each key in the pool until one works or all are exhausted."""
+    from google import genai
+    now = time.time()
+    for key in _gemini_key_pool():
+        if _GEMINI_KEY_EXHAUSTED_UNTIL.get(key, 0) >= now:
+            continue
+        try:
+            client = genai.Client(api_key=key)
+            r = client.models.generate_content(model=model, contents=prompt)
+            return bool(r.text)
+        except Exception as e:
+            err = str(e)
+            if any(kw in err.lower() for kw in ["quota", "429", "resource exhausted", "rate limit"]):
+                _mark_gemini_key_exhausted(key)
+                continue  # try next key
+            raise  # non-quota error — propagate
+    raise Exception("All Gemini keys exhausted")
+
+
+def test_gemma4() -> bool:
+    if not _gemini_key_pool():
+        return False
+    return _gemini_generate(_model_cfg()["tier1_primary"])
+
+
+def test_gemini_flash() -> bool:
+    if not _gemini_key_pool():
+        return False
+    return _gemini_generate(_model_cfg()["tier3_fallback"])
+
+
+def test_github_models() -> bool:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        return False
+    from openai import OpenAI
+    client = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=token)
+    r = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Say OK"}],
+        max_tokens=5,
+    )
+    return bool(r.choices[0].message.content)
+
+
+def test_openrouter() -> bool:
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        return False
+    from openai import OpenAI
+    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
+    r = client.chat.completions.create(
+        model="meta-llama/llama-3.2-3b-instruct:free",
+        messages=[{"role": "user", "content": "Say OK"}],
+        max_tokens=5,
+    )
+    return bool(r.choices[0].message.content)
+
+
+def test_vertex() -> bool:
+    """Test Vertex AI text-embedding-004 via ADC — no quota limits."""
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    if not project:
+        return False
+    try:
+        import vertexai
+        from vertexai.language_models import TextEmbeddingModel
+        vertexai.init(project=project, location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
+        model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+        result = model.get_embeddings(["OK"])
+        return bool(result and result[0].values)
+    except Exception:
+        return False
+
+
+def test_cloudflare() -> bool:
+    # Cloudflare Workers AI — test via REST
+    cf_token = os.environ.get("CF_API_TOKEN", "")
+    cf_account = os.environ.get("CF_ACCOUNT_ID", "")
+    if not cf_token or not cf_account:
+        return False
+    r = requests.post(
+        f"https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/@cf/meta/llama-3.2-3b-instruct",
+        headers={"Authorization": f"Bearer {cf_token}"},
+        json={"messages": [{"role": "user", "content": "Say OK"}]},
+        timeout=15,
+    )
+    return r.status_code == 200
+
+
+def check_tmux_agent(name: str) -> dict:
+    """Check if a tmux agent is alive, stuck, or looping."""
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", name, "-p"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return {"status": "dead", "detail": "no tmux session"}
+
+        pane = result.stdout
+        lines = pane.strip().split("\n")
+        last_lines = "\n".join(lines[-10:])
+
+        # Check for common stuck patterns
+        if "error" in last_lines.lower() and "retry" in last_lines.lower():
+            return {"status": "stuck", "detail": "error+retry loop detected"}
+        if "rate limit" in last_lines.lower() or "429" in last_lines:
+            return {"status": "quota", "detail": "rate limited"}
+        if "Churned" in last_lines:
+            # Extract churn time
+            for line in lines[-10:]:
+                if "Churned for" in line:
+                    return {"status": "working", "detail": line.strip()}
+        if "❯" in last_lines:
+            return {"status": "idle", "detail": "at prompt"}
+
+        return {"status": "busy", "detail": "processing"}
+    except:
+        return {"status": "unknown", "detail": "check failed"}
+
+
+def restart_agent(name: str, model: str = ""):
+    """Restart a stuck tmux agent."""
+    logger.info(f"Restarting tmux:{name}")
+    try:
+        # Send Ctrl+C to stop current operation
+        subprocess.run(["tmux", "send-keys", "-t", name, "C-c", ""], capture_output=True, timeout=5)
+        time.sleep(2)
+        # Send /clear to reset context
+        subprocess.run(["tmux", "send-keys", "-t", name, "/clear", "Enter"], capture_output=True, timeout=5)
+        alert_hadi(f"**⚠️ WATCHDOG:** Restarted tmux:{name} (was stuck)")
+    except Exception as e:
+        logger.error(f"Failed to restart {name}: {e}")
+
+
+def run_check():
+    """Run one watchdog cycle."""
+    now = datetime.now(timezone.utc).isoformat()[:19]
+    state = load_state()
+    logger.info(f"=== WATCHDOG CHECK {now} ===")
+
+    # Check all model sources
+    sources = {
+        "gemma4": ("Gemma 4 31B", test_gemma4),
+        "gemini_flash": ("Gemini Flash", test_gemini_flash),
+        "github_models": ("GitHub Models", test_github_models),
+    }
+
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        sources["vertex"] = ("Vertex AI (ADC)", test_vertex)
+
+    if os.environ.get("OPENROUTER_API_KEY"):
+        sources["openrouter"] = ("OpenRouter Free", test_openrouter)
+
+    available_count = 0
+    status_lines = []
+
+    for source_id, (name, test_fn) in sources.items():
+        result = check_source(source_id, test_fn, state)
+        state["sources"][source_id] = {**result, "checked_at": now}
+
+        icon = "✅" if result["available"] else "❌"
+        status_lines.append(f"{icon} {name}: {'UP' if result['available'] else result['error'][:50]} ({result['latency_ms']}ms)")
+
+        if result["available"]:
+            available_count += 1
+            state["consecutive_failures"][source_id] = 0
+        else:
+            fails = state["consecutive_failures"].get(source_id, 0) + 1
+            state["consecutive_failures"][source_id] = fails
+
+            error = result["error"] or ""
+            is_cooldown = error.startswith("QUOTA: cooldown active")
+            is_new_quota = error.startswith("QUOTA:") and not is_cooldown
+
+            if is_cooldown or is_new_quota:
+                # Quota state — cooldown active or re-test still hitting quota.
+                # Log locally only; do not spam bus.
+                logger.warning("%s quota (%dx): %s", name, fails, error[:80])
+            elif fails == 1 or fails % 48 == 0:
+                # Genuine new non-quota failure — alert once, then every 24h.
+                alert_hadi(f"**🚨 {name} DOWN** ({fails}x): {error}")
+
+    # Check tmux agents
+    agent_lines = []
+    for agent_name in ["athena", "kasra"]:
+        agent_status = check_tmux_agent(agent_name)
+        icon = {"idle": "💤", "working": "⚡", "busy": "🔄", "stuck": "🚨", "quota": "🚫", "dead": "💀"}.get(agent_status["status"], "❓")
+        agent_lines.append(f"{icon} {agent_name}: {agent_status['status']} — {agent_status['detail'][:50]}")
+
+        # Auto-restart stuck agents
+        if agent_status["status"] in ("stuck", "quota"):
+            restart_agent(agent_name)
+
+    # Overall status — alert only on state change to avoid spam
+    prev_available = state.get("available_sources", len(sources))
+    if available_count == 0 and prev_available > 0:
+        alert_hadi("**🔴 CRITICAL: ALL MODEL SOURCES DOWN. Token flow stopped.**")
+    elif available_count < len(sources) // 2 and prev_available >= len(sources) // 2:
+        alert_hadi(f"**🟡 WARNING: Only {available_count}/{len(sources)} sources available.**")
+
+    # Log summary
+    logger.info("Model sources:")
+    for line in status_lines:
+        logger.info(f"  {line}")
+    logger.info("Agents:")
+    for line in agent_lines:
+        logger.info(f"  {line}")
+    logger.info(f"Available: {available_count}/{len(sources)} sources")
+
+    # Save state
+    state["last_check"] = now
+    state["available_sources"] = available_count
+    state["total_sources"] = len(sources)
+    save_state(state)
+
+    return available_count > 0
+
+
+def daemon():
+    """Run every 30 minutes."""
+    logger.info("Factory Watchdog starting — checking every 30 minutes")
+    while True:
+        try:
+            run_check()
+        except Exception as e:
+            logger.error(f"Watchdog cycle failed: {e}")
+        time.sleep(1800)  # 30 minutes
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv("/home/sos/SOS/.env")                      # primary — 5 Gemini keys + SOS config
+    load_dotenv("/home/sos/therealmofpatterns/.env")        # fallback values
+    load_dotenv("/home/sos/.env.secrets", override=False)   # placeholders only — don't override
+
+    if "--daemon" in sys.argv:
+        daemon()
+    elif "--once" in sys.argv:
+        run_check()
+    else:
+        run_check()

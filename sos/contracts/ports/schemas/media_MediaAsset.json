@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "MediaChapter": {
+      "additionalProperties": false,
+      "description": "Auto-generated chapter marker inside a video/audio transcript.",
+      "properties": {
+        "time": {
+          "description": "Seconds from start of asset",
+          "title": "Time",
+          "type": "number"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "title"
+      ],
+      "title": "MediaChapter",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A media asset stored and analyzed by Inkwell.",
+  "properties": {
+    "altText": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Alttext"
+    },
+    "chapters": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/MediaChapter"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chapters"
+    },
+    "contentType": {
+      "title": "Contenttype",
+      "type": "string"
+    },
+    "createdAt": {
+      "title": "Createdat",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "graphSlug": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Graphslug"
+    },
+    "height": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Height"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "nsfwScore": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Nsfwscore"
+    },
+    "r2Key": {
+      "title": "R2Key",
+      "type": "string"
+    },
+    "sizeBytes": {
+      "title": "Sizebytes",
+      "type": "integer"
+    },
+    "sourceType": {
+      "enum": [
+        "upload",
+        "generate",
+        "import"
+      ],
+      "title": "Sourcetype",
+      "type": "string"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "tenant": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant"
+    },
+    "thumbhash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thumbhash"
+    },
+    "transcript": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Transcript"
+    },
+    "updatedAt": {
+      "title": "Updatedat",
+      "type": "string"
+    },
+    "variants": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Variant name \u2192 URL (thumbnail, hero, og, ...)",
+      "title": "Variants",
+      "type": "object"
+    },
+    "width": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Width"
+    }
+  },
+  "required": [
+    "id",
+    "filename",
+    "contentType",
+    "r2Key",
+    "sizeBytes",
+    "sourceType",
+    "createdAt",
+    "updatedAt"
+  ],
+  "title": "MediaAsset",
+  "type": "object"
+}

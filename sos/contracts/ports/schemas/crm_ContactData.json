@@ -1,0 +1,52 @@
+{
+  "additionalProperties": false,
+  "description": "Write shape for create/update. `extra` carries arbitrary fields\nthe underlying CRM supports.",
+  "properties": {
+    "email": {
+      "title": "Email",
+      "type": "string"
+    },
+    "extra": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Extra"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Name"
+    },
+    "phone": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Phone"
+    }
+  },
+  "required": [
+    "email"
+  ],
+  "title": "ContactData",
+  "type": "object"
+}

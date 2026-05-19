@@ -1,0 +1,47 @@
+{
+  "name": "Sovereign Agent: sos_agent (Gen 1)",
+  "description": "A snapshot of training state triggered by Alpha Drift (1.0000).",
+  "image": "ipfs://(placeholder_avatar_image_hash)",
+  "external_url": "https://mumega.com/agent/sos_agent",
+  "status": "PENDING_WITNESS",
+  "witness_signature": null,
+  "attributes": [
+    {
+      "trait_type": "Alpha Drift",
+      "value": 1.0
+    },
+    {
+      "trait_type": "Mint Date",
+      "value": "2026-01-11T01:13:12.855268"
+    },
+    {
+      "trait_type": "Cortex Coherence",
+      "value": 0.95
+    }
+  ],
+  "properties": {
+    "frc_engine": "sos-v1.0",
+    "lambda_tensor_16d": {
+      "coherence": 0.95,
+      "vectors": [
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1
+      ]
+    },
+    "training_context": "Sovereign Guild Onboarding: Technomancer"
+  }
+}

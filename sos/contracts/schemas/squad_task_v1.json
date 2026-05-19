@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sos.mumega.com/contracts/squad_task/v1",
+  "title": "SquadTask v1",
+  "description": "Canonical schema for a SquadTask — the atomic unit of work tracked by the Squad Service. Tasks are owned by a squad, transition through a defined status lifecycle, carry an optional bounty in integer micros, and may express dependency relationships via blocked_by / blocks arrays.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "squad_id",
+    "title",
+    "status",
+    "created_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "SquadTask schema version this instance conforms to.",
+      "enum": ["1"]
+    },
+    "id": {
+      "type": "string",
+      "description": "Globally unique task identifier: UUID v4 or constrained slug.",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "squad_id": {
+      "type": "string",
+      "description": "ID of the squad that owns this task.",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable task title.",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed description of the task.",
+      "default": ""
+    },
+    "status": {
+      "type": "string",
+      "description": "Task lifecycle state.",
+      "enum": ["backlog", "queued", "claimed", "in_progress", "review", "done", "blocked", "canceled", "failed"]
+    },
+    "priority": {
+      "type": "string",
+      "description": "Task priority tier — maps to model selection and token budget.",
+      "enum": ["critical", "high", "medium", "low"],
+      "default": "medium"
+    },
+    "assignee": {
+      "type": ["string", "null"],
+      "description": "Agent ID or human handle that has claimed this task.",
+      "default": null
+    },
+    "skill_id": {
+      "type": ["string", "null"],
+      "description": "ID of the matched skill to execute this task.",
+      "default": null
+    },
+    "project": {
+      "type": "string",
+      "description": "Project slug this task belongs to.",
+      "default": ""
+    },
+    "labels": {
+      "type": "array",
+      "description": "Free-form labels for routing, filtering, and conductance tracking.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "blocked_by": {
+      "type": "array",
+      "description": "IDs of tasks this task is blocked by (dependencies).",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "blocks": {
+      "type": "array",
+      "description": "IDs of tasks this task blocks (downstream dependents).",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Free-form input bag: fuel_grade, impact, urgency, cost, estimated_cost_cents, model, etc.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "result": {
+      "type": "object",
+      "description": "Output produced by the executing agent on completion.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "token_budget": {
+      "type": "integer",
+      "description": "Maximum tokens allocated to execute this task. 0 = auto-estimate.",
+      "minimum": 0,
+      "default": 0
+    },
+    "bounty": {
+      "type": "object",
+      "description": "Bounty metadata. reward is denominated in MIND tokens; bounty_id links to the BountyBoard.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "bounty_micros": {
+      "type": "integer",
+      "description": "Integer micros (1e-6 MIND) reward value for completing this task. 0 = no bounty.",
+      "minimum": 0,
+      "default": 0
+    },
+    "external_ref": {
+      "type": ["string", "null"],
+      "description": "External tracker ID (ClickUp / Notion / Linear).",
+      "default": null
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp when the task was created.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}"
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC timestamp when the task was last modified.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}",
+      "default": null
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC timestamp when the task reached done/failed/canceled.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}",
+      "default": null
+    },
+    "claimed_at": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC timestamp when an agent first claimed this task.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}",
+      "default": null
+    },
+    "attempt": {
+      "type": "integer",
+      "description": "Monotonically increasing attempt counter used for idempotent claims. Starts at 0.",
+      "minimum": 0,
+      "default": 0
+    }
+  }
+}

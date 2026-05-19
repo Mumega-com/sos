@@ -1,0 +1,18 @@
+[Unit]
+Description=SOS Docs Service — canonical doc-node graph with 5-tier RBAC
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sos/SOS
+Environment=PYTHONPATH=/home/sos/SOS
+Environment=SOS_DOCS_PORT=8085
+EnvironmentFile=-/home/sos/.env.secrets
+EnvironmentFile=-/home/sos/SOS/.env
+Environment=SOS_SYSTEM_TOKEN=
+ExecStart=/usr/bin/python3 -m sos.services.docs.app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

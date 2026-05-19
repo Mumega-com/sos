@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "allowed": {
+      "title": "Allowed",
+      "type": "boolean"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "remaining_cents": {
+      "title": "Remaining Cents",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "allowed",
+    "remaining_cents"
+  ],
+  "title": "BudgetCheckResult",
+  "type": "object"
+}

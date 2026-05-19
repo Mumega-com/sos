@@ -1,0 +1,13 @@
+{
+  "_version": 1,
+  "_description": "Map GitHub repos to the SOS agent that owns them. Used when an SOS-side session files a GH issue on a sibling repo and needs to ping the owning agent via the bus. Surfaced by INFRA-001 (cross-repo coordination primitive).",
+  "_default_agent": "kasra",
+  "owners": {
+    "Mumega-com/inkwell": {"agent": "kasra", "role": "inkwell template"},
+    "Mumega-com/mumega-edge": {"agent": "kasra", "role": "edge worker (api.mumega.com)"},
+    "Mumega-com/digid-inkwell": {"agent": "kasra", "role": "per-instance fork"},
+    "Mumega-com/shabrang-inkwell": {"agent": "kasra", "role": "per-instance fork"},
+    "Mumega-com/mumega-internal-inkwell": {"agent": "kasra", "role": "per-instance fork"},
+    "Mumega-com/sos": {"agent": "codex", "role": "sos core"}
+  }
+}

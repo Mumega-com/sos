@@ -1,0 +1,65 @@
+{
+  "additionalProperties": false,
+  "description": "One message as it travels through the inter-agent bus.\n\nMirrors Inkwell's BusMessage. The richer typed SOS bus envelopes live in\nsos.contracts.messages (AnnounceMessage, SendMessage, TaskCreatedMessage,\n...). This is the port-level shape plugins and external agents see.\n\nBoth ``tenant_id`` and ``project`` are required in v0.9.1. See module\ndocstring for the hard-vs-soft distinction.",
+  "properties": {
+    "from": {
+      "description": "Sender agent slug",
+      "title": "From",
+      "type": "string"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional message-type hint",
+      "title": "Kind"
+    },
+    "project": {
+      "description": "Soft grouping inside a tenant. Required \u2014 no implicit default.",
+      "title": "Project",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Hard customer boundary. Stamped by the port from caller context.",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Recipient \u2014 None for broadcasts",
+      "title": "To"
+    },
+    "ts": {
+      "description": "ISO-8601 timestamp",
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "text",
+    "ts",
+    "tenant_id",
+    "project"
+  ],
+  "title": "BusMessage",
+  "type": "object"
+}

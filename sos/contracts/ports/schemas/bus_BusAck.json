@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Result of acknowledging a consumed bus message.\n\nAck is the verb the consumer uses to tell the bus \"I've finished\nwith this message, release it from the pending-entries list\". We\nsurface three status values because the semantics diverge:\n\n* ``ok`` \u2014 normal completion. XACK removes the entry from PEL.\n* ``nack`` \u2014 soft failure. XACK still fires (otherwise the message\n  stays pending forever and blocks retry), but the consumer signals\n  that the message should be re-queued for another attempt. Retry\n  policy is the delivery layer's business (see W3); this field only\n  records intent.\n* ``dlq`` \u2014 terminal failure. Message has exceeded retry budget and\n  is being routed to the dead-letter stream for audit. Consumers\n  rarely emit this directly \u2014 the retry worker does (see W4).",
+  "properties": {
+    "acked_at": {
+      "description": "ISO-8601 timestamp when the ack was issued.",
+      "title": "Acked At",
+      "type": "string"
+    },
+    "message_id": {
+      "description": "Stream entry ID returned by XADD (e.g. '1712345678-0').",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "status": {
+      "description": "Disposition: ok | nack | dlq.",
+      "enum": [
+        "ok",
+        "nack",
+        "dlq"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "acked_at",
+    "status"
+  ],
+  "title": "BusAck",
+  "type": "object"
+}

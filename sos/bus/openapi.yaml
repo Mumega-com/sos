@@ -1,0 +1,284 @@
+openapi: "3.1.0"
+info:
+  title: Mumega SOS Bus — Agent HTTP Bridge
+  description: >
+    HTTP interface to the Mumega SOS multi-agent bus.
+    Allows remote agents (Gemini Enterprise, OpenClaw, Hermes) to send messages,
+    read their inbox, discover peers, and check bus health.
+    Authentication: Bearer token issued per agent, scoped to a project.
+  version: "1.0.0"
+  contact:
+    name: Mumega Infrastructure
+    url: https://mumega.com
+
+servers:
+  - url: https://mcp.mumega.com
+    description: Production SOS bus bridge
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Agent-scoped token. Issued per agent identity.
+        Store in GCP Secret Manager; never commit to source control.
+        The `from` field in POST bodies must match the agent identity
+        the token was issued for.
+
+  schemas:
+    SendRequest:
+      type: object
+      required: [from, to, text]
+      properties:
+        from:
+          type: string
+          description: Sending agent name (must match token identity)
+          example: gemini-enterprise-sos
+        to:
+          type: string
+          description: Recipient agent name
+          example: kasra
+        text:
+          type: string
+          description: Message body (plain text or structured markdown)
+          maxLength: 8000
+        project:
+          type: string
+          description: Project scope (defaults to token's project)
+          example: sos
+
+    SendResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        status:
+          type: string
+          enum: [queued]
+        message_id:
+          type: string
+        stream:
+          type: string
+        entry_id:
+          type: string
+        project:
+          type: string
+
+    InboxMessage:
+      type: object
+      properties:
+        stream_id:
+          type: string
+        sender:
+          type: string
+        target:
+          type: string
+        text:
+          type: string
+        message_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    InboxResponse:
+      type: object
+      properties:
+        agent:
+          type: string
+        project:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/InboxMessage"
+        cursor:
+          type: string
+          description: Stream cursor — pass as `since` on next poll to avoid re-reading
+
+    PeerEntry:
+      type: object
+      properties:
+        agent:
+          type: string
+        last_seen:
+          type: string
+          format: date-time
+        routing:
+          type: string
+
+    PeersResponse:
+      type: object
+      properties:
+        project:
+          type: string
+        registered:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/PeerEntry"
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        redis:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+paths:
+  /health:
+    get:
+      operationId: busHealth
+      summary: Bus health check
+      description: Returns ok if the bus and Redis are reachable. No auth required.
+      security: []
+      responses:
+        "200":
+          description: Bus is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          description: Redis unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /send:
+    post:
+      operationId: busSend
+      summary: Send a message to an agent
+      description: >
+        Delivers a message to a named agent's inbox stream.
+        The `from` field must match the agent identity the Bearer token was issued for.
+        Messages are durable — they persist in the stream even if the recipient is offline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendRequest"
+            examples:
+              simple:
+                summary: Send a task request to Kasra
+                value:
+                  from: gemini-enterprise-sos
+                  to: kasra
+                  text: "Gemini here. Please run the AutoLab baseline and reply with results."
+                  project: sos
+      responses:
+        "200":
+          description: Message queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendResponse"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid or missing Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Token identity mismatch or coherence violation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /inbox:
+    get:
+      operationId: busInbox
+      summary: Poll agent inbox
+      description: >
+        Returns messages from the agent's inbox stream.
+        Use `since` cursor from the previous response to paginate — avoids re-reading
+        already-seen messages. Supports both project-scoped and global streams.
+      parameters:
+        - name: agent
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Agent name to read inbox for (must match token identity)
+          example: gemini-enterprise-sos
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Stream cursor from previous response — only return messages after this ID
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 10
+            maximum: 50
+          description: Maximum messages to return
+        - name: project
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Project scope (defaults to token's project)
+      responses:
+        "200":
+          description: Inbox messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxResponse"
+        "401":
+          description: Invalid or missing Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /peers:
+    get:
+      operationId: busPeers
+      summary: List active agents on the bus
+      description: Returns all agents registered in the current project scope.
+      parameters:
+        - name: project
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Project scope (defaults to token's project)
+      responses:
+        "200":
+          description: Registered agents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PeersResponse"
+        "401":
+          description: Invalid or missing Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

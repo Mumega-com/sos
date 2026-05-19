@@ -1,0 +1,34 @@
+{
+  "theme_primary": "#0EA5E9",
+  "theme_secondary": "#10B981",
+  "collections": [
+    "services",
+    "team",
+    "blog",
+    "faq"
+  ],
+  "agent_role": "patient experience coordinator",
+  "agent_cause": "Ensures every patient feels welcomed, every appointment is remembered, and the practice grows steadily.",
+  "ruliads_enabled": [
+    "first-hello",
+    "learn-rhythm",
+    "first-insight",
+    "earn-trust",
+    "new-contact-detected",
+    "relationship-mapped",
+    "anniversary-reminder",
+    "website-down",
+    "review-alert",
+    "daily-priority-summary",
+    "content-gap",
+    "seasonal-pattern",
+    "milestone-celebrate",
+    "weekend-silence",
+    "comeback",
+    "gratitude"
+  ],
+  "compliance": [
+    "PHIPA",
+    "PIPEDA"
+  ]
+}

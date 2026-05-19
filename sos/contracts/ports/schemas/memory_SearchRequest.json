@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "filters": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Arbitrary metadata filters \u2014 backend-dependent semantics.",
+      "title": "Filters"
+    },
+    "query": {
+      "maxLength": 2048,
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "SearchRequest",
+  "type": "object"
+}

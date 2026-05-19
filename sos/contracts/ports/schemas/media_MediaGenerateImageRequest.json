@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "prompt": {
+      "minLength": 1,
+      "title": "Prompt",
+      "type": "string"
+    },
+    "tenant": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant"
+    }
+  },
+  "required": [
+    "prompt"
+  ],
+  "title": "MediaGenerateImageRequest",
+  "type": "object"
+}

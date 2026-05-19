@@ -1,0 +1,7 @@
+{
+  "additionalProperties": false,
+  "description": "No parameters today \u2014 kept as a model for JSON-Schema parity.",
+  "properties": {},
+  "title": "ListRequest",
+  "type": "object"
+}

@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "content_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Content Type"
+    },
+    "key": {
+      "minLength": 1,
+      "title": "Key",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "format": "binary",
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "title": "Value"
+    }
+  },
+  "required": [
+    "key",
+    "value"
+  ],
+  "title": "StoragePutRequest",
+  "type": "object"
+}

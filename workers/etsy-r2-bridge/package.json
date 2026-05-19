@@ -1,0 +1,14 @@
+{
+  "name": "etsy-r2-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "secret:token": "wrangler secret put R2_BRIDGE_TOKEN"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "wrangler": "^3.0.0"
+  }
+}
