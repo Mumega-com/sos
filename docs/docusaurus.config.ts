@@ -3,19 +3,19 @@ import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Mumega Docs',
-  tagline: 'AI Squad System — Squads, Tasks, Skills, Pipelines',
+  title: 'SOS Docs',
+  tagline: 'Local-first coordination kernel for heterogeneous AI agents',
   favicon: 'img/favicon.ico',
 
   future: {
     v4: true,
   },
 
-  url: 'https://docs.mumega.com',
+  url: 'https://github.com',
   baseUrl: '/',
 
-  organizationName: 'servathadi',
-  projectName: 'mumega',
+  organizationName: 'Mumega-com',
+  projectName: 'sos',
 
   onBrokenLinks: 'warn',
 
@@ -30,7 +30,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/servathadi/mumega/tree/main/SOS/docs/',
+          editUrl: 'https://github.com/Mumega-com/sos/tree/main/docs/',
         },
         blog: false,
         theme: {
@@ -45,7 +45,7 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'Mumega',
+      title: 'SOS',
       items: [
         {
           type: 'docSidebar',
@@ -61,7 +61,7 @@ const config: Config = {
         },
         // Research sidebar temporarily disabled — FRC papers need MDX fixes
         {
-          href: 'https://github.com/servathadi/mumega',
+          href: 'https://github.com/Mumega-com/sos',
           label: 'GitHub',
           position: 'right',
         },
@@ -74,27 +74,25 @@ const config: Config = {
           title: 'Docs',
           items: [
             { label: 'Getting Started', to: '/docs/getting-started' },
-            { label: 'Squad System', to: '/docs/squads' },
+            { label: 'Runtime Planes', to: '/docs/architecture/runtime-planes' },
             { label: 'API Reference', to: '/docs/api/squad-service' },
           ],
         },
         {
           title: 'Community',
           items: [
-            { label: 'Discord', href: 'https://discord.gg/mumega' },
-            { label: 'GitHub', href: 'https://github.com/servathadi/mumega' },
+            { label: 'GitHub', href: 'https://github.com/Mumega-com/sos' },
           ],
         },
         {
-          title: 'Products',
+          title: 'Related',
           items: [
-            { label: 'DentalNearYou', href: 'https://dentalnearyou.ca' },
-            { label: 'Grant & Funding', href: 'https://grantandfunding.com' },
-            { label: 'The Realm of Patterns', href: 'https://therealmofpatterns.com' },
+            { label: 'Mirror', href: 'https://github.com/Mumega-com/mirror' },
+            { label: 'Inkwell', href: 'https://github.com/Mumega-com/inkwell' },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Digid Inc. All Rights Reserved.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Mumega Labs. MIT Licensed.`,
     },
     prism: {
       theme: prismThemes.github,

@@ -1,96 +1,56 @@
 # Architecture
 
-SOS is a microkernel for AI agent teams. The kernel is small. Everything else is a service.
+SOS is a coordination kernel for AI agent teams. The public core is small:
+MCP tools, a Redis bus, task primitives, schemas, identity, and extension
+contracts. Product-specific workflows live in host overlays.
 
-## The organism
+For the current runtime-plane map, see
+[architecture/runtime-planes.md](architecture/runtime-planes.md).
 
-```
-                         ┌─────────────────────────────┐
-                         │        MCP SSE :6070         │
-                         │   (external agent gateway)   │
-                         └──────────┬──────────────────┘
-                                    │
-┌───────────┐    ┌──────────────────▼──────────────────┐    ┌───────────┐
-│  Agent A   │◄──►│             KERNEL                  │◄──►│  Agent B   │
-│ (Claude)   │    │                                     │    │ (LangGraph)│
-└───────────┘    │  ┌─────────┐ ┌──────┐ ┌──────────┐ │    └───────────┘
-                  │  │Registry │ │ Bus  │ │  Auth    │ │
-                  │  └─────────┘ └──────┘ └──────────┘ │
-                  └──────────────────┬──────────────────┘
-                                     │
-              ┌──────────┬───────────┼───────────┬──────────┐
-              ▼          ▼           ▼           ▼          ▼
-         ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-         │ Squad  │ │ Mirror │ │Feedback│ │Calcifer│ │Economy │
-         │ :8060  │ │ :8844  │ │        │ │(health)│ │        │
-         └────────┘ └────────┘ └────────┘ └────────┘ └────────┘
+## High-Level Shape
+
+```text
+Claude Code / Codex / scripts / host runtimes
+        |
+        | MCP or HTTP bridge
+        v
+SOS MCP server and bus bridge
+        |
+        +-- Redis bus: send, inbox, broadcast, wake-compatible streams
+        +-- Squad tasks: create, list, update, claim/complete flows
+        +-- Kernel contracts: identity, schemas, capability boundaries
+        +-- Optional services: Mirror memory, Engine inference, Gateway ingress
 ```
 
-## Microkernel design
+## Public Core
 
-The kernel has exactly three responsibilities:
+The public core is responsible for:
 
-1. **Bus** -- message passing between agents and services (Redis pub/sub)
-2. **Auth** -- token validation, tenant scoping, capability checks
-3. **Registry** -- services self-register their tools, heartbeat to stay alive, auto-deregister on death (TTL expiry)
+1. Authenticating agents and requests.
+2. Moving messages through the bus.
+3. Exposing MCP tools to agents.
+4. Coordinating task state.
+5. Providing stable schemas and extension contracts.
+6. Failing gracefully when optional services are absent.
 
-Everything else is a service that registers with the kernel.
+## Optional Planes
 
-## Data flow
+Mirror memory, Engine inference, Gateway ingress, and host overlays are useful
+but not required for the basic bus/task kernel. Public docs should describe
+them as optional unless a quickstart or test proves otherwise.
 
-```
-Agent sends message
-  → MCP SSE server receives it
-    → Kernel validates token + tenant scope
-      → Bus routes to target agent or service
-        → Service processes and responds
-          → Response flows back through bus
-```
+## Host Overlays
 
-For tasks:
+Mumega-specific hosted-product code, billing flows, provider integrations,
+customer data, and deployment units belong outside public SOS. Public SOS should
+compose with those overlays without importing them.
 
-```
-Agent creates task (Squad Service)
-  → Task stored with priority + labels
-    → Another agent claims task (atomic, no double-dispatch)
-      → Agent executes work
-        → Agent completes task with result
-          → Feedback loop scores the result
-            → Score feeds into adaptation rules
-```
+## Current Verification
 
-## Tenant isolation
+The S077 fresh-clone baseline is:
 
-Each tenant gets:
+- SOS: 2723 tests, 0 collection errors.
+- Mirror: 145 passed, 2 skipped.
+- Inkwell: `npm install` and `npm run build` exit 0.
 
-- Dedicated Redis DB (DB 0 = system, DB 1+ = tenants)
-- Scoped tokens that limit which tools and data an agent can access
-- Isolated task queues, memory namespaces, and analytics
-- Separate Cloudflare DNS and worker bindings
-
-Agents from tenant A cannot see tenant B's messages, tasks, or memory.
-
-## Event system
-
-Services communicate through Redis pub/sub events:
-
-| Event | Trigger | Subscribers |
-|-------|---------|-------------|
-| `task.completed` | Agent finishes work | Feedback loop |
-| `tenant.created` | Stripe payment | Provisioning |
-| `agent.joined` | Agent announces | Sentinel |
-| `health.degraded` | Service unresponsive | Calcifer |
-| `analytics.ingested` | New data arrives | Decision agent |
-| `content.published` | Blog/page goes live | Analytics |
-| `payment.received` | Stripe webhook | Economy |
-| `feedback.scored` | Result evaluated | Adaptation |
-
-Events are fire-and-forget via pub/sub, but also persisted to a Redis stream for audit replay.
-
-## Key principles
-
-1. **Local-first** -- works offline, no cloud dependency
-2. **Multi-model** -- failover across providers (free Gemma -> Haiku -> Opus)
-3. **Event-driven** -- services react to events, not polling
-4. **Agents don't negotiate** -- they coordinate through shared signals (tasks, events, bus)
-5. **Feedback compounds** -- every result gets scored, scores shape future behavior
+S078 adds the CI release gate that keeps the public/private boundary explicit.

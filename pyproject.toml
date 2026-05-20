@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mumega"
-version = "0.10.1"
-description = "Sovereign Operating System for AI Agents - Multi-model, autonomous, edge-native"
+version = "0.10.3"
+description = "Local-first coordination substrate for heterogeneous AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -99,14 +99,17 @@ dev = [
     # need them. Without these, a fresh `.venv` can't run pytest.
     "alembic>=1.13",
     "bcrypt>=4.0",
+    "psycopg2-binary>=2.9",
+    "pyotp>=2.9",
+    "webauthn>=2.0",
     "jsonschema>=4.0",
 ]
 
 [project.urls]
-Homepage = "https://mumega.com"
-Documentation = "https://docs.mumega.com"
-Repository = "https://github.com/servathadi/sos"
-Issues = "https://github.com/servathadi/sos/issues"
+Homepage = "https://github.com/Mumega-com/sos"
+Documentation = "https://github.com/Mumega-com/sos/tree/main/docs"
+Repository = "https://github.com/Mumega-com/sos"
+Issues = "https://github.com/Mumega-com/sos/issues"
 
 [project.scripts]
 # Main CLI
@@ -138,6 +141,44 @@ select = ["E", "F", "I", "W"]
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
+
+[tool.sos.public_release]
+version_policy = "Keep pyproject.toml, sos.__version__, sos.cli.__version__, CLI output, and CHANGELOG.md synchronized before tagging a public release."
+forbidden_paths = [
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".mcp.json",
+    ".remember",
+    ".sprint_markers",
+    "PROJECT_TRUTH.md",
+    "athena",
+    "artifacts/souls",
+    "operations",
+    "personas",
+    "projects/mumega",
+    "sos/agents",
+    "sos/bus/qnft_registry.json",
+    "sos/bus/qnft_registry.json.*",
+    "sos/bus/tokens.json",
+    "sos/bus/tokens.*.private.json",
+    "sos/bus/tokens.*.backup.json",
+    "sos/bus/tokens.*.bak",
+    "sos/services/billing",
+    "sos/services/integrations",
+    "sos/services/saas",
+    "sos/services/ghl",
+    "sos/services/etsy",
+    "sos/services/gtm",
+    "sos/squads/mumega-launch",
+    "sos/squads/trop",
+    "tests/agents",
+    "tests/services/billing",
+    "tests/services/integrations",
+    "tests/services/saas",
+    "tests/services/etsy",
+    "tests/services/gtm",
+]
 warn_unused_ignores = true
 
 [tool.pytest.ini_options]
