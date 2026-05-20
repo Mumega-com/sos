@@ -12,6 +12,9 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   agent definitions in the public core.
 - Public plugin/profile contract documentation and a regression test covering
   host overlays, compatibility shims, launch paths, and deletion sequencing.
+- Operations runner template lookup now supports `SOS_ADDONS_ROOT/operations`
+  before the legacy root `operations/` directory, preserving a generic host
+  overlay path for operation templates.
 - Version alignment test for package metadata, `sos.__version__`, and CLI
   version export.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.

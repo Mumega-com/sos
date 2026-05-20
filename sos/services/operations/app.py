@@ -22,7 +22,6 @@ import asyncio
 import os
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -36,7 +35,7 @@ from sos.kernel.policy.gate import can_execute
 from sos.kernel.telemetry import init_tracing, instrument_fastapi
 from sos.observability.logging import get_logger
 from sos.services.operations.pulse import post_morning_pulse
-from sos.services.operations.runner import load_template, run_operation
+from sos.services.operations.runner import load_template, resolve_operations_dir, run_operation
 
 SERVICE_NAME = "operations"
 DEFAULT_PORT = 6068
@@ -139,8 +138,7 @@ async def list_templates(
         authorization=authorization,
     )
     _raise_on_deny(decision, require_system=True)
-    _sos_root = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
-    ops_dir = Path(os.environ.get("SOS_OPERATIONS_DIR", str(_sos_root / "operations")))
+    ops_dir = resolve_operations_dir()
     templates = sorted(f.stem for f in ops_dir.glob("*.yaml")) if ops_dir.exists() else []
     return {"templates": templates}
 

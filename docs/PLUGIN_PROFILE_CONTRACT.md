@@ -110,6 +110,14 @@ two steps:
 After deployment references are updated, delete the shim and add the old path to
 the public release boundary checker if it is not already covered.
 
+Host-owned data directories should prefer explicit env configuration over
+repository-root defaults. For operation templates the supported lookup order is:
+
+1. `SOS_OPERATIONS_DIR`
+2. `SOS_ADDONS_ROOT/operations`
+3. Legacy `SOS_ROOT/operations`
+4. `~/.sos/addons/operations`
+
 ## Deletion Checklist
 
 Before deleting an old internal/private path from SOS:

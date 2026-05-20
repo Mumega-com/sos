@@ -26,10 +26,39 @@ log = logging.getLogger("operation-runner")
 
 # Paths — SOS_ROOT env var overrides; falls back to package-relative path
 _SOS_ROOT = Path(os.environ.get("SOS_ROOT", Path(__file__).parent.parent.parent.parent))
-OPERATIONS_DIR = Path(os.environ.get("SOS_OPERATIONS_DIR", str(_SOS_ROOT / "operations")))
 ORGANISMS_DIR = Path(os.environ.get("SOS_ORGANISMS_DIR", str(Path.home() / ".mumega" / "organisms")))
 MIRROR_URL = os.environ.get("MIRROR_URL", "http://localhost:8844")
 MIRROR_TOKEN = os.environ.get("MIRROR_TOKEN", "")
+
+
+def operation_template_dirs() -> list[Path]:
+    """Return operation-template search paths in precedence order."""
+    explicit = os.environ.get("SOS_OPERATIONS_DIR")
+    if explicit:
+        return [Path(explicit)]
+
+    dirs: list[Path] = []
+    addons_root = os.environ.get("SOS_ADDONS_ROOT")
+    if addons_root:
+        dirs.append(Path(addons_root) / "operations")
+
+    dirs.extend([
+        _SOS_ROOT / "operations",
+        Path.home() / ".sos" / "addons" / "operations",
+    ])
+    return dirs
+
+
+def resolve_operations_dir() -> Path:
+    """Return the first existing operation-template directory."""
+    candidates = operation_template_dirs()
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+OPERATIONS_DIR = resolve_operations_dir()
 
 def load_secrets() -> None:
     """Load secrets from SOS-owned sources only."""
@@ -50,7 +79,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 def load_template(product_slug: str) -> dict:
     """Load operation template YAML."""
-    path = OPERATIONS_DIR / f"{product_slug}.yaml"
+    ops_dir = resolve_operations_dir()
+    path = ops_dir / f"{product_slug}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"No template: {path}")
     return yaml.safe_load(path.read_text())
