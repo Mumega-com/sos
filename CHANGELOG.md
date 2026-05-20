@@ -5,6 +5,10 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+- `sos operator` compact operator snapshot command for service health, Redis
+  bus shape, agent hints, wake/gate stream hints, and blocked-task visibility.
+- Public operator runbook and current working-vs-planned state ledger under
+  `docs/operations/`.
 - Public local install profile via `scripts/sos-local-dev.sh`, covering
   dev-token generation, Redis, bus bridge, MCP, Squad, and a one-command smoke
   doctor.
