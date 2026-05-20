@@ -92,6 +92,16 @@ def cmd_doctor(args):
     if not has_model:
         check_warn("GEMINI_API_KEY", "missing (set a model API key)")
 
+    from sos.cli.security import redis_security_findings
+
+    for finding in redis_security_findings(os.environ):
+        if finding.level == "ok":
+            check_ok(finding.name, finding.detail)
+        elif finding.level == "warn":
+            check_warn(finding.name, finding.detail)
+        else:
+            check_fail(finding.name, finding.detail)
+
     print("\n--- Services ---")
     services = (
         ("Engine", os.getenv("SOS_ENGINE_URL", "http://localhost:6060")),

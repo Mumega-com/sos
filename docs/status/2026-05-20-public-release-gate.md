@@ -31,8 +31,11 @@ S077 standalone baseline:
 
 ## Next Required Work
 
-- S080: harden public edge/security before broader exposure.
 - S081: document plugin/profile boundary for OpenClaw/Hermes-style hosts.
 
 S079 adds a copy/paste local profile and doctor pass for Redis, bus, MCP,
 Squad, send/inbox, task create/claim/complete, and Mirror-disabled behavior.
+
+S080 adds the public edge map, threat model, webhook/health/CORS/Redis policy,
+residual-risk checklist, Redis safety findings in `sos doctor`, and a security
+docs CI gate.

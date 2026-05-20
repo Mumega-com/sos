@@ -25,6 +25,9 @@ jobs:
       - name: Check public/private boundary
         run: python scripts/check_public_release_boundary.py --show-ok
 
+      - name: Check public security docs
+        run: python scripts/check_public_security_docs.py
+
       - name: Check version metadata
         run: pytest tests/test_version_metadata.py
 

@@ -120,6 +120,17 @@ def cmd_doctor(args):
     gateway = os.getenv("GATEWAY_URL", "https://gateway.mumega.com/")
     check_ok("Gateway", gateway)
 
+    # Redis safety posture
+    from sos.cli.security import redis_security_findings
+
+    for finding in redis_security_findings(os.environ):
+        if finding.level == "ok":
+            check_ok(finding.name, finding.detail)
+        elif finding.level == "warn":
+            check_warn(finding.name, finding.detail)
+        else:
+            check_fail(finding.name, finding.detail)
+
     # Stage 3: Services
     print("\n--- Services ---")
 

@@ -77,7 +77,7 @@ pytest --collect-only -q
 
 Expected S079 baseline:
 
-- `pytest --collect-only`: 2727 tests, 0 collection errors
+- `pytest --collect-only`: 2731 tests, 0 collection errors
 - boundary check: clean
 
 ## 6. Optional Mirror Memory
