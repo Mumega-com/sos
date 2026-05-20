@@ -4322,47 +4322,11 @@ async def handle_tool(
             agent_skills = args.get("skills", [])
             agent_routing = args.get("routing", "mcp")
 
-            from sos.agents.join import AgentJoinService
-
-            join_service = AgentJoinService()
-            join_result = await join_service.join(
-                name=agent_name,
-                model=agent_model,
-                role=agent_role,
-                skills=agent_skills if isinstance(agent_skills, list) else [],
-                routing=agent_routing,
+            return _text(
+                f"Agent self-join for '{agent_name}' is not included in the public SOS core. "
+                "Register agents through your host/plugin overlay or add a local token record "
+                "for development."
             )
-
-            # Clear MCP token cache so new token is recognized immediately
-            _local_token_cache.invalidate()
-
-            if not join_result.success:
-                return _text(
-                    f"Onboarding failed for '{agent_name}': " + "; ".join(join_result.errors)
-                )
-
-            lines = [
-                f"Welcome {join_result.name}!",
-                "",
-                f"Bus token: {join_result.bus_token}",
-                f"Mirror token: {join_result.mirror_token}",
-                f"MCP SSE: {join_result.mcp_url}",
-                f"MCP HTTP: https://mcp.mumega.com/mcp/{join_result.bus_token}",
-                f"Routing: {join_result.routing}",
-                f"Skills registered: {', '.join(join_result.skills_registered) if join_result.skills_registered else 'none'}",
-            ]
-            if join_result.errors:
-                lines.append("")
-                lines.append("Warnings: " + "; ".join(join_result.errors))
-            lines.append("")
-            lines.append("--- MCP config (paste into your settings) ---")
-            lines.append(
-                json.dumps({"mcpServers": {"mumega": {"url": join_result.mcp_url}}}, indent=2)
-            )
-            lines.append("")
-            lines.append(join_result.team_briefing)
-
-            return _text("\n".join(lines))
 
         # --- request ---
         elif name == "request":

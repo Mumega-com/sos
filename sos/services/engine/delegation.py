@@ -13,8 +13,8 @@ Usage:
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
+from sos.agent_profiles import AGENT_PROFILES_BY_NAME, AgentProfile
 from sos.observability.logging import get_logger
-from sos.agents.definitions import ALL_AGENTS, AgentSoul
 
 log = get_logger("delegation")
 
@@ -22,9 +22,7 @@ log = get_logger("delegation")
 MAX_DELEGATION_DEPTH = 3
 
 # Agent lookup by name
-AGENTS_BY_NAME: Dict[str, AgentSoul] = {
-    agent.name.lower(): agent for agent in ALL_AGENTS
-}
+AGENTS_BY_NAME: Dict[str, AgentProfile] = AGENT_PROFILES_BY_NAME
 
 
 @dataclass
@@ -76,7 +74,7 @@ class DelegationService:
         self.engine = engine
         self._active_delegations: Dict[str, DelegationContext] = {}
 
-    def get_agent(self, name: str) -> Optional[AgentSoul]:
+    def get_agent(self, name: str) -> Optional[AgentProfile]:
         """Get agent definition by name."""
         return AGENTS_BY_NAME.get(name.lower())
 

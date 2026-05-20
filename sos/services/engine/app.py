@@ -327,7 +327,8 @@ async def delegate_task(req: DelegateRequest):
 @app.get("/agents")
 async def list_agents():
     """List available agents for delegation."""
-    from sos.agents.definitions import ALL_AGENTS
+    from sos.agent_profiles import PUBLIC_AGENT_PROFILES
+
     return {
         "agents": [
             {
@@ -335,9 +336,9 @@ async def list_agents():
                 "title": a.title,
                 "description": a.tagline,
                 "model": a.model,
-                "roles": [r.value for r in a.roles],
+                "roles": list(a.roles),
             }
-            for a in ALL_AGENTS
+            for a in PUBLIC_AGENT_PROFILES
         ]
     }
 

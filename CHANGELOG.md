@@ -5,6 +5,13 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+- Public release boundary gate:
+  `scripts/check_public_release_boundary.py` and
+  `docs/RELEASE_BOUNDARY.md`.
+- Public-safe `sos.agent_profiles` contract replacing hardcoded Mumega internal
+  agent definitions in the public core.
+- Version alignment test for package metadata, `sos.__version__`, and CLI
+  version export.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.
   It ships as the `mumega-bus-watch` console script and `python -m sos.watch`,
   with `install`, `run`, `doctor`, `status`, and `test-send` commands.
@@ -19,6 +26,11 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   token source metadata.
 
 ### Changed
+- Public package metadata now points at `Mumega-com/sos`, reports version
+  `0.10.3`, and describes SOS as a local-first coordination substrate for
+  heterogeneous agents.
+- Agent self-join now returns a host/plugin-overlay message in public core
+  instead of importing Mumega private onboarding code.
 - Public SDK wheel now includes the `sos.watch` package and the
   `mumega-bus-watch` entry point.
 - SDK `Agent.inbox()` can read through `bridge_url`/`SOS_BRIDGE_URL` for
@@ -27,6 +39,12 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   project broadcast channels such as `sos:channel:project:sos:global`.
 - MCP HTTPS now exposes `/bridge/inbox`, a bridge-compatible inbox endpoint
   using the same bearer-token auth as JSON-RPC MCP for remote SDK clients.
+
+### Removed
+- Mumega private overlay surfaces from the public core candidate:
+  `athena/`, `operations/`, `personas/`, `projects/mumega/`, `sos/agents/`,
+  `sos/services/etsy/`, `sos/services/ghl/`, `sos/services/gtm/`,
+  `sos/services/saas/`, and their private tests.
 
 ---
 

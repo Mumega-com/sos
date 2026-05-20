@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mumega"
-version = "0.10.1"
-description = "Sovereign Operating System for AI Agents - Multi-model, autonomous, edge-native"
+version = "0.10.3"
+description = "Local-first coordination substrate for heterogeneous AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -101,8 +101,8 @@ dev = [
 [project.urls]
 Homepage = "https://mumega.com"
 Documentation = "https://docs.mumega.com"
-Repository = "https://github.com/servathadi/sos"
-Issues = "https://github.com/servathadi/sos/issues"
+Repository = "https://github.com/Mumega-com/sos"
+Issues = "https://github.com/Mumega-com/sos/issues"
 
 [project.scripts]
 # Main CLI
@@ -119,6 +119,15 @@ mumega-autonomy = "sos.services.autonomy.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sos*"]
+exclude = [
+    "sos.services.billing*",
+    "sos.services.integrations*",
+    "sos.services.saas*",
+    "sos.services.ghl*",
+    "sos.services.etsy*",
+    "sos.services.gtm*",
+    "sos.squads.trop*",
+]
 
 [tool.setuptools.package-data]
 sos = ["py.typed"]
@@ -143,6 +152,44 @@ markers = [
     "integration: live-service integration tests — requires Redis + Mirror + bus consumer (opt-in only)",
 ]
 
+[tool.sos.public_release]
+version_policy = "Keep public cleanup under [Unreleased] until the fresh public clone, boundary, security, and release passes complete. Then bump pyproject.toml, sos.__version__, and CLI version together and tag the release."
+forbidden_paths = [
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".mcp.json",
+    ".remember",
+    ".sprint_markers",
+    "PROJECT_TRUTH.md",
+    "athena",
+    "artifacts/souls",
+    "operations",
+    "personas",
+    "projects/mumega",
+    "sos/agents",
+    "sos/bus/qnft_registry.json",
+    "sos/bus/qnft_registry.json.*",
+    "sos/bus/tokens.json",
+    "sos/bus/tokens.*.private.json",
+    "sos/bus/tokens.*.backup.json",
+    "sos/bus/tokens.*.bak",
+    "sos/services/billing",
+    "sos/services/integrations",
+    "sos/services/saas",
+    "sos/services/ghl",
+    "sos/services/etsy",
+    "sos/services/gtm",
+    "sos/squads/mumega-launch",
+    "sos/squads/trop",
+    "tests/agents",
+    "tests/services/billing",
+    "tests/services/integrations",
+    "tests/services/saas",
+    "tests/services/etsy",
+    "tests/services/gtm",
+]
+
 [tool.importlinter]
 root_packages = ["sos", "tests"]
 
@@ -161,7 +208,7 @@ forbidden_modules = ["sos.services"]
 [[tool.importlinter.contracts]]
 name = "R2 - clients/adapters/cli/agents don't import service internals"
 type = "forbidden"
-source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.agents", "sos.mcp"]
+source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.mcp"]
 forbidden_modules = ["sos.services"]
 # Only flag direct imports from the listed sources. Indirect chains
 # through kernel/* are the kernel's problem (kernel must not reach into
@@ -226,7 +273,6 @@ modules = [
   "sos.services.engine",
   "sos.services.feedback",
   "sos.services.gateway",
-  "sos.services.ghl",
   "sos.services.health",
   "sos.services.identity",
   "sos.services.integrations",
@@ -234,7 +280,6 @@ modules = [
   "sos.services.memory",
   "sos.services.operations",
   "sos.services.registry",
-  "sos.services.saas",
   "sos.services.squad",
   "sos.services.tools",
   "sos.services.voice",
@@ -290,7 +335,6 @@ forbidden_modules = [
   "sos.services.registry",
   "sos.services.bus",
   "sos.services.squad",
-  "sos.services.saas",
   "sos.services.billing",
   "sos.services.identity",
   "sos.services.integrations",
@@ -305,7 +349,6 @@ forbidden_modules = [
   "sos.services.engine",
   "sos.services.feedback",
   "sos.services.gateway",
-  "sos.services.ghl",
   "sos.services.health",
   "sos.services.operations",
   "sos.services.tools",
