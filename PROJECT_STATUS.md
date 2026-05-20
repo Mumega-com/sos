@@ -7,7 +7,7 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Current Public Baseline
 
-- Public SOS fresh clone: pytest collection clean, 2731 tests, 0 collection
+- Public SOS fresh clone: pytest collection clean, 2734 tests, 0 collection
   errors.
 - Public SOS local profile: `scripts/sos-local-dev.sh up` plus `doctor`
   verifies Redis, bus, MCP, Squad, send/inbox, and task create/claim/complete.
@@ -18,6 +18,9 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 - Public SOS security model: edge map, threat model, webhook policy, health
   policy, CORS posture, Redis policy, and residual-risk checklist live under
   `docs/security/`.
+- Public plugin/profile boundary: host runtimes integrate through
+  `docs/architecture/plugin-boundary.md`, the public SDK, MCP, bus-watch, and
+  Squad APIs.
 
 ## What Is Core
 
@@ -47,7 +50,6 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Known Gaps
 
-- S081: plugin/profile boundary for OpenClaw, Hermes, and host overlays.
 - S086: maintainability split of large MCP/service modules.
 
 See [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).

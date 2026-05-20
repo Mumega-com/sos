@@ -45,3 +45,7 @@ provider integrations, billing flows, and deployment glue. Those overlays must
 not be required for a clean public SOS clone to import, test, or run its core
 bus/task surfaces.
 
+The host profile contract is documented in `docs/architecture/plugin-boundary.md`.
+OpenClaw, Hermes, and similar runtimes should integrate through public SDK,
+MCP, bus-watch, Squad, and optional Mirror interfaces rather than importing
+private host modules.

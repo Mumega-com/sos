@@ -14,7 +14,7 @@ and deployment secrets are not part of the public core.
 
 The current public gate from fresh clones is:
 
-- SOS: public pytest collection clean, 2731 tests, 0 collection errors.
+- SOS: public pytest collection clean, 2734 tests, 0 collection errors.
 - Mirror: standalone pytest clean, 145 passed, 2 skipped.
 - Inkwell: `npm install` and `npm run build` exit 0.
 
@@ -111,10 +111,14 @@ Public SOS must not include Mumega-private hosted-product modules, secrets,
 live token registries, or deployment-only overlays. CI runs
 `scripts/check_public_release_boundary.py` to prevent those paths from being
 reintroduced. CI also runs `scripts/check_public_security_docs.py` so public
-edge/security policy docs remain present.
+edge/security policy docs remain present, and
+`scripts/check_plugin_boundary_docs.py` so the host profile contract remains
+present.
 
 Private Mumega runtime code belongs in host overlays such as
 `mumega_sos_addons`, not in the public kernel.
+External runtimes and overlays should integrate through
+[docs/architecture/plugin-boundary.md](docs/architecture/plugin-boundary.md).
 
 ## Version And Release State
 

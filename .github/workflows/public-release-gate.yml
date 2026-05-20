@@ -28,6 +28,9 @@ jobs:
       - name: Check public security docs
         run: python scripts/check_public_security_docs.py
 
+      - name: Check plugin/profile boundary docs
+        run: python scripts/check_plugin_boundary_docs.py
+
       - name: Check version metadata
         run: pytest tests/test_version_metadata.py
 

@@ -23,22 +23,21 @@ public SOS kernel
 
 ## Coming Sprint Queue
 
-S075-S080 are complete. S081 is next.
+S075-S081 are complete. S082 is next.
 
 | Priority | Sprint | Work | Exit criteria |
 |---:|---|---|---|
-| 1 | S081 | Plugin/profile boundary pass | OpenClaw/Hermes-style hosts have a documented adapter contract and one smoke proof |
-| 2 | S082 | Thin private internal SOS | internal repo becomes deployment continuity and host overlay, not a kernel fork |
-| 3 | S083 | Retire compatibility shims | temporary extraction shims are removed, migrated, or explicitly time-boxed |
-| 4 | S084 | Live service migration train | each host service has public-kernel unit, proof, rollback, and owner issue |
-| 5 | S085 | Operator loop and observability | agents, bus, tasks, repos, issues, releases, and health have one repeatable runbook and operator view |
-| 6 | S086 | Maintainability split | MCP monolith starts shrinking behind contract tests without changing external tool behavior |
-| 7 | S087 | Public release pass | taggable release candidate: license, contribution policy, examples, CI, and residual-risk issues complete |
-| 8 | Later | Federation V0 design | two trusted SOS nodes can exchange one bounded task without sharing private runtime state |
+| 1 | S082 | Thin private internal SOS | internal repo becomes deployment continuity and host overlay, not a kernel fork |
+| 2 | S083 | Retire compatibility shims | temporary extraction shims are removed, migrated, or explicitly time-boxed |
+| 3 | S084 | Live service migration train | each host service has public-kernel unit, proof, rollback, and owner issue |
+| 4 | S085 | Operator loop and observability | agents, bus, tasks, repos, issues, releases, and health have one repeatable runbook and operator view |
+| 5 | S086 | Maintainability split | MCP monolith starts shrinking behind contract tests without changing external tool behavior |
+| 6 | S087 | Public release pass | taggable release candidate: license, contribution policy, examples, CI, and residual-risk issues complete |
+| 7 | Later | Federation V0 design | two trusted SOS nodes can exchange one bounded task without sharing private runtime state |
 
 ## S077 Baseline
 
-- SOS public clone: 2731 tests, 0 collection errors after S079 local-profile
+- SOS public clone: 2734 tests, 0 collection errors after S081 plugin/profile
   coverage.
 - Mirror public clone: 145 passed, 2 skipped.
 - Inkwell public clone: `npm install` and `npm run build` exit 0.
@@ -77,6 +76,18 @@ The public security model lives in `docs/security/`:
 
 The public release gate now verifies these docs exist, and `sos doctor` reports
 unsafe production Redis configuration.
+
+## S081 Plugin/Profile Boundary Result
+
+The public host profile contract lives in
+`docs/architecture/plugin-boundary.md`. It defines how OpenClaw, Hermes, local
+scripts, and host overlays register agents, send messages, read inboxes, wake
+local runtimes, expose tools, report health, and use Squad/Mirror without
+importing private Mumega paths.
+
+The public adapter sketch lives in
+`examples/host_profiles/openclaw_hermes_adapter.py`, and the release gate now
+checks that the contract and example remain present.
 
 ## Operating Rule
 
