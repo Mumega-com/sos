@@ -5,6 +5,9 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+- S086 MCP maintainability extraction plan and the first extracted status-tool
+  domain under `sos.mcp.tools.status`, with contract tests preserving status
+  output, project filtering, and task-count behavior.
 - `sos operator` compact operator snapshot command for service health, Redis
   bus shape, agent hints, wake/gate stream hints, and blocked-task visibility.
 - Public operator runbook and current working-vs-planned state ledger under

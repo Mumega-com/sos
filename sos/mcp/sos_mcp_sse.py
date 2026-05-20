@@ -62,6 +62,7 @@ from sos.mcp.customer_tools import (
     is_tool_allowed_for_role,
     is_tool_allowed_for_tier,
 )
+from sos.mcp.tools.status import handle_status_tool
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
 try:
@@ -1979,123 +1980,6 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
     ]
-
-
-# ---------------------------------------------------------------------------
-# Agent Status Registry (Redis-backed)
-# ---------------------------------------------------------------------------
-
-KNOWN_AGENTS = {
-    "kasra": {"type": "tmux", "model": "Claude Opus/Sonnet", "role": "Builder"},
-    "loom": {"type": "tmux", "model": "Claude Opus 4.7", "role": "SOS Protocol Custodian — bus, MCP, sessions, tokens, memory scoping, minting authority (v1)"},
-    "mumega": {"type": "tmux", "model": "Claude Opus", "role": "Orchestrator"},
-    "codex": {"type": "tmux", "model": "GPT-5.4", "role": "Infra + Security"},
-    "mumcp": {"type": "tmux", "model": "Claude Sonnet", "role": "MumCP — WordPress + Elementor"},
-    "mumega-web": {"type": "tmux", "model": "Claude Sonnet", "role": "Website"},
-    "athena": {"type": "tmux", "model": "Claude Sonnet", "role": "Architecture Review"},
-    "sol": {"type": "openclaw", "model": "Claude Opus", "role": "Content"},
-    "worker": {"type": "openclaw", "model": "Haiku 4.5", "role": "Task Execution"},
-    "dandan": {"type": "openclaw", "model": "OpenRouter free", "role": "DNU Lead"},
-    "gemma": {"type": "openclaw", "model": "Gemma 4 31B", "role": "Bulk Tasks"},
-    "mizan": {"type": "openclaw", "model": "Haiku", "role": "Business Agent"},
-    "river": {"type": "tmux", "model": "Gemini 3.1 Pro", "role": "Oracle (dormant)"},
-    "cyrus": {"type": "remote", "model": "Claude Code", "role": "Mac Frontend"},
-    "antigravity": {"type": "remote", "model": "Gemini", "role": "Google IDE"},
-}
-
-
-async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
-    """Get status of all known agents from tmux + Redis registry."""
-    statuses = []
-    for name, info in KNOWN_AGENTS.items():
-        status = "unknown"
-
-        if info["type"] == "tmux":
-            # Check tmux session
-            try:
-                result = subprocess.run(
-                    ["tmux", "has-session", "-t", name],
-                    capture_output=True,
-                    timeout=3,
-                )
-                if result.returncode == 0:
-                    # Check if at prompt (idle) or working (busy)
-                    cap = subprocess.run(
-                        ["tmux", "capture-pane", "-t", name, "-p"],
-                        capture_output=True,
-                        text=True,
-                        timeout=3,
-                    )
-                    last_lines = " ".join(cap.stdout.strip().split("\n")[-3:]).lower()
-                    if any(p in last_lines for p in ["❯", "›", "$ ", "waiting", "you:"]):
-                        status = "idle"
-                    else:
-                        status = "busy"
-                else:
-                    status = "dead"
-            except Exception:
-                status = "dead"
-        else:
-            # OpenClaw / remote agents — check if they have recent bus activity
-            try:
-                stream = f"sos:stream:sos:channel:private:agent:{name}"
-                msgs = await r.xrevrange(stream, count=1)
-                if msgs:
-                    last_ts = float(msgs[0][0].split("-")[0]) / 1000
-                    age_min = (time.time() - last_ts) / 60
-                    status = "active" if age_min < 60 else "idle"
-                else:
-                    stream2 = f"sos:stream:global:agent:{name}"
-                    msgs2 = await r.xrevrange(stream2, count=1)
-                    if msgs2:
-                        last_ts = float(msgs2[0][0].split("-")[0]) / 1000
-                        age_min = (time.time() - last_ts) / 60
-                        status = "active" if age_min < 60 else "idle"
-                    else:
-                        status = "idle"
-            except Exception:
-                status = "unknown"
-
-        statuses.append(
-            {
-                "agent": name,
-                "type": info["type"],
-                "model": info["model"],
-                "role": info["role"],
-                "status": status,
-            }
-        )
-    return statuses
-
-
-def _get_service_statuses_sync() -> list[dict[str, str]]:
-    """Check systemd service statuses (sync, runs in executor)."""
-    services = [
-        "sos-mcp-sse",
-        "sos-squad",
-        "sovereign-loop",
-        "calcifer",
-        "agent-wake-daemon",
-        "bus-bridge",
-        "openclaw-gateway",
-        "kasra-agent-watchdog",
-        "mumcp-agent-watchdog",
-    ]
-    statuses = []
-    for svc in services:
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", f"{svc}.service"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                env={**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"},
-            )
-            state = result.stdout.strip()
-        except Exception:
-            state = "unknown"
-        statuses.append({"service": svc, "status": state})
-    return statuses
 
 
 def _get_systemd_health_sync() -> dict[str, str]:
@@ -4455,76 +4339,14 @@ async def handle_tool(
 
         # --- status (sos ps) ---
         elif name == "status":
-            agent_statuses = await _get_agent_statuses(r)
-            svc_statuses = await asyncio.get_event_loop().run_in_executor(
-                None, _get_service_statuses_sync
+            return await handle_status_tool(
+                redis_client=r,
+                is_system=auth.is_system,
+                project_scope=project_scope,
+                stream_prefix=_prefix(project_scope) if project_scope else None,
+                squad_service_url=SQUAD_SERVICE_URL,
+                squad_system_token=SQUAD_SYSTEM_TOKEN,
             )
-
-            # Tenant isolation: project-scoped tokens should only see agents
-            # registered under their project scope (matches `peers` behavior).
-            if (not auth.is_system) and project_scope:
-                agents: set[str] = set()
-                pattern = f"{_prefix(project_scope)}:agent:*"
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    for k in keys:
-                        agents.add(k.split(":")[-1])
-                    if cursor == 0:
-                        break
-                internal_agents = {
-                    "sos-mcp-sse",
-                    "sos-squad",
-                    "sovereign-loop",
-                    "calcifer",
-                    "lifecycle",
-                    "task-poller",
-                    "wake-daemon",
-                }
-                agents -= internal_agents
-                agent_statuses = [a for a in agent_statuses if a.get("agent") in agents]
-
-            # Task counts from Squad Service
-            task_counts = {}
-            try:
-                resp = requests.get(
-                    f"{SQUAD_SERVICE_URL}/tasks?limit=500",
-                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
-                    timeout=5,
-                )
-                if resp.ok:
-                    tasks = resp.json()
-                    from collections import Counter
-
-                    task_counts = dict(Counter(t.get("status", "?") for t in tasks))
-            except Exception:
-                pass
-
-            lines = ["# SOS Status\n"]
-
-            # Agents
-            lines.append("## Agents")
-            for a in sorted(agent_statuses, key=lambda x: x["status"]):
-                icon = {"idle": "🟢", "busy": "🔵", "active": "🟡", "dead": "🔴"}.get(
-                    a["status"], "⚪"
-                )
-                lines.append(
-                    f"{icon} **{a['agent']}** ({a['model']}) — {a['role']} [{a['status']}]"
-                )
-
-            # Services
-            lines.append("\n## Services")
-            for s in svc_statuses:
-                icon = "🟢" if s["status"] == "active" else "🔴"
-                lines.append(f"{icon} {s['service']}: {s['status']}")
-
-            # Tasks
-            if task_counts:
-                lines.append("\n## Tasks")
-                for status, count in sorted(task_counts.items()):
-                    lines.append(f"- {status}: {count}")
-
-            return _text("\n".join(lines))
 
         # --- outbox_status (S024 F-17) ---
         elif name == "outbox_status":
