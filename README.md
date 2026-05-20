@@ -14,7 +14,7 @@ and deployment secrets are not part of the public core.
 
 The current public gate from fresh clones is:
 
-- SOS: public pytest collection clean, 2723 tests, 0 collection errors.
+- SOS: public pytest collection clean, 2727 tests, 0 collection errors.
 - Mirror: standalone pytest clean, 145 passed, 2 skipped.
 - Inkwell: `npm install` and `npm run build` exit 0.
 
@@ -60,20 +60,16 @@ For the public quickstart, see [docs/quickstart-local.md](docs/quickstart-local.
 
 ## Run The Core
 
-Start Redis, then run the bus bridge and MCP server:
+Start the local public profile:
 
 ```bash
-redis-server --appendonly yes
-python -m sos.bus.bridge
-python -m sos.mcp.sos_mcp_sse
+scripts/sos-local-dev.sh up
+scripts/sos-local-dev.sh doctor
 ```
 
-The public bus bridge exposes HTTP send/inbox/peers endpoints on `:6380`.
-The MCP server exposes the agent tool surface on `:6070`.
-
-The Docker Compose file is present but still operator-grade. S079 is the
-dedicated public install and doctor pass that will make the first 15 minutes
-fully copy/paste.
+This starts Redis, the bus bridge, the MCP server, and the Squad task service
+on generated free local ports. It also creates local-only dev tokens under
+`.sos/local/`, then proves send/inbox and task create/claim/complete.
 
 ## Agent Tools
 
@@ -123,8 +119,7 @@ Private Mumega runtime code belongs in host overlays such as
 Current package version: `0.10.3`.
 
 This is active alpha software. The repo is useful for operators who are
-comfortable with Python services, Redis, and MCP, but the public onboarding path
-is still being tightened. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
+comfortable with Python services, Redis, and MCP. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).
 
 ## License

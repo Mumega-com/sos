@@ -36,8 +36,11 @@ from uuid import uuid4
 import redis
 
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+REDIS_URL = os.environ.get("REDIS_URL")
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 PORT = int(os.environ.get("BUS_BRIDGE_PORT", "6380"))
-TOKENS_PATH = Path(__file__).parent / "tokens.json"
+TOKENS_PATH = Path(os.environ.get("SOS_BUS_TOKENS_PATH", Path(__file__).parent / "tokens.json"))
 
 r: redis.Redis
 
@@ -746,12 +749,18 @@ class BusHandler(BaseHTTPRequestHandler):
 
         cursor = since if since and _valid_stream_id(since) else None
         redis_password = os.environ.get("REDIS_PASSWORD", REDIS_PASSWORD)
-        pubsub_client = redis.Redis(
-            host="localhost",
-            port=6379,
-            password=redis_password,
-            decode_responses=True,
-        )
+        redis_url = os.environ.get("REDIS_URL", REDIS_URL)
+        if redis_url:
+            pubsub_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        else:
+            redis_host = os.environ.get("REDIS_HOST", REDIS_HOST)
+            redis_port = int(os.environ.get("REDIS_PORT", str(REDIS_PORT)))
+            pubsub_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password,
+                decode_responses=True,
+            )
         pubsub = pubsub_client.pubsub(ignore_subscribe_messages=True)
         wake_channel = f"sos:wake:{agent}"
 
@@ -1365,7 +1374,13 @@ def main() -> None:
 
     global r
     pw = os.environ.get("REDIS_PASSWORD", REDIS_PASSWORD)
-    r = redis.Redis(host="localhost", port=6379, password=pw, decode_responses=True)
+    redis_url = os.environ.get("REDIS_URL", REDIS_URL)
+    if redis_url:
+        r = redis.Redis.from_url(redis_url, decode_responses=True)
+    else:
+        host = os.environ.get("REDIS_HOST", REDIS_HOST)
+        port = int(os.environ.get("REDIS_PORT", str(REDIS_PORT)))
+        r = redis.Redis(host=host, port=port, password=pw, decode_responses=True)
 
     # LOCK-S028-B-1 L-2 prerequisite: ThreadingHTTPServer required before
     # /ask concurrency cap can function. HTTPServer is single-threaded;

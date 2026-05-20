@@ -280,6 +280,12 @@ def main():
     # status
     subparsers.add_parser("status", help="Show service status")
 
+    local_parser = subparsers.add_parser("local", help="Local public quickstart helpers")
+    local_sub = local_parser.add_subparsers(dest="local_command")
+    local_sub.add_parser("init", help="Generate local dev tokens and env")
+    local_sub.add_parser("migrate", help="Run local Squad SQLite migrations")
+    local_sub.add_parser("doctor", help="Run local public smoke doctor")
+
     # chat
     chat_parser = subparsers.add_parser("chat", help="Interactive chat")
     chat_parser.add_argument("--agent", "-a", default="river", help="Agent to chat with")
@@ -305,6 +311,19 @@ def main():
         return cmd_doctor(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "local":
+        from sos.cli.local import init_profile, run_migrations, smoke_profile
+
+        if args.local_command == "init":
+            env = init_profile()
+            print(f"Wrote {env['SOS_HOME']}/local/dev.env")
+            return 0
+        if args.local_command == "migrate":
+            return run_migrations()
+        if args.local_command == "doctor":
+            return smoke_profile()
+        local_parser.print_help()
+        return 1
     elif args.command == "chat":
         return cmd_chat(args)
     elif args.command == "start":

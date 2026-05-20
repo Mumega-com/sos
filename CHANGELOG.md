@@ -5,6 +5,14 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+- Public local install profile via `scripts/sos-local-dev.sh`, covering
+  dev-token generation, Redis, bus bridge, MCP, Squad, and a one-command smoke
+  doctor.
+- `sos local init`, `sos local migrate`, and `sos local doctor` CLI helpers
+  for self-serve dev tokens, local SQLite migrations, and public smoke checks.
+- Public-safe local profile tests for generated token/env files.
+- Public Squad Alembic bridge revisions for the OSS migration chain:
+  `0017_public_bridge` and `0023_task_decision_fields`.
 - Public kernel release-gate docs: `PROJECT_STATUS.md`,
   `docs/quickstart-local.md`, `docs/architecture/runtime-planes.md`,
   `docs/status/2026-05-20-public-release-gate.md`, and the S078+ composition
@@ -27,6 +35,14 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   token source metadata.
 
 ### Changed
+- Local quickstart now uses the S079 public profile and doctor path instead of
+  manual private token-file editing and three-terminal service startup.
+- Local quickstart ports are generated from free local ports and written to
+  `.sos/local/dev.env`, avoiding collisions with host services.
+- The bus bridge can read `SOS_BUS_TOKENS_PATH`, allowing local/dev token files
+  outside the package tree.
+- Bus bridge and MCP Redis clients honor `REDIS_URL`, allowing isolated local
+  Redis profiles.
 - README and contributing guidance now describe the public SOS kernel,
   optional Mirror/Engine planes, and MIT contribution posture instead of
   Mumega-private operating assumptions.

@@ -128,6 +128,8 @@ class SquadTask:
     blocks: list[str] = field(default_factory=list)
     inputs: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
+    decision_required: bool = False
+    options: list[dict[str, Any]] = field(default_factory=list)
     token_budget: int = 0
     bounty: dict[str, Any] = field(default_factory=dict)
     external_ref: Optional[str] = None  # ClickUp/Notion/Linear ID

@@ -228,10 +228,8 @@ MCP_WRITE_TOOLS: frozenset[str] = frozenset({
 # WARN-S013-004 fix: module-level sync Redis client for _enforce_rate_limit.
 # Creating a new client per call was fine on localhost but pressure point at scale.
 import redis as _redis_sync_mod
-_sync_redis = _redis_sync_mod.Redis(
-    host="localhost",
-    port=6379,
-    password=REDIS_PASSWORD,
+_sync_redis = _redis_sync_mod.Redis.from_url(
+    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     decode_responses=True,
     socket_keepalive=True,
 )
@@ -252,7 +250,7 @@ _redis: aioredis.Redis | None = None
 def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        url = (
+        url = os.environ.get("REDIS_URL") or (
             f"redis://:{REDIS_PASSWORD}@localhost:6379/0"
             if REDIS_PASSWORD
             else "redis://localhost:6379/0"

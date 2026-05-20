@@ -2,13 +2,15 @@
 
 Last updated: 2026-05-20
 
-SOS is active alpha software. The public repo is now standalone-clean, but the
-first-user install path is still being polished.
+SOS is active alpha software. The public repo is standalone-clean and has a
+local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Current Public Baseline
 
-- Public SOS fresh clone: pytest collection clean, 2723 tests, 0 collection
+- Public SOS fresh clone: pytest collection clean, 2727 tests, 0 collection
   errors.
+- Public SOS local profile: `scripts/sos-local-dev.sh up` plus `doctor`
+  verifies Redis, bus, MCP, Squad, send/inbox, and task create/claim/complete.
 - Public Mirror fresh clone: 145 passed, 2 skipped.
 - Public Inkwell fresh clone: `npm install` and `npm run build` exit 0.
 - Public SOS boundary: private/add-on paths are expected to stay out of public
@@ -42,7 +44,6 @@ first-user install path is still being polished.
 
 ## Known Gaps
 
-- S079: public install and doctor pass.
 - S080: security and public edge pass.
 - S081: plugin/profile boundary for OpenClaw, Hermes, and host overlays.
 - S086: maintainability split of large MCP/service modules.

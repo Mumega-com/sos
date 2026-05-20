@@ -1,7 +1,7 @@
 # Local Quickstart
 
-This quickstart is for the public SOS core. It starts Redis plus SOS services
-from a local checkout. Mirror is optional.
+This quickstart is for the public SOS core. It starts Redis plus the MCP/bus
+surface from a local checkout. Mirror is optional.
 
 ## 1. Install
 
@@ -14,52 +14,70 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## 2. Start Redis
+## 2. Start The Local Profile
 
-In one terminal:
+One command starts Redis, the bus bridge, the MCP server, and the Squad task
+service:
 
 ```bash
-redis-server --appendonly yes
+scripts/sos-local-dev.sh up
 ```
 
-If you use a non-default Redis URL, export it before starting SOS services:
+This also creates local-only dev tokens in `.sos/local/tokens.json`, picks free
+local ports for Redis, bus, MCP, and Squad, and writes the shell environment to
+`.sos/local/dev.env`. You do not need to edit `sos/bus/tokens.json`.
+
+## 3. Run The Public Doctor
 
 ```bash
-export SOS_REDIS_URL=redis://localhost:6379/0
+scripts/sos-local-dev.sh doctor
 ```
 
-## 3. Start The Bus Bridge
+The doctor checks:
 
-In a second terminal:
+- Redis
+- Bus bridge `/health`
+- MCP `/health`
+- Squad `/health`
+- agent `send` and `inbox`
+- task create, claim, and complete
+- Mirror-disabled behavior
+
+## 4. Stop The Local Profile
 
 ```bash
-source .venv/bin/activate
+scripts/sos-local-dev.sh down
+```
+
+## Manual Commands
+
+The helper script wraps these CLI commands:
+
+```bash
+sos local init
+sos local migrate
+sos local doctor
+```
+
+If you prefer to run services manually, source `.sos/local/dev.env` first and
+then run these commands in separate terminals:
+
+```bash
 python -m sos.bus.bridge
-```
-
-The bridge listens on `http://localhost:6380`.
-
-## 4. Start The MCP Server
-
-In a third terminal:
-
-```bash
-source .venv/bin/activate
 python -m sos.mcp.sos_mcp_sse
+python -m sos.services.squad.app
 ```
-
-The MCP server listens on `http://localhost:6070`.
 
 ## 5. Verify The Public Repo
 
 ```bash
 python scripts/check_public_release_boundary.py --show-ok
-pytest
+pytest --collect-only -q
 ```
 
-Expected S077 baseline:
+Expected S079 baseline:
 
-- `pytest`: 2723 tests, 0 collection errors
+- `pytest --collect-only`: 2727 tests, 0 collection errors
 - boundary check: clean
 
 ## 6. Optional Mirror Memory
@@ -77,7 +95,6 @@ URL and token expected by your deployment.
 
 ## Current Gap
 
-This quickstart is intentionally honest: S079 will replace the operator-grade
-multi-terminal flow with a tighter public install profile, seed/dev token flow,
-doctor command, and one copy/paste two-agent smoke test.
-
+This local profile is for development and first-run verification. Production
+operators should provide real tokens, service supervision, TLS, backups, and a
+separate security review of public ingress routes.
