@@ -64,22 +64,27 @@ from sos.mcp.customer_tools import (
 )
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
-from sos.kernel.sprout_tenant import SproutTenantEngine
+try:
+    from sos.kernel.sprout_tenant import SproutTenantEngine
+except ModuleNotFoundError:
+    SproutTenantEngine = None
 
 # ---------------------------------------------------------------------------
-# Mirror kernel — direct import (no HTTP to :8844)
-# PYTHONPATH=/home/sos is set in sos-mcp-sse.service so this import works.
-# psycopg2 is sync — all calls must be wrapped in run_in_executor.
+# Mirror kernel — optional direct import.
+# psycopg2 is sync, so all calls must be wrapped in run_in_executor when the
+# Mirror package is present. Public SOS must still import without Mirror.
 # ---------------------------------------------------------------------------
-import sys as _sys
 import concurrent.futures as _futures
 
-_sys.path.insert(0, "/home/sos")
-from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
-from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
+try:
+    from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
+    from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
+except ModuleNotFoundError:
+    _get_mirror_db = None
+    _get_mirror_embedding = None
 
 try:
-    _mirror_db = _get_mirror_db()  # singleton connection pool
+    _mirror_db = _get_mirror_db() if _get_mirror_db is not None else None  # singleton connection pool
 except Exception as _e:
     import logging as _logging
     _logging.getLogger(__name__).warning("Mirror DB unavailable at startup: %s — recall will return empty", _e)
@@ -3501,6 +3506,8 @@ async def handle_tool(
 
         # --- sprout_tenant ---
         if name == "sprout_tenant":
+            if SproutTenantEngine is None:
+                return _text("sprout_tenant is unavailable in this SOS build")
             try:
                 engine = SproutTenantEngine(use_gemini=bool(args.get("use_gemini", True)))
                 result = await loop.run_in_executor(
@@ -3911,7 +3918,7 @@ async def handle_tool(
             memory = _memory_scope(auth)
 
             # Write directly to Mirror DB with embedding (synchronous, immediate readback)
-            if _mirror_db is not None:
+            if _mirror_db is not None and _get_mirror_embedding is not None:
                 try:
                     from uuid import uuid4 as _uuid4
                     from datetime import datetime as _dt, timezone as _tz
@@ -3971,7 +3978,7 @@ async def handle_tool(
         # --- recall ---
         elif name == "recall":
             # Phase 2: read from Mirror kernel directly — no HTTP to :8844
-            if _mirror_db is None:
+            if _mirror_db is None or _get_mirror_embedding is None:
                 return _text("Mirror DB unavailable — recall disabled")
             query_text = args["query"]
             limit = int(args.get("limit", 5))
@@ -5253,8 +5260,9 @@ async def me(
     # W3: persist DCR client_id if provided (fire-once, idempotent)
     if client_id:
         try:
-            from mirror.kernel.db import get_db
-            db = get_db()
+            if _get_mirror_db is None:
+                raise RuntimeError("Mirror DB unavailable")
+            db = _get_mirror_db()
             db.execute(  # type: ignore[attr-defined]
                 """
                 UPDATE oauth_tenants
