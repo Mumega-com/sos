@@ -18,6 +18,12 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 - `scripts/check_public_security_docs.py` and CI wiring so the release gate
   verifies the public security docs stay present.
 - Redis production safety findings in `sos doctor`.
+- Public plugin/profile boundary contract for OpenClaw, Hermes, local scripts,
+  and host overlays.
+- Minimal OpenClaw/Hermes-style adapter sketch under `examples/host_profiles/`
+  plus tests proving it imports only the public SOS SDK.
+- `scripts/check_plugin_boundary_docs.py` and CI wiring so the release gate
+  verifies the host profile contract remains present.
 - Public kernel release-gate docs: `PROJECT_STATUS.md`,
   `docs/quickstart-local.md`, `docs/architecture/runtime-planes.md`,
   `docs/status/2026-05-20-public-release-gate.md`, and the S078+ composition
@@ -50,6 +56,8 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   Redis profiles.
 - Public status docs now point future public-route work at the S080 security
   model before exposing new routes.
+- Host-overlay guidance now points integrations at public SDK, MCP, bus, watch,
+  and Squad interfaces instead of private Mumega paths.
 - README and contributing guidance now describe the public SOS kernel,
   optional Mirror/Engine planes, and MIT contribution posture instead of
   Mumega-private operating assumptions.

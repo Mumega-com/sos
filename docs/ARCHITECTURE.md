@@ -49,7 +49,7 @@ compose with those overlays without importing them.
 
 The S077 fresh-clone baseline is:
 
-- SOS: 2731 tests, 0 collection errors.
+- SOS: 2734 tests, 0 collection errors.
 - Mirror: 145 passed, 2 skipped.
 - Inkwell: `npm install` and `npm run build` exit 0.
 
