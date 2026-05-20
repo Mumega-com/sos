@@ -97,7 +97,7 @@ def service_snapshot(
     http_get: HttpGet = _default_http_get,
     timeout: float = 2.0,
 ) -> list[ServiceProbe]:
-    env = env or os.environ
+    env = os.environ if env is None else env
     probes: list[ServiceProbe] = []
     for name, env_key, default_url in DEFAULT_SERVICES:
         base_url = env.get(env_key, default_url)
@@ -114,7 +114,7 @@ def service_snapshot(
 
 
 def redis_snapshot(env: Mapping[str, str] | None = None) -> RedisSnapshot:
-    env = env or os.environ
+    env = os.environ if env is None else env
     redis_url = env.get("REDIS_URL", "redis://127.0.0.1:6379/0")
     try:
         import redis
@@ -180,7 +180,7 @@ def task_snapshot(
     http_get: HttpGet = _default_http_get,
     timeout: float = 2.0,
 ) -> TaskSnapshot:
-    env = env or os.environ
+    env = os.environ if env is None else env
     token = env.get("SOS_SQUAD_TOKEN") or env.get("SOS_SQUAD_SYSTEM_TOKEN")
     if not token:
         return TaskSnapshot(
@@ -210,7 +210,7 @@ def collect_snapshot(
     *,
     http_get: HttpGet = _default_http_get,
 ) -> OperatorSnapshot:
-    env = env or os.environ
+    env = os.environ if env is None else env
     return OperatorSnapshot(
         services=service_snapshot(env, http_get=http_get),
         redis=redis_snapshot(env),

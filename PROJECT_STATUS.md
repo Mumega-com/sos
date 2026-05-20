@@ -7,7 +7,7 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Current Public Baseline
 
-- Public SOS fresh clone: pytest collection clean, 2734 tests, 0 collection
+- Public SOS fresh clone: pytest collection clean, 2744 tests, 0 collection
   errors.
 - Public SOS local profile: `scripts/sos-local-dev.sh up` plus `doctor`
   verifies Redis, bus, MCP, Squad, send/inbox, and task create/claim/complete.
@@ -21,6 +21,8 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 - Public plugin/profile boundary: host runtimes integrate through
   `docs/architecture/plugin-boundary.md`, the public SDK, MCP, bus-watch, and
   Squad APIs.
+- Current release candidate: `0.10.3`; release notes and tag checklist live in
+  `docs/releases/`.
 
 ## What Is Core
 
@@ -50,6 +52,14 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Known Gaps
 
-- S086: maintainability split of large MCP/service modules.
+- S086: maintainability split of large MCP/service modules
+  (https://github.com/Mumega-com/sos/issues/149).
+- Tenant-scoped inbox test drift is tracked separately from the S086 status
+  extraction (https://github.com/Mumega-com/sos/issues/172).
+- Public edge hardening remains tracked before broad route exposure
+  (https://github.com/Mumega-com/sos/issues/145).
+- Fresh-install and onboarding polish continue under the public release
+  trackers (https://github.com/Mumega-com/sos/issues/148 and
+  https://github.com/Mumega-com/sos/issues/169).
 
 See [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).

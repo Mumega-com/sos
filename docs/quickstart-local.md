@@ -75,9 +75,9 @@ python scripts/check_public_release_boundary.py --show-ok
 pytest --collect-only -q
 ```
 
-Expected S079 baseline:
+Expected S087 baseline:
 
-- `pytest --collect-only`: 2734 tests, 0 collection errors
+- `pytest --collect-only`: 2744 tests, 0 collection errors
 - boundary check: clean
 
 ## 6. Optional Mirror Memory
