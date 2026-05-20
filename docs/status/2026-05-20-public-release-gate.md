@@ -31,6 +31,8 @@ S077 standalone baseline:
 
 ## Next Required Work
 
-- S079: make install/doctor truly copy/paste for a new user.
 - S080: harden public edge/security before broader exposure.
 - S081: document plugin/profile boundary for OpenClaw/Hermes-style hosts.
+
+S079 adds a copy/paste local profile and doctor pass for Redis, bus, MCP,
+Squad, send/inbox, task create/claim/complete, and Mirror-disabled behavior.

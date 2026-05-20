@@ -1228,7 +1228,7 @@ class SquadTaskService:
                     "text": f"Task done: {task.title}",
                 }))
             except Exception as e:
-                log.warning(f"Delivery notification failed for {project}: {e}")
+                log.warn(f"Delivery notification failed for {project}: {e}")
 
         # Wire 4: Bounty completion → Treasury payout
         if task.bounty and task.bounty.get("reward"):
