@@ -26,7 +26,6 @@ provisioning_state='failed' (no orphan rows, partial state preserved as forensic
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import os
@@ -45,6 +44,7 @@ from sos.bus.token_store import find_active, hash_token, load_tokens, write_toke
 # -----------------------------------------------------------------------
 SOS_BUS_DIR = Path(__file__).parent
 TOKENS_PATH = SOS_BUS_DIR / "tokens.json"
+QNFT_REGISTRY_PATH = SOS_BUS_DIR / "qnft_registry.json"
 SOS_HOME_DIR = Path.home() / ".sos"
 MIRROR_KEYS_PATH = SOS_HOME_DIR / "mirror_keys.json"
 CUSTOMERS_DIR = Path.home() / ".mumega" / "customers"
@@ -54,6 +54,7 @@ CUSTOMERS_DIR = Path.home() / ".mumega" / "customers"
 # Small deviation from Loom Q4 approval (path differs; separation discipline preserved).
 TEMPLATES_DIR = SOS_BUS_DIR / "templates" / "customer"
 MIRROR_URL_DEFAULT = "http://localhost:8844"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # -----------------------------------------------------------------------
 # Validation
@@ -72,6 +73,53 @@ class ProvisionError(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _runtime_path(env_var: str, fallback: Path, *, artifact: str) -> Path:
+    """Resolve a mutable runtime artifact path and block package-tree writes.
+
+    Tenant companion endpoints run inside the bus bridge process. Once the
+    bridge runs from the public kernel checkout, package-relative defaults can
+    silently create secret-bearing files inside the repo. Env-backed paths keep
+    mutable state in the operator runtime tree; the guard fails closed if a
+    write would land under the imported checkout.
+    """
+    raw = os.environ.get(env_var)
+    path = Path(raw).expanduser() if raw else Path(fallback)
+    resolved = path.resolve(strict=False)
+    repo_root = _REPO_ROOT.resolve(strict=False)
+    if _is_relative_to(resolved, repo_root):
+        raise ProvisionError(
+            500,
+            "runtime_path_in_package_tree",
+            f"{artifact} path resolves inside the SOS checkout; set {env_var} to a runtime path",
+        )
+    return resolved
+
+
+def tokens_path() -> Path:
+    return _runtime_path("SOS_BUS_TOKENS_PATH", TOKENS_PATH, artifact="tokens.json")
+
+
+def qnft_registry_path() -> Path:
+    return _runtime_path("SOS_QNFT_PATH", QNFT_REGISTRY_PATH, artifact="qnft_registry.json")
+
+
+def bus_state_lock_path() -> Path:
+    default_dir = tokens_path().parent
+    return _runtime_path(
+        "SOS_TENANT_STATE_LOCK_PATH",
+        default_dir / ".tenant_mint.lock",
+        artifact="tenant state lock",
+    )
 
 
 def now_iso() -> str:
@@ -253,7 +301,7 @@ def _issue_db_mirror_token(slug: str, display_name: str) -> Optional[dict]:
         )
     except urllib.error.HTTPError as exc:
         raise ProvisionError(502, "mirror_admin_http_error", f"Mirror admin API HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError):
         # Mirror admin API is not reachable in this environment. Keep S027
         # provisioning usable via the legacy non-admin file-backed key path.
         return None
@@ -360,7 +408,7 @@ def mint_or_get_mirror_key(slug: str, display_name: str) -> tuple[str, bool]:
 # -----------------------------------------------------------------------
 def _load_tokens() -> list[dict]:
     try:
-        return load_tokens(TOKENS_PATH)
+        return load_tokens(tokens_path())
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -415,7 +463,7 @@ def mint_or_get_bus_token(slug: str, display_name: str) -> tuple[str, bool]:
             "scopes": ["tenant:*", "bus:*"],
         }
         tokens.append(new_record)
-        write_tokens_atomic(TOKENS_PATH, tokens)
+        write_tokens_atomic(tokens_path(), tokens)
         return raw_token, True
     except OSError as e:
         raise ProvisionError(500, "bus_token_io_error", f"tokens.json IO: {e}") from e

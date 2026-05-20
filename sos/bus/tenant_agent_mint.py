@@ -42,8 +42,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
-import json
 import os
 import re
 import secrets
@@ -51,31 +49,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-from sos.bus.token_store import hash_token, write_tokens_atomic
-# Reuse D-1b/D-2b primitives.
-from sos.bus.tenant_provisioning import (
-    SOS_BUS_DIR,
-    TOKENS_PATH,
-    SLUG_RE,
-    TENANT_ID_RE,
-    ProvisionError,
-    now_iso,
-    constant_time_equal,
-    atomic_write_json,
-)
-
 # Reuse D-2b QNFT registry + routing paths so all tenant-scoped agents
 # (fork-mints AND custom-mints) live in a single registry — one identity space
 # governed by signer/tier discriminators rather than separate files.
 from sos.bus.tenant_agent_activation import (
-    QNFT_REGISTRY_PATH,
-    DYNAMIC_ROUTING_PATH,
     CUSTOMERS_DIR,
+    DYNAMIC_ROUTING_PATH,
+    QNFT_REGISTRY_PATH,
+    _generate_qnft_seed_and_vector,
+    _load_agent_routing,
     _load_qnft_registry,
     _load_tokens,
-    _load_agent_routing,
-    _generate_qnft_seed_and_vector,
 )
+
+# Reuse D-1b/D-2b primitives.
+from sos.bus.tenant_provisioning import (
+    SLUG_RE,
+    TENANT_ID_RE,
+    TOKENS_PATH,
+    ProvisionError,
+    _runtime_path,
+    atomic_write_json,
+    bus_state_lock_path,
+    constant_time_equal,
+    now_iso,
+)
+from sos.bus.token_store import hash_token, write_tokens_atomic
 
 # -----------------------------------------------------------------------
 # L-3 / L-8 RESERVED_NAMES — keep in sync with workers/inkwell-api/src/routes/tenants-agent-mint.ts
@@ -122,7 +121,6 @@ ALLOWED_MODELS: set[str] = {
 # lock once and releases at end-of-flow; the inner RMW primitives are
 # already serialized under that lock. Mints are infrequent (admin-driven),
 # so substrate-wide single lock is acceptable.
-_BUS_STATE_LOCK_PATH_FN = lambda: SOS_BUS_DIR / ".tenant_mint.lock"
 
 
 @contextlib.contextmanager
@@ -133,8 +131,9 @@ def _bus_state_lock() -> Iterator[None]:
     operations that read-modify-write qnft_registry.json, tokens.json, or
     agent_routing.json.
     """
-    SOS_BUS_DIR.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(_BUS_STATE_LOCK_PATH_FN()), os.O_CREAT | os.O_RDWR, 0o600)
+    lock_path = bus_state_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -387,7 +386,12 @@ def mint_or_get_custom_qnft(
             "model_field": model,
         }
         registry[registry_key] = new_record
-        atomic_write_json(QNFT_REGISTRY_PATH, registry)
+        qnft_path = _runtime_path(
+            "SOS_QNFT_PATH",
+            QNFT_REGISTRY_PATH,
+            artifact="qnft_registry.json",
+        )
+        atomic_write_json(qnft_path, registry)
         return new_record, True
     except OSError as e:
         raise ProvisionError(500, "qnft_io_error", f"qnft_registry.json IO: {e}") from e
@@ -464,7 +468,12 @@ def mint_or_get_custom_tenant_agent_token(
             "scopes": ["bus:send"],
         }
         tokens.append(new_record)
-        write_tokens_atomic(TOKENS_PATH, tokens)
+        token_path = _runtime_path(
+            "SOS_BUS_TOKENS_PATH",
+            TOKENS_PATH,
+            artifact="tokens.json",
+        )
+        write_tokens_atomic(token_path, tokens)
         return raw_token, token_hash, True
     except OSError as e:
         raise ProvisionError(500, "bus_token_io_error", f"tokens.json IO: {e}") from e
@@ -569,7 +578,7 @@ def _build_custom_claude_md(
         f"**Tenant:** `{tenant_slug}`",
         f"**Role:** {role}",
         f"**Model:** `{model}`",
-        f"**Tier:** `tenant-custom` (signer: tenant-admin; countersigned_by: none)",
+        "**Tier:** `tenant-custom` (signer: tenant-admin; countersigned_by: none)",
         f"**QNFT seed:** `{qnft_seed_hex}`",
         f"**Minted:** {mint_date}",
         "",

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
@@ -219,6 +218,41 @@ class TestL1ClaimValidation:
     def test_valid_token_passes(self, tmp_substrate, seeded_tenant_admin_token):
         # Should not raise
         taa.validate_actor_token_claims(seeded_tenant_admin_token["hash"], "acme")
+
+    def test_claim_validator_honors_sos_bus_tokens_path(self, tmp_path, monkeypatch):
+        tokens_path = tmp_path / "runtime" / "tokens.json"
+        tokens_path.parent.mkdir()
+        raw_token = "sk-acme-admin-env-backed"
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        tokens_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "token": raw_token,
+                        "token_hash": token_hash,
+                        "project": "acme",
+                        "active": True,
+                        "agent": "acme-admin",
+                        "scope": "tenant",
+                    }
+                ]
+            )
+        )
+        monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
+
+        taa.validate_actor_token_claims(token_hash, "acme")
+
+    def test_qnft_mint_honors_sos_qnft_path(self, tmp_substrate, tmp_path, monkeypatch):
+        qnft_path = tmp_path / "runtime" / "qnft_registry.json"
+        monkeypatch.setenv("SOS_QNFT_PATH", str(qnft_path))
+
+        record, minted = taa.mint_or_get_qnft("athena-acme", "athena", "acme")
+
+        assert minted is True
+        assert record["seed_hex"]
+        assert qnft_path.exists()
+        assert "athena-acme" in json.loads(qnft_path.read_text())
+        assert not tmp_substrate["qnft_registry_path"].exists()
 
     def test_unknown_hash_rejected(self, tmp_substrate, seeded_tenant_admin_token):
         with pytest.raises(ProvisionError) as exc:
