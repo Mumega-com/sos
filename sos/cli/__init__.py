@@ -14,6 +14,7 @@ from sos.observability.logging import get_logger
 
 log = get_logger("cli")
 
+
 def cmd_version(args):
     """Show version info."""
     print(f"mumega {__version__}")
@@ -194,6 +195,8 @@ def main():
     subparsers.add_parser("version", help="Show version info")
     subparsers.add_parser("doctor", help="Check system health")
     subparsers.add_parser("status", help="Show service status")
+    operator_parser = subparsers.add_parser("operator", help="Show compact operator snapshot")
+    operator_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     local_parser = subparsers.add_parser("local", help="Local public quickstart helpers")
     local_sub = local_parser.add_subparsers(dest="local_command")
@@ -223,6 +226,10 @@ def main():
         return cmd_doctor(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "operator":
+        from sos.cli.operator import run_operator_command
+
+        return run_operator_command(args)
     if args.command == "local":
         from sos.cli.local import init_profile, run_migrations, smoke_profile
 
