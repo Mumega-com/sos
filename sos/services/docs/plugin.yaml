@@ -1,0 +1,20 @@
+name: sos-docs
+version: 1.0.0
+display_name: SOS Docs Service
+kind: service
+depends_on:
+  - kernel-role-registry
+  - mirror
+routes:
+  - /docs/*
+mcp_tools:
+  - sos_docs__list
+  - sos_docs__get
+  - sos_docs__relations
+  - sos_docs__create
+events_emit:
+  - sos:event:docs:node_created
+  - sos:event:docs:node_promoted
+  - sos:event:docs:relation_added
+port: 8085
+systemd_unit: sos-docs.service

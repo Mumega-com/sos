@@ -24,6 +24,7 @@ classifiers = [
 
 dependencies = [
     "alembic>=1.13",
+    "asyncpg>=0.29",
     "fastapi>=0.100",
     "httpx>=0.24",
     "pydantic>=2.0",
