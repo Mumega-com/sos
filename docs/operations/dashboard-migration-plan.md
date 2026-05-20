@@ -115,7 +115,57 @@ of:
 - redesign them as a generic, opt-in host plugin endpoint with explicit docs and
   tests.
 
-## Before Live Migration
+## Live Migration Result
+
+Applied: 2026-05-20, request `s088-dashboard-migrate-live-001`.
+
+Hadi decision: CEO Windshield endpoints stay internal-only and are not merged
+to public SOS. After migration, the public dashboard returns `404` for:
+
+- `GET /api/organism/health`
+- `GET /api/economics/stats`
+
+The live user unit now runs from the public kernel checkout:
+
+```ini
+[Service]
+EnvironmentFile=/home/mumega/.env.secrets
+Type=simple
+WorkingDirectory=/home/mumega/sos-public-kernel
+Environment=PYTHONPATH=/home/mumega/sos-public-kernel
+ExecStart=/usr/bin/python3 -m sos.services.dashboard
+Restart=always
+RestartSec=5
+```
+
+Backup of the pre-migration internal unit:
+
+```text
+/home/mumega/.config/systemd/user/dashboard.service.pre-s088-dashboard-migrate-live-001.bak
+```
+
+Post-migration proof on `:8090`:
+
+- `GET /health` returns `200`.
+- `GET /api/status` returns unauthenticated `401`.
+- `GET /sos/api/health` returns `200`.
+- `GET /login` returns `200`.
+- `POST /login` with an env-backed system token returns `303 /dashboard` and
+  sets the dashboard cookie.
+- `GET /dashboard` with that cookie returns `200`.
+
+Rollback command:
+
+```bash
+cp /home/mumega/.config/systemd/user/dashboard.service.pre-s088-dashboard-migrate-live-001.bak \
+  /home/mumega/.config/systemd/user/dashboard.service
+systemctl --user daemon-reload
+systemctl --user restart dashboard.service
+systemctl --user status dashboard.service --no-pager -l
+curl -fsS http://127.0.0.1:8090/health
+```
+
+## Pre-Migration Checklist (Historical)
 
 - Hadi reviews the unit and CEO Windshield decision.
 - Public dashboard process is run once more on a side port with the live env.
@@ -127,4 +177,3 @@ systemctl --user daemon-reload
 systemctl --user restart dashboard.service
 systemctl --user status dashboard.service --no-pager -l
 ```
-
