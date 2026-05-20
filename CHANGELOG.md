@@ -4,7 +4,15 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+---
+
+## [0.10.3] — 2026-05-20 — Public kernel release candidate
+
 ### Added
+- S087 public release pass artifacts: 0.10.3 release notes, tag checklist,
+  and current smoke proof under `docs/releases/`.
 - S086 MCP maintainability extraction plan and the first extracted status-tool
   domain under `sos.mcp.tools.status`, with contract tests preserving status
   output, project filtering, and task-count behavior.
@@ -53,6 +61,9 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   token source metadata.
 
 ### Changed
+- Operator snapshot helpers now honor explicitly empty env mappings instead of
+  falling back to process environment, making tests and embedded callers
+  deterministic.
 - Local quickstart now uses the S079 public profile and doctor path instead of
   manual private token-file editing and three-terminal service startup.
 - Local quickstart ports are generated from free local ports and written to

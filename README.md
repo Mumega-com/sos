@@ -14,7 +14,7 @@ and deployment secrets are not part of the public core.
 
 The current public gate from fresh clones is:
 
-- SOS: public pytest collection clean, 2734 tests, 0 collection errors.
+- SOS: public pytest collection clean, 2744 tests, 0 collection errors.
 - Mirror: standalone pytest clean, 145 passed, 2 skipped.
 - Inkwell: `npm install` and `npm run build` exit 0.
 
@@ -127,6 +127,9 @@ Current package version: `0.10.3`.
 This is active alpha software. The repo is useful for operators who are
 comfortable with Python services, Redis, and MCP. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).
+For the current release candidate, see
+[docs/releases/v0.10.3.md](docs/releases/v0.10.3.md) and
+[docs/releases/v0.10.3-tag-checklist.md](docs/releases/v0.10.3-tag-checklist.md).
 
 ## License
 
