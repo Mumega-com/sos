@@ -265,6 +265,7 @@ class MCPAuthContext:
     tenant_id: str | None
     is_system: bool = False
     source: str = "unknown"
+    tenant_slug: str | None = None
 
     @property
     def project_scope(self) -> str | None:
@@ -512,6 +513,11 @@ def _memory_scope(auth: MCPAuthContext) -> MCPMemoryScope:
         boundary=auth.scope or "tenant",
         as_agent_active=False,
     )
+
+
+def _tenant_slug_for_auth(auth: MCPAuthContext) -> str | None:
+    """Return the tenant discriminator used by tenant gates."""
+    return auth.tenant_slug or auth.tenant_id or auth.active_project
 
 
 def _mirror_series_for_agent(agent: str) -> str:
@@ -1201,6 +1207,7 @@ class _TokenCacheWithHotReload:
                     tenant_id=project,
                     is_system=project is None,
                     source="bus_tokens",
+                    tenant_slug=item.get("tenant_slug") or project,
                     agent_name=agent_name,
                     scope=scope,
                     agent_kind=agent_kind,
@@ -1276,6 +1283,7 @@ def _lookup_cloudflare_token(token: str) -> MCPAuthContext | None:
                     tenant_id=project,
                     is_system=project is None,
                     source="cloudflare_kv",
+                    tenant_slug=payload.get("tenant_slug") or project,
                     agent_name=agent_name,
                     scope=scope,
                     plan=plan,
@@ -1332,6 +1340,7 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             tenant_id=auth_ctx.project,
             is_system=auth_ctx.is_system,
             source="bus_tokens",
+            tenant_slug=getattr(auth_ctx, "tenant_slug", None) or auth_ctx.project,
             agent_name=auth_ctx.agent or "",
             role="admin" if auth_ctx.is_admin else "viewer",
             permissions=_normalize_permissions(getattr(auth_ctx, "scopes", [])),
@@ -1354,6 +1363,7 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             tenant_id=squad_auth.get("tenant_id"),
             is_system=bool(squad_auth.get("is_system")),
             source="squad_api_keys",
+            tenant_slug=squad_auth.get("tenant_slug") or squad_auth.get("tenant_id"),
         )
     # 4. Cloudflare KV.
     return _lookup_cloudflare_token(token)
@@ -2790,7 +2800,7 @@ async def _handle_boot_context(auth: MCPAuthContext, args: dict[str, Any] | None
     memory = _memory_scope(auth)
 
     # S063 Slice 3: Stasis gate — hard-block work if tenant is deactivated.
-    tenant_slug = auth.tenant_slug or None
+    tenant_slug = _tenant_slug_for_auth(auth)
     if not _tenant_is_active_mcp(tenant_slug):
         stasis_payload = {
             "stasis": {
