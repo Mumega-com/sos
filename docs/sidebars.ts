@@ -16,7 +16,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Architecture',
-      items: ['architecture/overview', 'architecture/services', 'architecture/brain'],
+      items: ['architecture/runtime-planes', 'architecture/overview', 'architecture/services', 'architecture/brain'],
     },
   ],
   apiSidebar: [

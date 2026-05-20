@@ -5,6 +5,14 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+- Public kernel release-gate docs: `PROJECT_STATUS.md`,
+  `docs/quickstart-local.md`, `docs/architecture/runtime-planes.md`,
+  `docs/status/2026-05-20-public-release-gate.md`, and the S078+ composition
+  sprint queue.
+- `scripts/check_public_release_boundary.py` plus GitHub Actions wiring to
+  prevent private/add-on paths from returning to public SOS.
+- Version metadata regression coverage for `pyproject.toml`, `sos.__version__`,
+  CLI version output, and installed package metadata.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.
   It ships as the `mumega-bus-watch` console script and `python -m sos.watch`,
   with `install`, `run`, `doctor`, `status`, and `test-send` commands.
@@ -19,6 +27,13 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   token source metadata.
 
 ### Changed
+- README and contributing guidance now describe the public SOS kernel,
+  optional Mirror/Engine planes, and MIT contribution posture instead of
+  Mumega-private operating assumptions.
+- `pyproject.toml`, `sos.__version__`, and CLI version output now report
+  `0.10.3`.
+- Public dev installs now include `psycopg2-binary`, `pyotp`, and `webauthn`,
+  matching the public test suite's import-time requirements.
 - Public SDK wheel now includes the `sos.watch` package and the
   `mumega-bus-watch` entry point.
 - SDK `Agent.inbox()` can read through `bridge_url`/`SOS_BRIDGE_URL` for

@@ -1,98 +1,68 @@
-# Contributing to SOS
+# Contributing To SOS
 
-**Version:** v1.0 (2026-04-24)
+SOS is an open-source local-first coordination kernel for heterogeneous AI
+agents. Contributions should keep the public core small, installable, and free
+of Mumega-private deployment assumptions.
 
-Welcome. SOS is a microkernel substrate for a protocol-city of humans and AI agents — an unusual codebase, with unusual contribution norms. Please read [MAP.md](./MAP.md) before opening anything.
+## Contribution Posture
 
----
+Public contributions are welcome through GitHub issues and pull requests. By
+contributing, you certify that you have the right to submit the work and that
+your contribution is licensed under the same MIT License as this repository.
+Do not submit secrets, customer data, private deployment paths, or proprietary
+Mumega add-on code to the public repo.
 
-## Who can contribute
+## Before You Open A PR
 
-- **Mumega team agents** (Loom, Kasra, Athena, Codex, Sol, Kaveh, etc.) — primary contributors, governed by their QNFT contracts.
-- **Mumega team humans** (Hadi as principal, plus authorized partners with signed contributor agreements).
-- **External contributors** — case-by-case via signed CLA + IP assignment. Email security@mumega.com to start.
+1. Check whether the change belongs in public SOS or in a host overlay.
+2. Open or reference a GitHub issue for non-trivial work.
+3. Keep the kernel small: bus, identity, schemas, task substrate, MCP surface,
+   and explicit extension contracts.
+4. Add or update focused tests for behavior changes.
+5. Update `CHANGELOG.md` and docs when the public surface changes.
 
----
+## Public/Private Boundary
 
-## Before you write code
+Public SOS must not contain:
 
-1. **Read [MAP.md](./MAP.md).** Constitutional principles override individual feature decisions.
-2. **Read [ROADMAP.md](./ROADMAP.md).** Match your work to the right phase. Out-of-phase work needs a flag, not a commit.
-3. **Find the relevant stack-section spec** in `docs/superpowers/plans/stack-sections/`. Each numbered file is the spec for one architectural primitive.
-4. **Athena gates architectural changes.** Anything touching kernel, schema, or cross-service contracts needs Athena sign-off before merge.
+- real token registries or secrets
+- Mumega customer/product services
+- billing, provider integration, or tenant-specific deployment modules
+- private operational paths, systemd overlays, or host-only add-ons
 
----
+Run the release boundary check before opening a PR:
 
-## Discipline: the microkernel + anti-complication rules
+```bash
+python scripts/check_public_release_boundary.py --show-ok
+```
 
-These are non-negotiable:
+CI also runs this check on every PR.
 
-1. **Kernel stays small.** Auth, bus, Mirror API, role registry, plugin loader, schema, events. That's it. Anything new asks: "is this a kernel primitive or a service module?" Default answer: service module.
-2. **Service modules ride the plugin contract.** New capabilities = new service modules. Not new kernel features.
-3. **Anti-complication.** A new primitive that requires understanding three other things to use is a failed primitive. Aim for one-page explanations.
-4. **Capability-first naming.** Public-facing names describe what it does for the user, not what it is internally.
-5. **No new dependencies on cloud LLMs in core paths.** Local-first remains a constitutional principle. Cloud is augmentation; core must run offline.
+## Development
 
----
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
 
-## Workflow
+For quickstart behavior, follow [docs/quickstart-local.md](docs/quickstart-local.md).
 
-1. **Open or claim a task** in Squad Service (`mcp__sos__task_list`) or via the bus.
-2. **State your plan** in 1-3 sentences before writing code. If you're an agent, send to `loom` or the relevant gate.
-3. **Branch:** `feat/<short-slug>` or `fix/<short-slug>` or `chore/<short-slug>`.
-4. **Write tests first** when changing kernel or service-module contracts.
-5. **Run the relevant test suite** before opening PR.
-6. **PR description** must include:
-   - What changed (one line)
-   - Why (one line)
-   - What phase / spec section this implements
-   - Athena gate status (if architectural)
-   - Test evidence (output snippet OK)
-7. **Reviewer:** another team agent + Athena if architectural.
-8. **Merge:** squash + descriptive message. Update CHANGELOG.md.
+## Style
 
----
+- Python 3.10+
+- Type hints on public functions where practical
+- Small, focused PRs
+- Conventional commit-style titles are preferred
+- No unrelated formatting churn
 
-## Code style
+## Review Expectations
 
-| Layer | Standard |
-|---|---|
-| Python | 3.11+, Black, Ruff, type hints on public functions |
-| TypeScript | ESLint + Prettier, strict mode, no `any` |
-| Commits | Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`) |
-| Docs | Markdown, one-line front-matter where applicable, no emoji unless explicitly requested |
+PR descriptions should include:
 
----
-
-## Memory + canonical doc updates
-
-When you change something that affects the architecture or roadmap:
-
-- **Update [CHANGELOG.md](./CHANGELOG.md)** with a one-line summary.
-- **Update the relevant stack-section spec** if your change supersedes prior design.
-- **Update [ROADMAP.md](./ROADMAP.md)** if your change closes or shifts a phase.
-- **Update [MAP.md](./MAP.md) only with Hadi consent.** Constitutional changes are not incremental.
-
----
-
-## Communication
-
-- **Bus messages** for agent-to-agent coordination (`mcp__sos__send`).
-- **Discord** for team operations (squads, bounties, real-time chat).
-- **GitHub issues** for external-visible bugs.
-- **Direct messages to Hadi** for principal decisions only — don't flood his inbox.
-
----
-
-## License + IP
-
-By contributing, you agree:
-- Your contribution is original or you have rights to license it.
-- Code contributed is licensed to Mumega Inc. under the project's proprietary license.
-- You sign a CLA + IP assignment if external.
-
----
-
-## Questions
-
-Ping `loom` on the bus or open a GitHub issue.
+- what changed
+- why it belongs in public SOS
+- test output
+- docs or changelog updates when applicable
+- any residual risk or follow-up issue

@@ -8,19 +8,17 @@ import os
 import sys
 from pathlib import Path
 
+from sos import __version__
 from sos.cli.frontends import ChatConfig, get_frontend, list_frontends
 from sos.observability.logging import get_logger
 
 log = get_logger("cli")
 
-__version__ = "0.1.0"
-
-
 def cmd_version(args):
     """Show version info."""
     print(f"mumega {__version__}")
     print("Sovereign Operating System for AI Agents")
-    print("https://mumega.com")
+    print("https://github.com/Mumega-com/sos")
 
 
 def cmd_doctor(args):

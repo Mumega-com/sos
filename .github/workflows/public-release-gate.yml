@@ -1,0 +1,34 @@
+name: Public Release Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  boundary:
+    name: Boundary and version checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Check public/private boundary
+        run: python scripts/check_public_release_boundary.py --show-ok
+
+      - name: Check version metadata
+        run: pytest tests/test_version_metadata.py
+
+      - name: Check public pytest collection
+        run: |
+          pytest --collect-only -q > /tmp/sos-pytest-collection.txt
+          tail -n 1 /tmp/sos-pytest-collection.txt

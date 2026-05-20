@@ -1,63 +1,55 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 title: Getting Started
 ---
 
 # Getting Started
 
-## What is Mumega?
+This page reflects the public SOS kernel, not Mumega's private hosted-product
+overlay.
 
-Mumega is an autonomous operations platform. You connect a project, and a team of specialized AI squads — SEO, Dev, Content, Outreach, Ops — starts working on it immediately. No manual task assignment. No project managers. The brain scores all open work across every project, claims the highest-value task, and executes it.
-
-**One sentence:** Give Mumega a domain, it audits your site, creates a prioritized work queue, and runs autonomously until the work is done.
-
-## How It Works in 30 Seconds
-
-1. Register a project with a domain and squad list
-2. The SEO squad audits the site and generates tasks automatically
-3. The brain scores tasks by `impact × urgency / cost`
-4. Squads claim and execute tasks — no human dispatch needed
-5. Results are stored in memory, task marked done, next task begins
-
-## Connect a Project
-
-### 1. Register the project
+## Install
 
 ```bash
-curl -X POST https://api.mumega.com/projects \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "myproject",
-    "domain": "myproject.com",
-    "priority": "high",
-    "squads": ["seo", "dev", "content"]
-  }'
+git clone https://github.com/Mumega-com/sos.git
+cd sos
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-### 2. Trigger an audit
-
-The audit creates tasks automatically — no manual setup needed.
+## Verify
 
 ```bash
-curl -X POST https://api.mumega.com/projects/myproject/audit \
-  -H "Authorization: Bearer YOUR_TOKEN"
+python scripts/check_public_release_boundary.py --show-ok
+pytest
 ```
 
-### 3. Watch it run
+## Run Locally
+
+Start Redis:
 
 ```bash
-curl https://api.mumega.com/tasks?project=myproject \
-  -H "Authorization: Bearer YOUR_TOKEN"
+redis-server --appendonly yes
 ```
 
-Tasks move from `backlog` → `claimed` → `done` automatically. The brain runs continuously, dispatching the highest-scoring task to the matching squad.
+Start the bridge and MCP server in separate terminals:
 
-## What Happens Next
+```bash
+python -m sos.bus.bridge
+python -m sos.mcp.sos_mcp_sse
+```
 
-- SEO squad fixes meta tags, generates schema markup, updates sitemaps
-- Content squad drafts copy for gaps the audit identified
-- Dev squad runs CI/CD pipelines when code tasks complete
-- Human-judgment tasks surface in Discord for your team to claim
+See the copy/paste quickstart at [../quickstart-local.md](../quickstart-local.md).
 
-See [Onboard a Project](guides/onboard-project) for the full walkthrough.
+## Optional Memory
+
+Mirror is optional and lives in a separate repo:
+
+```bash
+git clone https://github.com/Mumega-com/mirror.git
+```
+
+Without Mirror, SOS should still support bus, inbox, peers, status, and task
+flows. Memory tools require Mirror configuration.
