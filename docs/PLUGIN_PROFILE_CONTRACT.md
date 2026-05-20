@@ -118,6 +118,13 @@ repository-root defaults. For operation templates the supported lookup order is:
 3. Legacy `SOS_ROOT/operations`
 4. `~/.sos/addons/operations`
 
+For project source manifests the supported lookup order is:
+
+1. `SOS_PROJECTS_DIR`
+2. `SOS_ADDONS_ROOT/projects`
+3. Legacy `SOS_ROOT/projects`
+4. `~/.sos/addons/projects`
+
 ## Deletion Checklist
 
 Before deleting an old internal/private path from SOS:

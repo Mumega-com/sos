@@ -15,6 +15,9 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 - Operations runner template lookup now supports `SOS_ADDONS_ROOT/operations`
   before the legacy root `operations/` directory, preserving a generic host
   overlay path for operation templates.
+- Brain source manifest lookup now supports `SOS_ADDONS_ROOT/projects` before
+  legacy root project manifests, preserving a generic host overlay path for
+  `projects/<slug>/SOURCES.md`.
 - Version alignment test for package metadata, `sos.__version__`, and CLI
   version export.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.

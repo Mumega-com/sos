@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ logger = logging.getLogger("sos.brain.source_reader")
 # Constants
 # ---------------------------------------------------------------------------
 
-_SOS_ROOT = Path("/home/sos/SOS")
+_SOS_ROOT = Path("/home/mumega/SOS")
 _PROJECTS_DIR = _SOS_ROOT / "projects"
 _ACTIVE_PROJECTS_PATH = _SOS_ROOT / "sos" / "brain" / "active_projects.json"
 
@@ -86,10 +87,10 @@ def read_sources(project_slug: str, *, base_dir: Path | None = None) -> SourceMa
     Raises SourceManifestParseError if the structure is malformed
     (missing required sections).
 
-    The ``base_dir`` parameter is for testing only; production uses
-    ``_PROJECTS_DIR``.
+    The ``base_dir`` parameter is for testing only; production uses the first
+    existing path from ``resolve_projects_dir``.
     """
-    root = base_dir if base_dir is not None else _PROJECTS_DIR
+    root = base_dir if base_dir is not None else resolve_projects_dir()
     sources_path = root / project_slug / "SOURCES.md"
 
     if not sources_path.exists():
@@ -100,6 +101,33 @@ def read_sources(project_slug: str, *, base_dir: Path | None = None) -> SourceMa
 
     text = sources_path.read_text(encoding="utf-8")
     return _parse_sources_md(project_slug, text)
+
+
+def project_source_dirs() -> list[Path]:
+    """Return project source-manifest search paths in precedence order."""
+    explicit = os.environ.get("SOS_PROJECTS_DIR")
+    if explicit:
+        return [Path(explicit)]
+
+    dirs: list[Path] = []
+    addons_root = os.environ.get("SOS_ADDONS_ROOT")
+    if addons_root:
+        dirs.append(Path(addons_root) / "projects")
+
+    dirs.extend([
+        _PROJECTS_DIR,
+        Path.home() / ".sos" / "addons" / "projects",
+    ])
+    return dirs
+
+
+def resolve_projects_dir() -> Path:
+    """Return the first existing project source-manifest directory."""
+    candidates = project_source_dirs()
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
 
 
 def _parse_sources_md(project_slug: str, text: str) -> SourceManifest:

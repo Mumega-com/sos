@@ -31,6 +31,7 @@ from sos.services.brain.source_reader import (
     is_active,
     list_active_projects,
     read_sources,
+    resolve_projects_dir,
 )
 
 
@@ -126,6 +127,32 @@ def test_g64b_a_read_sources_mumega(tmp_projects: Path) -> None:
     assert len(manifest.sensor) >= 1
     assert len(manifest.memory) >= 1
     assert len(manifest.signal) >= 1
+
+
+def test_read_sources_uses_addons_root_projects(monkeypatch, tmp_path: Path) -> None:
+    addons_projects = tmp_path / "addons" / "projects"
+    mumega_dir = addons_projects / "mumega"
+    mumega_dir.mkdir(parents=True)
+    (mumega_dir / "SOURCES.md").write_text(textwrap.dedent("""\
+        # Mumega Sources
+
+        ## motor
+        - add-on motor
+
+        ## sensor
+        - add-on sensor
+
+        ## memory
+        - add-on memory
+
+        ## signal
+        - add-on signal
+    """))
+    monkeypatch.delenv("SOS_PROJECTS_DIR", raising=False)
+    monkeypatch.setenv("SOS_ADDONS_ROOT", str(tmp_path / "addons"))
+
+    assert resolve_projects_dir() == addons_projects
+    assert read_sources("mumega").motor == ["add-on motor"]
 
 
 # ---------------------------------------------------------------------------
