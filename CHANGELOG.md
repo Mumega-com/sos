@@ -4,7 +4,9 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+- S088 dashboard migration preparation notes and tenant provisioning smoke
+  findings under `docs/operations/`.
 
 ---
 

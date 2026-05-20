@@ -61,5 +61,8 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 - Fresh-install and onboarding polish continue under the public release
   trackers (https://github.com/Mumega-com/sos/issues/148 and
   https://github.com/Mumega-com/sos/issues/169).
+- S088 dashboard migration and tenant provisioning smoke notes live under
+  `docs/operations/`. Tenant provisioning currently has a runtime-store path
+  blocker before production use on the public kernel.
 
 See [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).
