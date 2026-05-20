@@ -84,11 +84,15 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
+    "fakeredis>=2.0",
     "black>=23.0",
     "ruff>=0.1",
     "mypy>=1.0",
     "import-linter>=2.0",
     "pre-commit>=3.0",
+    "google-genai>=1.0.0",
+    "openai>=1.0.0",
+    "scipy>=1.10",
     # Runtime deps pulled in by contract + service tests. Declared
     # under [dev] (not top-level) because they're only used by tests
     # and the alembic migration setup; pure library consumers don't
