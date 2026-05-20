@@ -31,34 +31,29 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sos.bus.token_store import hash_token, write_tokens_atomic
 # Reuse D-1b primitives where possible (Path A consistency, atomic write, constant-time)
 from sos.bus.tenant_provisioning import (
-    SOS_BUS_DIR,
-    TOKENS_PATH,
+    QNFT_REGISTRY_PATH,
     SLUG_RE,
     TENANT_ID_RE,
-    INDUSTRY_RE,
-    DISPLAY_NAME_MAX,
+    TOKENS_PATH,
     ProvisionError,
-    now_iso,
-    get_internal_secret,
-    constant_time_equal,
-    authenticate_bearer,
+    _runtime_path,
     atomic_write_json,
+    constant_time_equal,
+    now_iso,
 )
+from sos.bus.token_store import hash_token, write_tokens_atomic
 
 # -----------------------------------------------------------------------
 # Paths — substrate-side artifacts for D-2b
 # -----------------------------------------------------------------------
-QNFT_REGISTRY_PATH = SOS_BUS_DIR / "qnft_registry.json"
 SOS_HOME_DIR = Path.home() / ".sos"
 DYNAMIC_ROUTING_PATH = SOS_HOME_DIR / "agent_routing.json"
 CUSTOMERS_DIR = Path.home() / ".mumega" / "customers"
@@ -66,6 +61,14 @@ CUSTOMERS_DIR = Path.home() / ".mumega" / "customers"
 # (per `feedback_config_canon_vs_instance_state.md` — config-as-canon in-repo,
 # instance-state out-of-repo). Renders go to ~/.mumega/customers/{slug}/agents/{kind}/.
 AGENT_FORK_TEMPLATES_DIR = Path(__file__).parent.parent.parent / "scripts" / "agent-fork-templates"
+
+
+def _tokens_path() -> Path:
+    return _runtime_path("SOS_BUS_TOKENS_PATH", TOKENS_PATH, artifact="tokens.json")
+
+
+def _qnft_registry_path() -> Path:
+    return _runtime_path("SOS_QNFT_PATH", QNFT_REGISTRY_PATH, artifact="qnft_registry.json")
 
 # -----------------------------------------------------------------------
 # Allowlist (v1) — Loom Q9 approved 2026-05-04T22:24Z
@@ -160,10 +163,11 @@ def validate_activation_body(body: dict) -> dict:
 # L-1 (claim validator) — token claim resolution
 # -----------------------------------------------------------------------
 def _load_tokens() -> list[dict]:
-    if not TOKENS_PATH.exists():
+    path = _tokens_path()
+    if not path.exists():
         return []
     try:
-        data = json.loads(TOKENS_PATH.read_text())
+        data = json.loads(path.read_text())
         return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError):
         return []
@@ -211,10 +215,11 @@ def validate_actor_token_claims(actor_token_hash: str, expected_tenant_slug: str
 # L-2 — QNFT mint idempotent
 # -----------------------------------------------------------------------
 def _load_qnft_registry() -> dict:
-    if not QNFT_REGISTRY_PATH.exists():
+    path = _qnft_registry_path()
+    if not path.exists():
         return {}
     try:
-        data = json.loads(QNFT_REGISTRY_PATH.read_text())
+        data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
@@ -276,7 +281,7 @@ def mint_or_get_qnft(agent_name: str, agent_kind: str, tenant_slug: str) -> tupl
             "model_field": "sonnet-4-6",
         }
         registry[agent_name] = new_record
-        atomic_write_json(QNFT_REGISTRY_PATH, registry)
+        atomic_write_json(_qnft_registry_path(), registry)
         return new_record, True
     except OSError as e:
         raise ProvisionError(500, "qnft_io_error", f"qnft_registry.json IO: {e}") from e
@@ -346,7 +351,7 @@ def mint_or_get_tenant_agent_token(
             "scopes": ["bus:send"],
         }
         tokens.append(new_record)
-        write_tokens_atomic(TOKENS_PATH, tokens)
+        write_tokens_atomic(_tokens_path(), tokens)
         return raw_token, token_hash, True
     except OSError as e:
         raise ProvisionError(500, "bus_token_io_error", f"tokens.json IO: {e}") from e

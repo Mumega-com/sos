@@ -12,7 +12,6 @@ Hermetic discipline: each test uses monkeypatched paths to tmp dirs (no global s
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -100,6 +99,29 @@ class TestInternalBearerFailClosed:
         assert tp.constant_time_equal("a", "ab") is False
         # Type guard
         assert tp.constant_time_equal(None, "a") is False  # type: ignore[arg-type]
+
+
+class TestRuntimePathGuards:
+    def test_tokens_path_honors_env(self, tmp_path, monkeypatch):
+        runtime_tokens = tmp_path / "runtime" / "tokens.json"
+        monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(runtime_tokens))
+
+        assert tp.tokens_path() == runtime_tokens
+
+    def test_tokens_path_rejects_package_tree_default(self, monkeypatch):
+        monkeypatch.delenv("SOS_BUS_TOKENS_PATH", raising=False)
+        monkeypatch.setattr(tp, "TOKENS_PATH", tp.SOS_BUS_DIR / "tokens.json")
+
+        with pytest.raises(ProvisionError) as exc:
+            tp.tokens_path()
+
+        assert exc.value.code == "runtime_path_in_package_tree"
+
+    def test_qnft_path_honors_env(self, tmp_path, monkeypatch):
+        runtime_qnft = tmp_path / "runtime" / "qnft_registry.json"
+        monkeypatch.setenv("SOS_QNFT_PATH", str(runtime_qnft))
+
+        assert tp.qnft_registry_path() == runtime_qnft
 
 
 # -----------------------------------------------------------------------
