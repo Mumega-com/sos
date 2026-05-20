@@ -327,19 +327,7 @@ async def delegate_task(req: DelegateRequest):
 @app.get("/agents")
 async def list_agents():
     """List available agents for delegation."""
-    from sos.agents.definitions import ALL_AGENTS
-    return {
-        "agents": [
-            {
-                "name": a.name.lower(),
-                "title": a.title,
-                "description": a.tagline,
-                "model": a.model,
-                "roles": [r.value for r in a.roles],
-            }
-            for a in ALL_AGENTS
-        ]
-    }
+    return {"agents": []}
 
 
 # --- Task Management (#70) ---

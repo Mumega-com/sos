@@ -14,18 +14,11 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
 from sos.observability.logging import get_logger
-from sos.agents.definitions import ALL_AGENTS, AgentSoul
 
 log = get_logger("delegation")
 
 # Maximum delegation depth to prevent infinite recursion
 MAX_DELEGATION_DEPTH = 3
-
-# Agent lookup by name
-AGENTS_BY_NAME: Dict[str, AgentSoul] = {
-    agent.name.lower(): agent for agent in ALL_AGENTS
-}
-
 
 @dataclass
 class DelegationContext:
@@ -76,13 +69,13 @@ class DelegationService:
         self.engine = engine
         self._active_delegations: Dict[str, DelegationContext] = {}
 
-    def get_agent(self, name: str) -> Optional[AgentSoul]:
-        """Get agent definition by name."""
-        return AGENTS_BY_NAME.get(name.lower())
+    def get_agent(self, name: str) -> None:
+        """Public SOS does not ship Mumega-private agent definitions."""
+        return None
 
     def list_agents(self) -> List[str]:
         """List available agents for delegation."""
-        return list(AGENTS_BY_NAME.keys())
+        return []
 
     async def delegate(
         self,
