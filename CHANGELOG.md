@@ -10,6 +10,8 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   `docs/RELEASE_BOUNDARY.md`.
 - Public-safe `sos.agent_profiles` contract replacing hardcoded Mumega internal
   agent definitions in the public core.
+- Public plugin/profile contract documentation and a regression test covering
+  host overlays, compatibility shims, launch paths, and deletion sequencing.
 - Version alignment test for package metadata, `sos.__version__`, and CLI
   version export.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.

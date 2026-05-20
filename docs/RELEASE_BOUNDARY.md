@@ -48,3 +48,6 @@ can register their own profiles through plugins or service overlays.
 Agent self-join is also host/plugin territory. Public SOS can still use local
 development token records and external MCP clients without shipping Mumega's
 private onboarding flow.
+
+See `docs/PLUGIN_PROFILE_CONTRACT.md` for the contract that governs host
+overlays, compatibility shims, launch paths, and deletion sequencing.
