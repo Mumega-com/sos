@@ -13,6 +13,11 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 - Public-safe local profile tests for generated token/env files.
 - Public Squad Alembic bridge revisions for the OSS migration chain:
   `0017_public_bridge` and `0023_task_decision_fields`.
+- Public security model docs: edge map, threat model, health policy, webhook
+  ingress policy, CORS posture, Redis policy, and residual-risk checklist.
+- `scripts/check_public_security_docs.py` and CI wiring so the release gate
+  verifies the public security docs stay present.
+- Redis production safety findings in `sos doctor`.
 - Public kernel release-gate docs: `PROJECT_STATUS.md`,
   `docs/quickstart-local.md`, `docs/architecture/runtime-planes.md`,
   `docs/status/2026-05-20-public-release-gate.md`, and the S078+ composition
@@ -43,6 +48,8 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   outside the package tree.
 - Bus bridge and MCP Redis clients honor `REDIS_URL`, allowing isolated local
   Redis profiles.
+- Public status docs now point future public-route work at the S080 security
+  model before exposing new routes.
 - README and contributing guidance now describe the public SOS kernel,
   optional Mirror/Engine planes, and MIT contribution posture instead of
   Mumega-private operating assumptions.

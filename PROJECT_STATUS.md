@@ -7,7 +7,7 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Current Public Baseline
 
-- Public SOS fresh clone: pytest collection clean, 2727 tests, 0 collection
+- Public SOS fresh clone: pytest collection clean, 2731 tests, 0 collection
   errors.
 - Public SOS local profile: `scripts/sos-local-dev.sh up` plus `doctor`
   verifies Redis, bus, MCP, Squad, send/inbox, and task create/claim/complete.
@@ -15,6 +15,9 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 - Public Inkwell fresh clone: `npm install` and `npm run build` exit 0.
 - Public SOS boundary: private/add-on paths are expected to stay out of public
   main and are checked by CI.
+- Public SOS security model: edge map, threat model, webhook policy, health
+  policy, CORS posture, Redis policy, and residual-risk checklist live under
+  `docs/security/`.
 
 ## What Is Core
 
@@ -31,8 +34,8 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
   configured Mirror service.
 - Engine/model routing. Useful for hosted agent work, not required for basic
   bus and task coordination.
-- Gateway/webhook ingress. Present, but public exposure needs the S080 security
-  and edge pass.
+- Gateway/webhook ingress. Present, but public exposure must follow
+  `docs/security/public-edge-map.md` and `docs/security/public-route-checklist.md`.
 
 ## What Is Private Or Host-Owned
 
@@ -44,7 +47,6 @@ local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 ## Known Gaps
 
-- S080: security and public edge pass.
 - S081: plugin/profile boundary for OpenClaw, Hermes, and host overlays.
 - S086: maintainability split of large MCP/service modules.
 
