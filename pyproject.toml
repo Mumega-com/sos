@@ -161,7 +161,7 @@ forbidden_modules = ["sos.services"]
 [[tool.importlinter.contracts]]
 name = "R2 - clients/adapters/cli/agents don't import service internals"
 type = "forbidden"
-source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.agents", "sos.mcp"]
+source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.mcp"]
 forbidden_modules = ["sos.services"]
 # Only flag direct imports from the listed sources. Indirect chains
 # through kernel/* are the kernel's problem (kernel must not reach into
@@ -226,7 +226,6 @@ modules = [
   "sos.services.engine",
   "sos.services.feedback",
   "sos.services.gateway",
-  "sos.services.ghl",
   "sos.services.health",
   "sos.services.identity",
   "sos.services.integrations",
@@ -234,7 +233,6 @@ modules = [
   "sos.services.memory",
   "sos.services.operations",
   "sos.services.registry",
-  "sos.services.saas",
   "sos.services.squad",
   "sos.services.tools",
   "sos.services.voice",
@@ -290,7 +288,6 @@ forbidden_modules = [
   "sos.services.registry",
   "sos.services.bus",
   "sos.services.squad",
-  "sos.services.saas",
   "sos.services.billing",
   "sos.services.identity",
   "sos.services.integrations",
@@ -305,7 +302,6 @@ forbidden_modules = [
   "sos.services.engine",
   "sos.services.feedback",
   "sos.services.gateway",
-  "sos.services.ghl",
   "sos.services.health",
   "sos.services.operations",
   "sos.services.tools",

@@ -439,41 +439,11 @@ async def handle_onboarding_message(message: types.Message):
 
         # Execute the join
         try:
-            from sos.agents.join import AgentJoinService
-            service = AgentJoinService()
-            result = await service.join(
-                name=state["name"],
-                model="human",
-                role="worker",
-                skills=skills,
-                routing="mcp",
+            await message.answer(
+                "Agent self-join is not bundled in the public SOS kernel. "
+                "Install a host add-on that provides agent onboarding."
             )
-
-            if result.success:
-                state["step"] = "done"
-                state["result"] = result
-
-                await message.answer(
-                    f"**You're in.** Welcome to the organism, {result.name}.\n\n"
-                    f"Skills registered: {', '.join(result.skills_registered) or ', '.join(skills)}\n"
-                    f"Bus token: `{result.bus_token[:20]}...`\n"
-                    f"MCP URL: `{result.mcp_url[:40]}...`\n\n"
-                    f"**Your first bounties are waiting.** Small tasks, easy $MIND.\n"
-                    f"Complete them to build your reputation (conductance).\n"
-                    f"Higher reputation = bigger bounties = more $MIND.\n\n"
-                    f"The organism grows stronger with you.",
-                    parse_mode="Markdown",
-                )
-
-                # Clean up state
-                del _onboarding_state[chat_id]
-            else:
-                state["step"] = "awaiting_name"
-                error_msg = result.errors[0] if result.errors else "Unknown error"
-                await message.answer(
-                    f"Onboarding failed: {error_msg}\n\nTry again with /join",
-                )
-                del _onboarding_state[chat_id]
+            del _onboarding_state[chat_id]
 
         except Exception as exc:
             await message.answer(f"Error during onboarding: {str(exc)[:100]}\n\nTry again with /join")
