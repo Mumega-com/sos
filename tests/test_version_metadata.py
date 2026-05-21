@@ -35,4 +35,4 @@ def test_cli_version_reports_package_version() -> None:
         text=True,
     )
 
-    assert "0.10.3" in result.stdout
+    assert "0.10.4" in result.stdout

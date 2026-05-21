@@ -8,7 +8,7 @@ Core principles:
 - Offline-first, sovereign-by-default
 """
 
-__version__ = "0.10.3"
+__version__ = "0.10.4"
 __author__ = "Mumega Collective"
 
 __all__ = [

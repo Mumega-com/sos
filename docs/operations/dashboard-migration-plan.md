@@ -64,7 +64,7 @@ Observed parity:
 Observed difference:
 
 - live `:8090/sos/api/health` reports internal runtime version `0.3.0`.
-- public `:18090/sos/api/health` reports public kernel version `0.10.3`.
+- public `:18090/sos/api/health` reports public kernel version `0.10.4`.
 
 This is expected after the public release tag and is not a functional mismatch.
 
