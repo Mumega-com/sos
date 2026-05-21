@@ -76,7 +76,7 @@ class AgentCard(BaseModel):
     identity_id: str = Field(pattern=r"^agent:[a-z][a-z0-9-]*$")
 
     # ---- echo fields (denormalized from AgentIdentity for display) --------
-    # These are convenience copies. Source of truth = resolve_identity().
+    # These are convenience copies. Source of truth = the registry API.
     agent_card_version: str = AGENT_CARD_VERSION
     name: str = Field(pattern=r"^[a-z][a-z0-9-]*$", min_length=2, max_length=64)
     role: AgentRole
@@ -170,25 +170,16 @@ class AgentCard(BaseModel):
         return cls(**parsed)
 
     def resolve_identity(self) -> "Identity":
-        """Return the canonical AgentIdentity for this card.
+        """Deprecated in-model resolver.
 
-        Looks up ``self.identity_id`` in the registry Redis keyspace via
-        :func:`sos.services.registry.read_one`. Raises LookupError if the
-        registry has no row for this identity (the AgentCard has no soul).
-
-        Wired in v0.9.2.1 alongside signed /mesh/enroll — first enrollment
-        TOFU-writes the AgentIdentity with ``public_key`` set, so every
-        card minted by a conformant client has a resolvable identity.
+        Contract models must not import service internals. Callers that need
+        the canonical AgentIdentity should use ``RegistryClient.get_agent`` or
+        the registry service directly at the boundary they already own.
         """
-        from sos.services.registry import read_one
-
-        ident = read_one(self.identity_id, project=self.project)
-        if ident is None:
-            raise LookupError(
-                f"no AgentIdentity for {self.identity_id!r} "
-                f"(project={self.project!r})"
-            )
-        return ident
+        raise LookupError(
+            "AgentCard.resolve_identity is not service-backed; "
+            "use RegistryClient.get_agent(identity_id, project=...)"
+        )
 
     @staticmethod
     def now_iso() -> str:

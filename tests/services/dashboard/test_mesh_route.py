@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from sos.contracts.agent_card import AgentCard
 from sos.kernel.auth import AuthContext
+from sos.services.dashboard.config import COOKIE_NAME
 from sos.services.dashboard.routes.sos_mesh import router
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ def test_api_empty_cards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "sos.services.dashboard.routes.sos_mesh.read_all_cards",
+        "sos.services.dashboard.routes.sos_mesh._list_agent_cards",
         lambda **_kw: [],
         raising=True,
     )
@@ -147,7 +148,7 @@ def test_api_squad_grouping(
         _make_card("gamma", squads=[]),
     ]
     monkeypatch.setattr(
-        "sos.services.dashboard.routes.sos_mesh.read_all_cards",
+        "sos.services.dashboard.routes.sos_mesh._list_agent_cards",
         lambda **_kw: cards,
         raising=True,
     )
@@ -194,12 +195,12 @@ def test_html_admin_sees_mesh_page(
 ) -> None:
     cards = [_make_card("my-agent", squads=["ops"])]
     monkeypatch.setattr(
-        "sos.services.dashboard.routes.sos_mesh.read_all_cards",
+        "sos.services.dashboard.routes.sos_mesh._list_agent_cards",
         lambda **_kw: cards,
         raising=True,
     )
     cookie_val = json.dumps({"token": admin_token, "project": None, "is_admin": True})
-    resp = client.get("/sos/mesh", cookies={"mum_dash": cookie_val})
+    resp = client.get("/sos/mesh", cookies={COOKIE_NAME: cookie_val})
     assert resp.status_code == 200
     body = resp.text
     assert "Mesh" in body

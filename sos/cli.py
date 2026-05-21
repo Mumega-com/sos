@@ -20,16 +20,19 @@ import argparse
 import asyncio
 import sys
 
-from sos import __version__
 from sos.observability.logging import get_logger
 
 log = get_logger("cli")
 
+__version__ = "0.1.0"
+
 
 def cmd_version(args):
     """Show version info."""
-    print(f"mumega {__version__}")
-    print("Sovereign Operating System for AI Agents")
+    import sos
+
+    print(f"sos {sos.__version__}")
+    print("Local-first coordination substrate for heterogeneous AI agents")
     print("https://github.com/Mumega-com/sos")
 
 
@@ -39,7 +42,9 @@ def cmd_doctor(args):
     import httpx
     from pathlib import Path
 
-    print("Mumega Doctor v0.2.0")
+    import sos
+
+    print(f"SOS Doctor v{sos.__version__}")
     print("=" * 50)
 
     errors = 0
@@ -117,24 +122,17 @@ def cmd_doctor(args):
         check_warn("Model API", "no API key found (set GEMINI_API_KEY)")
 
     # Gateway URL
-    gateway = os.getenv("GATEWAY_URL", "https://gateway.mumega.com/")
-    check_ok("Gateway", gateway)
-
-    # Redis safety posture
-    from sos.cli.security import redis_security_findings
-
-    for finding in redis_security_findings(os.environ):
-        if finding.level == "ok":
-            check_ok(finding.name, finding.detail)
-        elif finding.level == "warn":
-            check_warn(finding.name, finding.detail)
-        else:
-            check_fail(finding.name, finding.detail)
+    gateway = os.getenv("GATEWAY_URL")
+    if gateway:
+        check_ok("Gateway", gateway)
+    else:
+        check_warn("Gateway", "not configured (optional for local kernel proof)")
 
     # Stage 3: Services
     print("\n--- Services ---")
 
     services = [
+        ("MCP Gateway", os.getenv("SOS_MCP_URL", "http://localhost:6070")),
         ("Engine", os.getenv("SOS_ENGINE_URL", "http://localhost:6060")),
         ("Memory", os.getenv("SOS_MEMORY_URL", "http://localhost:6061")),
         ("Economy", os.getenv("SOS_ECONOMY_URL", "http://localhost:6062")),
@@ -178,10 +176,11 @@ def cmd_doctor(args):
 
     core_imports = [
         ("sos.kernel.config", "Kernel Config"),
-        ("sos.services.engine.core", "Engine Core"),
         ("sos.services.engine.resilience", "Resilience"),
         ("sos.kernel.dreams", "Dreams"),
         ("sos.contracts.errors", "Error Codes"),
+        ("sos.mcp.transport", "MCP Transport"),
+        ("sos.mcp.tool_registry", "MCP Tool Registry"),
     ]
 
     for module, name in core_imports:
@@ -190,6 +189,16 @@ def cmd_doctor(args):
             check_ok(name, "OK")
         except Exception as e:
             check_fail(name, f"import failed: {e}")
+
+    optional_imports = [
+        ("sos.services.engine.core", "Engine Core"),
+    ]
+    for module, name in optional_imports:
+        try:
+            __import__(module)
+            check_ok(name, "OK")
+        except Exception as e:
+            check_warn(name, f"optional import unavailable: {e}")
 
     # Summary
     print("\n" + "=" * 50)
@@ -291,12 +300,6 @@ def main():
     # status
     subparsers.add_parser("status", help="Show service status")
 
-    local_parser = subparsers.add_parser("local", help="Local public quickstart helpers")
-    local_sub = local_parser.add_subparsers(dest="local_command")
-    local_sub.add_parser("init", help="Generate local dev tokens and env")
-    local_sub.add_parser("migrate", help="Run local Squad SQLite migrations")
-    local_sub.add_parser("doctor", help="Run local public smoke doctor")
-
     # chat
     chat_parser = subparsers.add_parser("chat", help="Interactive chat")
     chat_parser.add_argument("--agent", "-a", default="river", help="Agent to chat with")
@@ -322,19 +325,6 @@ def main():
         return cmd_doctor(args)
     elif args.command == "status":
         return cmd_status(args)
-    elif args.command == "local":
-        from sos.cli.local import init_profile, run_migrations, smoke_profile
-
-        if args.local_command == "init":
-            env = init_profile()
-            print(f"Wrote {env['SOS_HOME']}/local/dev.env")
-            return 0
-        if args.local_command == "migrate":
-            return run_migrations()
-        if args.local_command == "doctor":
-            return smoke_profile()
-        local_parser.print_help()
-        return 1
     elif args.command == "chat":
         return cmd_chat(args)
     elif args.command == "start":

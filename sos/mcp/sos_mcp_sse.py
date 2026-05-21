@@ -3,7 +3,7 @@
 SOS MCP SSE Server — Persistent HTTP-based MCP transport for Claude Code.
 
 Replaces the stdio MCP that disconnects mid-session.
-All agents (kasra, mumega, codex) share this server.
+All agents can share this server.
 
 Endpoints:
   GET  /sse       — Claude Code connects here (SSE stream)
@@ -51,7 +51,7 @@ from sos.bus import envelope as bus_envelope
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
 from sos.kernel.bus import enforce_scope
-from sos.mcp.customer_tools import (
+from sos.mcp.tool_policy import (
     BLOCKED_TOOLS,
     CUSTOMER_TOOLS,
     IDENTITY_TOOLS,
@@ -62,30 +62,43 @@ from sos.mcp.customer_tools import (
     is_tool_allowed_for_role,
     is_tool_allowed_for_tier,
 )
-from sos.mcp.tools.status import handle_status_tool
+from sos.mcp.transport import jsonrpc_error, jsonrpc_ok
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
 try:
     from sos.kernel.sprout_tenant import SproutTenantEngine
 except ModuleNotFoundError:
-    SproutTenantEngine = None
+    SproutTenantEngine = None  # type: ignore[assignment]
+try:
+    from sos.kernel.skills.linkedin import run_linkedin_connector
+except ModuleNotFoundError:
+    run_linkedin_connector = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
-# Mirror kernel — optional direct import.
-# psycopg2 is sync, so all calls must be wrapped in run_in_executor when the
-# Mirror package is present. Public SOS must still import without Mirror.
+# Mirror kernel — direct import (no HTTP to :8844)
+# Operators can set SOS_MIRROR_KERNEL_ROOT when Mirror is checked out beside SOS
+# instead of installed as a package.
+# psycopg2 is sync — all calls must be wrapped in run_in_executor.
 # ---------------------------------------------------------------------------
+import sys as _sys
 import concurrent.futures as _futures
 
+if os.environ.get("SOS_MIRROR_KERNEL_ROOT"):
+    _sys.path.insert(0, os.environ["SOS_MIRROR_KERNEL_ROOT"])
 try:
     from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
     from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
-except ModuleNotFoundError:
-    _get_mirror_db = None
-    _get_mirror_embedding = None
+except ModuleNotFoundError as _e:
+    _mirror_import_error = _e
+    _get_mirror_db = None  # type: ignore[assignment]
+    _get_mirror_embedding = None  # type: ignore[assignment]
+else:
+    _mirror_import_error = None
 
 try:
-    _mirror_db = _get_mirror_db() if _get_mirror_db is not None else None  # singleton connection pool
+    if _get_mirror_db is None:
+        raise RuntimeError(f"Mirror kernel unavailable: {_mirror_import_error}")
+    _mirror_db = _get_mirror_db()  # singleton connection pool
 except Exception as _e:
     import logging as _logging
     _logging.getLogger(__name__).warning("Mirror DB unavailable at startup: %s — recall will return empty", _e)
@@ -163,6 +176,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("sos_mcp_sse")
 
+
+async def _emit_audit_best_effort(event: AuditChainEvent) -> None:
+    try:
+        await _emit_audit(event)
+    except ModuleNotFoundError as exc:
+        if exc.name == "asyncpg":
+            log.warning("audit chain unavailable: install asyncpg/postgres extras to persist audit rows")
+        else:
+            log.warning("audit chain dependency unavailable: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("audit chain emit failed: %s", exc)
+
+
+def _schedule_audit_event(event: AuditChainEvent) -> None:
+    asyncio.create_task(_emit_audit_best_effort(event))
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -225,12 +254,18 @@ MCP_WRITE_TOOLS: frozenset[str] = frozenset({
     "sprout_tenant",
     "as_agent",  # S027 D-5 — session-identity mutation; rate-limit + audit-emit
 })
+STASIS_BLOCKED_TOOLS: frozenset[str] = frozenset({
+    "send", "broadcast", "remember", "squad_remember",
+    "recall", "squad_recall", "task_create", "task_update", "request",
+})
 
 # WARN-S013-004 fix: module-level sync Redis client for _enforce_rate_limit.
 # Creating a new client per call was fine on localhost but pressure point at scale.
 import redis as _redis_sync_mod
-_sync_redis = _redis_sync_mod.Redis.from_url(
-    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+_sync_redis = _redis_sync_mod.Redis(
+    host="localhost",
+    port=6379,
+    password=REDIS_PASSWORD,
     decode_responses=True,
     socket_keepalive=True,
 )
@@ -251,7 +286,7 @@ _redis: aioredis.Redis | None = None
 def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        url = os.environ.get("REDIS_URL") or (
+        url = (
             f"redis://:{REDIS_PASSWORD}@localhost:6379/0"
             if REDIS_PASSWORD
             else "redis://localhost:6379/0"
@@ -517,7 +552,9 @@ def _memory_scope(auth: MCPAuthContext) -> MCPMemoryScope:
 
 
 def _tenant_slug_for_auth(auth: MCPAuthContext) -> str | None:
-    """Return the tenant discriminator used by tenant gates."""
+    """Resolve the tenant slug used by tenant-wide gates."""
+    if auth.is_system:
+        return None
     return auth.tenant_slug or auth.tenant_id or auth.active_project
 
 
@@ -983,10 +1020,10 @@ def _prefix(project: str | None) -> str:
     return f"sos:stream:project:{project}" if project else "sos:stream:global"
 
 
-# S018 Track E — read agent's specialist slugs from mumega.com/agents/<a>/specialists.yml.
+# S018 Track E — read agent specialist slugs from an operator overlay.
 # Best-effort: never raises. Missing or malformed file => empty list.
 _SPECIALISTS_REPO_ROOT = Path(
-    os.getenv("MUMEGA_COM_REPO", "/home/sos/mumega.com")
+    os.getenv("SOS_SPECIALISTS_ROOT", "")
 )
 
 
@@ -1406,7 +1443,7 @@ def _peer_tenant_meta(peer_agent_name: str) -> tuple[str, str, str] | None:
     cache = _local_token_cache.get()
     for ctx in cache.values():
         if ctx.agent_name == peer_agent_name:
-            return (ctx.scope, ctx.tenant_id or "", ctx.agent_kind)
+            return (ctx.scope, ctx.tenant_slug or ctx.tenant_id or "", ctx.agent_kind)
     return None
 
 
@@ -1429,7 +1466,8 @@ def _enforce_tenant_agent_rls(auth: MCPAuthContext, target_agent: str) -> None:
     """
     if auth.scope != "tenant-agent":
         return
-    if not auth.tenant_id or not auth.agent_kind:
+    tenant_slug = _tenant_slug_for_auth(auth)
+    if not tenant_slug or not auth.agent_kind:
         # Defensive: a malformed tenant-agent token (no tenant_slug or no
         # agent_kind) cannot prove same-scope. Reject all sends.
         raise HTTPException(
@@ -1450,7 +1488,7 @@ def _enforce_tenant_agent_rls(auth: MCPAuthContext, target_agent: str) -> None:
     if peer_scope != "tenant-agent":
         # Peer is a substrate agent (validated via real token entry). Allowed.
         return
-    if not hmac.compare_digest(peer_tenant_slug, auth.tenant_id):
+    if not hmac.compare_digest(peer_tenant_slug, tenant_slug):
         raise HTTPException(
             status_code=403, detail="cross_tenant_send_blocked"
         )
@@ -1741,6 +1779,54 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "linkedin_connector",
+            "description": (
+                "Hermes/outreach atomic skill: rank supplied LinkedIn profile candidates, "
+                "extract an evidence-backed professional vibe, and draft a neutral "
+                "connection request. Draft-only; does not scrape, log in, or send."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Name, company, title, or search phrase for the target profile.",
+                    },
+                    "profile_url": {
+                        "type": "string",
+                        "description": "Known LinkedIn profile URL, if already available.",
+                    },
+                    "profile_text": {
+                        "type": "string",
+                        "description": "Public profile/about text or notes supplied by Hermes.",
+                    },
+                    "candidates": {
+                        "type": "array",
+                        "description": "Optional candidate snippets/dicts to rank locally.",
+                        "items": {
+                            "anyOf": [
+                                {"type": "object"},
+                                {"type": "string"},
+                            ],
+                        },
+                    },
+                    "sender_context": {
+                        "type": "string",
+                        "description": "Truthful reason for connecting, written from the sender's perspective.",
+                    },
+                    "outreach_goal": {
+                        "type": "string",
+                        "description": "Optional low-pressure CTA for the connection request.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "default": 300,
+                        "description": "Maximum invite length. LinkedIn connection notes are commonly capped at 300 chars.",
+                    },
+                },
+            },
+        },
+        {
             "name": "memories",
             "description": "List recent memories",
             "inputSchema": {
@@ -1980,6 +2066,123 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# Agent Status Registry (Redis-backed)
+# ---------------------------------------------------------------------------
+
+AGENT_REGISTRY_KEY = os.environ.get("SOS_AGENT_REGISTRY_KEY", "sos:registry:agents")
+
+
+async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
+    """Get status of registered agents from tmux + Redis activity."""
+    try:
+        raw_agents = await r.hgetall(AGENT_REGISTRY_KEY)
+    except Exception:
+        raw_agents = {}
+    if not raw_agents:
+        return []
+
+    statuses = []
+    for name, raw_info in sorted(raw_agents.items()):
+        try:
+            info = json.loads(raw_info) if isinstance(raw_info, str) else {}
+        except (TypeError, json.JSONDecodeError):
+            info = {}
+        if not isinstance(info, dict):
+            info = {}
+        agent_type = str(info.get("type") or "remote")
+        status = "unknown"
+
+        if agent_type == "tmux":
+            session_name = str(info.get("tmux_session") or name)
+            idle_patterns = info.get("idle_patterns")
+            if not isinstance(idle_patterns, list) or not idle_patterns:
+                idle_patterns = ["❯", "›", "$ ", "waiting", "you:"]
+            # Check tmux session
+            try:
+                result = subprocess.run(
+                    ["tmux", "has-session", "-t", session_name],
+                    capture_output=True,
+                    timeout=3,
+                )
+                if result.returncode == 0:
+                    # Check if at prompt (idle) or working (busy)
+                    cap = subprocess.run(
+                        ["tmux", "capture-pane", "-t", session_name, "-p"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                    )
+                    last_lines = " ".join(cap.stdout.strip().split("\n")[-3:]).lower()
+                    if any(str(p).lower() in last_lines for p in idle_patterns):
+                        status = "idle"
+                    else:
+                        status = "busy"
+                else:
+                    status = "dead"
+            except Exception:
+                status = "dead"
+        else:
+            # OpenClaw / remote agents — check if they have recent bus activity
+            try:
+                stream = f"sos:stream:sos:channel:private:agent:{name}"
+                msgs = await r.xrevrange(stream, count=1)
+                if msgs:
+                    last_ts = float(msgs[0][0].split("-")[0]) / 1000
+                    age_min = (time.time() - last_ts) / 60
+                    status = "active" if age_min < 60 else "idle"
+                else:
+                    stream2 = f"sos:stream:global:agent:{name}"
+                    msgs2 = await r.xrevrange(stream2, count=1)
+                    if msgs2:
+                        last_ts = float(msgs2[0][0].split("-")[0]) / 1000
+                        age_min = (time.time() - last_ts) / 60
+                        status = "active" if age_min < 60 else "idle"
+                    else:
+                        status = "idle"
+            except Exception:
+                status = "unknown"
+
+        statuses.append(
+            {
+                "agent": name,
+                "type": agent_type,
+                "model": str(info.get("model") or ""),
+                "role": str(info.get("role") or ""),
+                "status": status,
+            }
+        )
+    return statuses
+
+
+def _get_service_statuses_sync() -> list[dict[str, str]]:
+    """Check systemd service statuses (sync, runs in executor)."""
+    configured = os.environ.get("SOS_MONITORED_SERVICES", "")
+    services = [s.strip() for s in configured.split(",") if s.strip()] or [
+        "sos-mcp-sse",
+        "sos-squad",
+        "sovereign-loop",
+        "calcifer",
+        "agent-wake-daemon",
+        "bus-bridge",
+    ]
+    statuses = []
+    for svc in services:
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", f"{svc}.service"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                env={**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"},
+            )
+            state = result.stdout.strip()
+        except Exception:
+            state = "unknown"
+        statuses.append({"service": svc, "status": state})
+    return statuses
 
 
 def _get_systemd_health_sync() -> dict[str, str]:
@@ -2897,10 +3100,10 @@ async def _handle_as_agent(
         _clear_as_agent_state(auth, session_id)
         # L-5 — reset audit row (fail-open).
         try:
-            asyncio.create_task(_emit_audit(AuditChainEvent(
+            _schedule_audit_event(AuditChainEvent(
                 stream_id="mcp",
                 actor_id=auth.agent_name or auth.scope or "system",
-                actor_type="session_identity_swap",
+                actor_type="agent",
                 action="mcp.as_agent.reset",
                 resource=f"agent:{prev_target or ''}",
                 payload={
@@ -2911,7 +3114,7 @@ async def _handle_as_agent(
                     "caller_scope": auth.scope or "system",
                     "was_active": was_active,
                 },
-            )))
+            ))
         except Exception as exc:  # noqa: BLE001
             log.warning("as_agent reset audit emit failed: %s", exc)
         return _text(json.dumps({
@@ -3127,10 +3330,10 @@ async def _handle_as_agent(
     # (in-memory state is canonical until next attributed tool call). Substrate
     # callers ALSO emit (Athena clause: higher privilege = MORE traceability).
     try:
-        asyncio.create_task(_emit_audit(AuditChainEvent(
+        _schedule_audit_event(AuditChainEvent(
             stream_id="mcp",
             actor_id=pre_swap_actor,
-            actor_type="session_identity_swap",
+            actor_type="agent",
             action="mcp.as_agent",
             resource=f"agent:{target_name}",
             payload={
@@ -3140,7 +3343,7 @@ async def _handle_as_agent(
                 "session_id": session_id or "",
                 "caller_scope": auth.scope or "system",
             },
-        )))
+        ))
     except Exception as exc:  # noqa: BLE001
         # Fail-open: log + continue. The swap is in effect; only the durable
         # trail is missing for this single call.
@@ -3161,7 +3364,7 @@ async def _handle_as_agent(
         "recent_engrams": recent_engrams,
         "session_identity_set": True,
         "session_id": session_id or "",
-    }, indent=2))
+    }, indent=2, default=str))
 
 
 async def _handle_invite(
@@ -3298,6 +3501,17 @@ async def handle_tool(
     if name == "as_agent":
         return await _handle_as_agent(auth, args, session_id)
 
+    tenant_slug = _tenant_slug_for_auth(auth)
+    if name in STASIS_BLOCKED_TOOLS and not _tenant_is_active_mcp(tenant_slug):
+        return _text(json.dumps({
+            "stasis": {
+                "active": False,
+                "tenant": tenant_slug,
+                "warning": "Tenant is in Stasis — work is blocked. Contact support to reactivate.",
+                "blocked_tool": name,
+            }
+        }, indent=2))
+
     # Log tool invocation
     await _publish_log("info", "mcp", f"tool:{name} by {agent_scope}", agent=agent_scope)
 
@@ -3305,7 +3519,7 @@ async def handle_tool(
     # Read tools (inbox/peers/recall) excluded for volume; all WRITE_TOOLS emitted.
     # Fire-and-forget — never blocks the tool call path.
     if name in MCP_WRITE_TOOLS:
-        asyncio.create_task(_emit_audit(AuditChainEvent(
+        _schedule_audit_event(AuditChainEvent(
             stream_id="mcp",
             actor_id=auth.agent_scope,
             actor_type="agent" if not auth.is_customer else "human",
@@ -3316,7 +3530,7 @@ async def handle_tool(
                 "token_prefix": auth.token[:12] if auth.token else "",
                 "tool": name,
             },
-        )))
+        ))
 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
@@ -3335,6 +3549,7 @@ async def handle_tool(
         "task_list",
         "status",
         "search_code",
+        "linkedin_connector",
         "outbox_status",
     }
 
@@ -3396,11 +3611,26 @@ async def handle_tool(
         if name == "code_mode":
             return await _handle_code_mode(args, auth)
 
+        # --- linkedin_connector ---
+        if name == "linkedin_connector":
+            hermes_squad = {"hermes", "mkt-outreach", "mkt-lead", "mizan"}
+            if auth.is_customer or (not auth.is_system and auth.agent_scope not in hermes_squad):
+                return _text(
+                    "linkedin_connector is restricted to the Hermes/outreach squad "
+                    "and substrate system operators."
+                )
+            try:
+                if run_linkedin_connector is None:
+                    return _text("linkedin_connector unavailable: optional skill is not installed")
+                return _json_result(run_linkedin_connector(args))
+            except Exception as exc:  # noqa: BLE001
+                return _text(f"linkedin_connector failed: {exc}")
+
         # --- sprout_tenant ---
         if name == "sprout_tenant":
-            if SproutTenantEngine is None:
-                return _text("sprout_tenant is unavailable in this SOS build")
             try:
+                if SproutTenantEngine is None:
+                    return _text("sprout_tenant unavailable: optional engine is not installed")
                 engine = SproutTenantEngine(use_gemini=bool(args.get("use_gemini", True)))
                 result = await loop.run_in_executor(
                     None,
@@ -3810,7 +4040,7 @@ async def handle_tool(
             memory = _memory_scope(auth)
 
             # Write directly to Mirror DB with embedding (synchronous, immediate readback)
-            if _mirror_db is not None and _get_mirror_embedding is not None:
+            if _mirror_db is not None:
                 try:
                     from uuid import uuid4 as _uuid4
                     from datetime import datetime as _dt, timezone as _tz
@@ -3870,7 +4100,7 @@ async def handle_tool(
         # --- recall ---
         elif name == "recall":
             # Phase 2: read from Mirror kernel directly — no HTTP to :8844
-            if _mirror_db is None or _get_mirror_embedding is None:
+            if _mirror_db is None:
                 return _text("Mirror DB unavailable — recall disabled")
             query_text = args["query"]
             limit = int(args.get("limit", 5))
@@ -4220,10 +4450,48 @@ async def handle_tool(
             agent_role = args.get("role", "executor")
             agent_skills = args.get("skills", [])
             agent_routing = args.get("routing", "mcp")
-            return _text(
-                "Agent self-join is not bundled in the public SOS kernel. "
-                "Install a host add-on that provides agent onboarding."
+
+            from mumega_sos_addons.agents.internal.join import AgentJoinService
+
+            join_service = AgentJoinService()
+            join_result = await join_service.join(
+                name=agent_name,
+                model=agent_model,
+                role=agent_role,
+                skills=agent_skills if isinstance(agent_skills, list) else [],
+                routing=agent_routing,
             )
+
+            # Clear MCP token cache so new token is recognized immediately
+            _local_token_cache.invalidate()
+
+            if not join_result.success:
+                return _text(
+                    f"Onboarding failed for '{agent_name}': " + "; ".join(join_result.errors)
+                )
+
+            lines = [
+                f"Welcome {join_result.name}!",
+                "",
+                f"Bus token: {join_result.bus_token}",
+                f"Mirror token: {join_result.mirror_token}",
+                f"MCP SSE: {join_result.mcp_url}",
+                f"MCP HTTP: https://mcp.mumega.com/mcp/{join_result.bus_token}",
+                f"Routing: {join_result.routing}",
+                f"Skills registered: {', '.join(join_result.skills_registered) if join_result.skills_registered else 'none'}",
+            ]
+            if join_result.errors:
+                lines.append("")
+                lines.append("Warnings: " + "; ".join(join_result.errors))
+            lines.append("")
+            lines.append("--- MCP config (paste into your settings) ---")
+            lines.append(
+                json.dumps({"mcpServers": {"mumega": {"url": join_result.mcp_url}}}, indent=2)
+            )
+            lines.append("")
+            lines.append(join_result.team_briefing)
+
+            return _text("\n".join(lines))
 
         # --- request ---
         elif name == "request":
@@ -4339,14 +4607,76 @@ async def handle_tool(
 
         # --- status (sos ps) ---
         elif name == "status":
-            return await handle_status_tool(
-                redis_client=r,
-                is_system=auth.is_system,
-                project_scope=project_scope,
-                stream_prefix=_prefix(project_scope) if project_scope else None,
-                squad_service_url=SQUAD_SERVICE_URL,
-                squad_system_token=SQUAD_SYSTEM_TOKEN,
+            agent_statuses = await _get_agent_statuses(r)
+            svc_statuses = await asyncio.get_event_loop().run_in_executor(
+                None, _get_service_statuses_sync
             )
+
+            # Tenant isolation: project-scoped tokens should only see agents
+            # registered under their project scope (matches `peers` behavior).
+            if (not auth.is_system) and project_scope:
+                agents: set[str] = set()
+                pattern = f"{_prefix(project_scope)}:agent:*"
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    for k in keys:
+                        agents.add(k.split(":")[-1])
+                    if cursor == 0:
+                        break
+                internal_agents = {
+                    "sos-mcp-sse",
+                    "sos-squad",
+                    "sovereign-loop",
+                    "calcifer",
+                    "lifecycle",
+                    "task-poller",
+                    "wake-daemon",
+                }
+                agents -= internal_agents
+                agent_statuses = [a for a in agent_statuses if a.get("agent") in agents]
+
+            # Task counts from Squad Service
+            task_counts = {}
+            try:
+                resp = requests.get(
+                    f"{SQUAD_SERVICE_URL}/tasks?limit=500",
+                    headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
+                    timeout=5,
+                )
+                if resp.ok:
+                    tasks = resp.json()
+                    from collections import Counter
+
+                    task_counts = dict(Counter(t.get("status", "?") for t in tasks))
+            except Exception:
+                pass
+
+            lines = ["# SOS Status\n"]
+
+            # Agents
+            lines.append("## Agents")
+            for a in sorted(agent_statuses, key=lambda x: x["status"]):
+                icon = {"idle": "🟢", "busy": "🔵", "active": "🟡", "dead": "🔴"}.get(
+                    a["status"], "⚪"
+                )
+                lines.append(
+                    f"{icon} **{a['agent']}** ({a['model']}) — {a['role']} [{a['status']}]"
+                )
+
+            # Services
+            lines.append("\n## Services")
+            for s in svc_statuses:
+                icon = "🟢" if s["status"] == "active" else "🔴"
+                lines.append(f"{icon} {s['service']}: {s['status']}")
+
+            # Tasks
+            if task_counts:
+                lines.append("\n## Tasks")
+                for status, count in sorted(task_counts.items()):
+                    lines.append(f"- {status}: {count}")
+
+            return _text("\n".join(lines))
 
         # --- outbox_status (S024 F-17) ---
         elif name == "outbox_status":
@@ -4975,6 +5305,7 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
             tenant_id=tenant_id,
             is_system=False,
             source="worker_oauth",
+            tenant_slug=request.headers.get("X-Tenant-Slug") or tenant_id,
             agent_name=agent_name,
             scope="customer",
             plan=tier,
@@ -5052,9 +5383,8 @@ async def me(
     # W3: persist DCR client_id if provided (fire-once, idempotent)
     if client_id:
         try:
-            if _get_mirror_db is None:
-                raise RuntimeError("Mirror DB unavailable")
-            db = _get_mirror_db()
+            from mirror.kernel.db import get_db
+            db = get_db()
             db.execute(  # type: ignore[attr-defined]
                 """
                 UPDATE oauth_tenants
@@ -6599,11 +6929,16 @@ async def get_config(request: Request) -> JSONResponse:
         "openclaw": {"port": 18789},
     }
 
-    # 3. Agents (from KNOWN_AGENTS)
-    config["agents"] = {
-        name: {"type": info["type"], "model": info["model"], "role": info["role"]}
-        for name, info in KNOWN_AGENTS.items()
-    }
+    # 3. Agents
+    try:
+        r = _get_redis()
+        raw_agents = await r.hgetall(AGENT_REGISTRY_KEY)
+        config["agents"] = {
+            name: json.loads(raw)
+            for name, raw in raw_agents.items()
+        }
+    except Exception:
+        config["agents"] = {}
 
     # 4. Bus tokens (count only, not values)
     try:
@@ -6892,6 +7227,8 @@ async def _process_jsonrpc(
             },
         )
     if method == "notifications/initialized":
+        # S111 carry-forward: hosted onboarding behavior remains in the legacy
+        # gateway until the host overlay owns the product-specific routes.
         # B3 — Auto-onboard: push welcome prompt to new tenant SSE queue (non-critical)
         if auth.is_customer and auth.tenant_id and session_id:
             try:
@@ -7039,11 +7376,11 @@ async def _process_jsonrpc(
 
 
 def _jsonrpc_ok(msg_id: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+    return jsonrpc_ok(msg_id, result)
 
 
 def _jsonrpc_err(msg_id: Any, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": message}}
+    return jsonrpc_error(msg_id, message)
 
 
 # ---------------------------------------------------------------------------

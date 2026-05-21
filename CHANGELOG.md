@@ -5,50 +5,85 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
-- S088 dashboard migration preparation notes and tenant provisioning smoke
-  findings under `docs/operations/`.
-
----
-
-## [0.10.3] — 2026-05-20 — Public kernel release candidate
-
-### Added
-- S087 public release pass artifacts: 0.10.3 release notes, tag checklist,
-  and current smoke proof under `docs/releases/`.
-- S086 MCP maintainability extraction plan and the first extracted status-tool
-  domain under `sos.mcp.tools.status`, with contract tests preserving status
-  output, project filtering, and task-count behavior.
-- `sos operator` compact operator snapshot command for service health, Redis
-  bus shape, agent hints, wake/gate stream hints, and blocked-task visibility.
-- Public operator runbook and current working-vs-planned state ledger under
-  `docs/operations/`.
-- Public local install profile via `scripts/sos-local-dev.sh`, covering
-  dev-token generation, Redis, bus bridge, MCP, Squad, and a one-command smoke
-  doctor.
-- `sos local init`, `sos local migrate`, and `sos local doctor` CLI helpers
-  for self-serve dev tokens, local SQLite migrations, and public smoke checks.
-- Public-safe local profile tests for generated token/env files.
-- Public Squad Alembic bridge revisions for the OSS migration chain:
-  `0017_public_bridge` and `0023_task_decision_fields`.
-- Public security model docs: edge map, threat model, health policy, webhook
-  ingress policy, CORS posture, Redis policy, and residual-risk checklist.
-- `scripts/check_public_security_docs.py` and CI wiring so the release gate
-  verifies the public security docs stay present.
-- Redis production safety findings in `sos doctor`.
-- Public plugin/profile boundary contract for OpenClaw, Hermes, local scripts,
-  and host overlays.
-- Minimal OpenClaw/Hermes-style adapter sketch under `examples/host_profiles/`
-  plus tests proving it imports only the public SOS SDK.
-- `scripts/check_plugin_boundary_docs.py` and CI wiring so the release gate
-  verifies the host profile contract remains present.
-- Public kernel release-gate docs: `PROJECT_STATUS.md`,
-  `docs/quickstart-local.md`, `docs/architecture/runtime-planes.md`,
-  `docs/status/2026-05-20-public-release-gate.md`, and the S078+ composition
-  sprint queue.
-- `scripts/check_public_release_boundary.py` plus GitHub Actions wiring to
-  prevent private/add-on paths from returning to public SOS.
-- Version metadata regression coverage for `pyproject.toml`, `sos.__version__`,
-  CLI version output, and installed package metadata.
+- S111 MCP public kernel split: generic `sos.mcp.transport` JSON-RPC/SSE
+  helpers, a fail-closed public `sos.mcp.tool_registry`, and compatibility
+  public tool exports limited to `send`, `inbox`, `broadcast`, `recall`,
+  `status`, and `peers`.
+- S112 hosted-service extraction inventory plus a generic public dashboard
+  service map. Hosted deployments can now provide their own topology via
+  `SOS_SERVICE_MAP_SVG_PATH` instead of carrying it in the public kernel.
+- S113 public operator install proof: `scripts/prove_public_operator_install.sh`,
+  `docs/operator-first-run.md`, a public `sos` CLI alias, and first-run docs for
+  Redis, MCP gateway health, fake-agent registration, and public MCP primitives.
+- S114 dashboard registry-client boundary cleanup: `RegistryClient` now exposes
+  typed AgentCard reads, dashboard operator/mesh routes use the HTTP client
+  instead of importing `sos.services.registry`, and the related import-linter
+  ignores are removed.
+- S110 kernel extraction pass: Redis-backed agent status registry support via
+  `sos:registry:agents`, empty-agent behavior for unregistered kernels, and
+  `SOS_MONITORED_SERVICES` for configurable service status checks.
+- Pluggable MCP tool policy module with an empty public-kernel default.
+  Hosted-product tool catalogues now belong in operator overlays instead of
+  `sos/mcp/customer_tools.py`.
+- Generic `breakables.yaml` plus gitignored `breakables.local.yaml` overlay
+  support for deployment-specific probes.
+- Regression tests for the S110 public-kernel boundary.
+- Public-release boundary configuration in `pyproject.toml` with explicit
+  package excludes for Mumega-private hosted-product modules.
+- `scripts/check_public_release_boundary.py`, a release gate that fails a
+  candidate public tree when private/internal path patterns are still tracked.
+  It can read rules from a separate `--config-root` so current rules can audit
+  an older public clone before the checker itself has landed there.
+- Tests for public release boundary matching and runtime/package/CLI version
+  alignment.
+- Public plugin/profile contract documentation and a regression test covering
+  host overlays, compatibility shims, launch paths, and deletion sequencing.
+- Operations runner template lookup now supports `SOS_ADDONS_ROOT/operations`
+  before the legacy root `operations/` directory, preserving a generic host
+  overlay path for operation templates.
+- Brain source manifest lookup now supports `SOS_ADDONS_ROOT/projects` before
+  legacy root project manifests, preserving a generic host overlay path for
+  `projects/<slug>/SOURCES.md`.
+- Provider adapter implementation paths for Etsy, GHL, and GTM now delegate
+  through compatibility shims to host-owned files under `SOS_ADDONS_ROOT`,
+  shrinking internal SOS while preserving legacy imports and `python -m`
+  launch paths.
+- Mumega host add-ons now have a stable package target,
+  `mumega_sos_addons.services.{etsy,ghl,gtm}`, for migrating deployments and
+  tests away from old internal `sos.services.*` provider paths.
+- The live `sos-etsy-asset-forge.service` user unit now launches
+  `mumega_sos_addons.services.etsy.asset_forge` with `SOS_ADDONS_ROOT` pointing
+  at the Mumega add-on overlay.
+- Copied Mumega provider tests now import `mumega_sos_addons.services.*`, while
+  internal SOS tests continue to cover the temporary `sos.services.*`
+  compatibility shims.
+- Host-owned provider implementation files now import each other through
+  `mumega_sos_addons.*`; the internal compatibility loader adds the Mumega repo
+  root to `sys.path` so old shim imports still work during migration.
+- Mumega internal agents now have a stable host package path at
+  `mumega_sos_addons.agents.internal.*`; internal `sos.agents.*` modules are
+  compatibility shims, and MCP/Telegram onboarding now import the host package
+  directly.
+- SaaS, integrations, and billing now have first-slice host package paths under
+  `mumega_sos_addons.services.*`; safe module imports and copied provider/
+  provision tests pass, while the live SaaS app launch remains gated on
+  removing import-time Redis side effects.
+- The SaaS app build queue is now lazy-initialized, allowing
+  `mumega_sos_addons.services.saas.app` to import without touching Redis; the
+  live `sos-saas.service` now launches from the Mumega host package path.
+- Billing implementation modules now live behind
+  `mumega_sos_addons.services.billing.*`; old `sos.services.billing.*` paths are
+  compatibility shims, and internal mint scripts import the host package.
+- Integrations implementation modules now live behind
+  `mumega_sos_addons.services.integrations.*`; old
+  `sos.services.integrations.*` paths are compatibility shims with internal and
+  copied integrations tests targeting the host package.
+- Public candidate cleanup prepared locally at `/tmp/sos-public-check` on branch
+  `public-10-boundary-cleanup`, initial cleanup commit `417e733a`.
+- Public 10 truth and boundary docs:
+  `docs/status/2026-05-19-actual-working-inventory.md`,
+  `docs/plans/2026-05-19-sos-public-10-roadmap.md`, and
+  `docs/plans/2026-05-19-sos-public-core-boundary-audit.md`.
 - `mumega-bus-watch` packageable local receive bridge for off-server agents.
   It ships as the `mumega-bus-watch` console script and `python -m sos.watch`,
   with `install`, `run`, `doctor`, `status`, and `test-send` commands.
@@ -63,28 +98,15 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   token source metadata.
 
 ### Changed
-- Operator snapshot helpers now honor explicitly empty env mappings instead of
-  falling back to process environment, making tests and embedded callers
-  deterministic.
-- Local quickstart now uses the S079 public profile and doctor path instead of
-  manual private token-file editing and three-terminal service startup.
-- Local quickstart ports are generated from free local ports and written to
-  `.sos/local/dev.env`, avoiding collisions with host services.
-- The bus bridge can read `SOS_BUS_TOKENS_PATH`, allowing local/dev token files
-  outside the package tree.
-- Bus bridge and MCP Redis clients honor `REDIS_URL`, allowing isolated local
-  Redis profiles.
-- Public status docs now point future public-route work at the S080 security
-  model before exposing new routes.
-- Host-overlay guidance now points integrations at public SDK, MCP, bus, watch,
-  and Squad interfaces instead of private Mumega paths.
-- README and contributing guidance now describe the public SOS kernel,
-  optional Mirror/Engine planes, and MIT contribution posture instead of
-  Mumega-private operating assumptions.
-- `pyproject.toml`, `sos.__version__`, and CLI version output now report
-  `0.10.3`.
-- Public dev installs now include `psycopg2-binary`, `pyotp`, and `webauthn`,
-  matching the public test suite's import-time requirements.
+- Project/package description now matches the public microkernel positioning:
+  a local-first coordination substrate for heterogeneous AI agents.
+- Private CI now installs the SSO/DEK contract-test dependencies through
+  `.[dev]`, accepts the current Vertex Gemini provider backend in the
+  ProviderCard contract, and recognizes the private agent-join add-on shim.
+- `sos.__version__` and the legacy `mumega version` command now report the
+  package version `0.10.3` instead of stale pre-0.10 values.
+- Historical Mumega/MIND whitepaper and website-copy docs now carry status
+  notes so they are not mistaken for current public SOS product claims.
 - Public SDK wheel now includes the `sos.watch` package and the
   `mumega-bus-watch` entry point.
 - SDK `Agent.inbox()` can read through `bridge_url`/`SOS_BRIDGE_URL` for
@@ -93,6 +115,13 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   project broadcast channels such as `sos:channel:project:sos:global`.
 - MCP HTTPS now exposes `/bridge/inbox`, a bridge-compatible inbox endpoint
   using the same bearer-token auth as JSON-RPC MCP for remote SDK clients.
+
+### Removed
+- Dormant internal provider compatibility shims for Etsy, GHL, and GTM, plus
+  their old-path shim tests.
+- The stale internal `sos/services/saas` implementation copy and direct
+  old-path SaaS route tests. The live SaaS owner is now only
+  `mumega_sos_addons.services.saas.*`.
 
 ---
 
@@ -280,7 +309,7 @@ the POST. The pre-Phase-5 dev wizard relocated to `sos.cli.setup` so
 `python -m sos.cli.setup` keeps working.
 
 Step B (`step_b_deploy_inkwell`): reads `INKWELL_ROOT` (default
-`/home/sos/inkwell`), copies `instances/_template/` →
+`/home/mumega/inkwell`), copies `instances/_template/` →
 `instances/<slug>/`, interpolates six placeholders (`{{SLUG}}`,
 `{{LABEL}}`, `{{DOMAIN}}`, `{{EMAIL}}`, `{{INDUSTRY}}`, `{{TAGLINE}}`)
 across text files, runs `npm run build` at the Inkwell root, then
@@ -381,7 +410,7 @@ remain stubbed. Plan reference: `docs/plans/2026-04-19-mumega-mothership.md` §5
 
 #### Added (alpha.2)
 - `sos/cli/init.py::step_b_deploy_inkwell` — real implementation. Reads
-  `INKWELL_ROOT` (default `/home/sos/inkwell`), copies
+  `INKWELL_ROOT` (default `/home/mumega/inkwell`), copies
   `instances/_template/` → `instances/<slug>/`, interpolates six
   placeholders (`{{SLUG}}`, `{{LABEL}}`, `{{DOMAIN}}`, `{{EMAIL}}`,
   `{{INDUSTRY}}`, `{{TAGLINE}}`) across text files, runs `npm run build`
@@ -902,7 +931,7 @@ TROP's seeds + standing workflows out of SOS into the TROP product repo
   regenerate the canonical JSON file.
 - `standing_workflows.json` — the file SOS's pulse reads.
 - Operators point the organism at this file via
-  `SOS_PULSE_WORKFLOWS_FILE_TROP=/home/sos/therealmofpatterns/sos-seed/standing_workflows.json`.
+  `SOS_PULSE_WORKFLOWS_FILE_TROP=/home/mumega/therealmofpatterns/sos-seed/standing_workflows.json`.
 
 ### Tests
 - `tests/services/test_pulse.py` — 5 new tests for the file-based loader

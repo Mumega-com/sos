@@ -1,100 +1,153 @@
 # Local Quickstart
 
-This quickstart is for the public SOS core. It starts Redis plus the MCP/bus
-surface from a local checkout. Mirror is optional.
+Status: draft
+Last updated: 2026-05-19
 
-## 1. Install
+Related:
+
+- Public roadmap: `docs/plans/2026-05-19-sos-public-10-roadmap.md`
+- Verified baseline: `docs/status/2026-05-19-actual-working-inventory.md`
+- Internal/public split: `docs/architecture/internal-public-split.md`
+- Operator first run: `docs/operator-first-run.md`
+
+This is the target fresh-install path for SOS. The goal is one local profile that
+lets a new developer prove the bus works before attaching optional services.
+
+## Prerequisites
+
+- Python 3.11+
+- Redis
+- `git`
+
+Optional:
+
+- Mirror for shared memory
+- Model provider keys for engine-backed chat
+- Host add-ons for Mumega-private services
+
+## Install
 
 ```bash
 git clone https://github.com/Mumega-com/sos.git
 cd sos
-
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
 ```
 
-## 2. Start The Local Profile
-
-One command starts Redis, the bus bridge, the MCP server, and the Squad task
-service:
+For a repeatable smoke proof, run:
 
 ```bash
-scripts/sos-local-dev.sh up
+scripts/prove_public_operator_install.sh
 ```
 
-This also creates local-only dev tokens in `.sos/local/tokens.json`, picks free
-local ports for Redis, bus, MCP, and Squad, and writes the shell environment to
-`.sos/local/dev.env`. You do not need to edit `sos/bus/tokens.json`.
+The script creates a fresh clone under `/tmp/sos-public-operator-proof`,
+installs with `pip install -e .`, starts the MCP gateway, registers one fake
+agent, and proves `status`, `peers`, `send`, `inbox`, `broadcast`, and graceful
+`recall` behavior.
 
-## 3. Run The Public Doctor
+## Optional Add-Ons
+
+Public SOS does not require host/product add-ons. If you run a private overlay,
+point SOS at its root:
 
 ```bash
-scripts/sos-local-dev.sh doctor
+export SOS_ADDONS_ROOT=/path/to/sos-addons
+export PYTHONPATH=/path/to/host-repo:/path/to/sos
 ```
 
-The doctor checks:
+This enables generic host-owned lookup paths:
 
-- Redis
-- Bus bridge `/health`
-- MCP `/health`
-- Squad `/health`
-- agent `send` and `inbox`
-- task create, claim, and complete
-- Mirror-disabled behavior
+- `SOS_ADDONS_ROOT/operations` for operation templates.
+- `SOS_ADDONS_ROOT/projects` for `projects/<slug>/SOURCES.md` manifests.
 
-## 4. Stop The Local Profile
+Specific overrides still win:
 
 ```bash
-scripts/sos-local-dev.sh down
+export SOS_OPERATIONS_DIR=/path/to/operations
+export SOS_PROJECTS_DIR=/path/to/projects
 ```
 
-## Manual Commands
-
-The helper script wraps these CLI commands:
+Mumega's internal host overlay currently uses:
 
 ```bash
-sos local init
-sos local migrate
-sos local doctor
+export SOS_ADDONS_ROOT=/mnt/HC_Volume_104325311/mumega.com/sos-addons
+export PYTHONPATH=/mnt/HC_Volume_104325311/mumega.com:/mnt/HC_Volume_104325311/SOS
 ```
 
-If you prefer to run services manually, source `.sos/local/dev.env` first and
-then run these commands in separate terminals:
+Host-owned services launch from `mumega_sos_addons.*`, not from public SOS.
+Examples:
 
 ```bash
-python -m sos.bus.bridge
-python -m sos.mcp.sos_mcp_sse
-python -m sos.services.squad.app
+python3 -m mumega_sos_addons.services.saas.app
+python3 -m mumega_sos_addons.services.etsy.asset_forge --watch
 ```
 
-## 5. Verify The Public Repo
+## Start Core Services
+
+In separate terminals:
 
 ```bash
-python scripts/check_public_release_boundary.py --show-ok
-pytest --collect-only -q
+redis-server
+python3 -m sos.services.engine
+python3 -m sos.services.squad.app
+python3 -m sos.mcp.sos_mcp_sse
 ```
 
-Expected S087 baseline:
-
-- `pytest --collect-only`: 2744 tests, 0 collection errors
-- boundary check: clean
-
-## 6. Optional Mirror Memory
-
-Mirror is a separate repo. Without Mirror, bus, inbox, peers, status, and task
-flows should still be usable. With Mirror configured, memory tools such as
-`remember`, `recall`, and `memories` can store and retrieve shared context.
+Optional gateway:
 
 ```bash
-git clone https://github.com/Mumega-com/mirror.git
+python3 -m sos.services.gateway.app
 ```
 
-Follow the Mirror repo's setup instructions, then configure SOS with the Mirror
-URL and token expected by your deployment.
+Optional Mirror memory service:
 
-## Current Gap
+```bash
+cd ../mirror
+python3 mirror_api.py
+```
 
-This local profile is for development and first-run verification. Production
-operators should provide real tokens, service supervision, TLS, backups, and a
-separate security review of public ingress routes.
+## Doctor
+
+Run:
+
+```bash
+sos doctor
+```
+
+The local profile is healthy enough for first use when:
+
+- Python/import checks pass.
+- Redis is reachable.
+- MCP health is reachable.
+- At least one token source exists.
+
+Engine, Squad, Gateway, and Mirror may show as skipped or warnings while the
+developer is bringing services up one at a time.
+
+## First Bus Smoke
+
+Once MCP is running and a token is configured, connect an MCP client to:
+
+```text
+http://localhost:6070/mcp
+```
+
+Then call:
+
+- `status`
+- `peers`
+- `send`
+- `inbox`
+
+The first successful round trip is:
+
+1. Send a message to your agent.
+2. Read it back from `inbox`.
+3. Confirm the stream name is project-scoped or global as expected.
+
+## Optional Memory
+
+SOS remains useful without Mirror. When Mirror is not configured, memory tools
+should fail clearly or report disabled state; bus, inbox, peers, and task tools
+remain usable.
