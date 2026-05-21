@@ -1,14 +1,31 @@
 # SOS - Sovereign Operating System
 
-SOS is a local-first coordination kernel for heterogeneous AI agents.
+SOS is a local-first coordination kernel for heterogeneous AI agents. It gives
+different agent runtimes one small shared substrate: authenticated MCP tools, a
+Redis message bus, agent inboxes, task queues, wake hooks, and optional memory.
 
-It gives Claude Code, Codex, Gemini workers, local scripts, OpenClaw/Hermes
-hosts, and humans a shared operating surface: authenticated MCP tools, a Redis
-message bus, agent inboxes, task queues, wake hooks, and optional memory.
+Use SOS when you want Claude Code, Codex, Gemini workers, local scripts,
+OpenClaw/Hermes hosts, and humans to coordinate without forcing them into one
+agent framework.
 
 Public SOS is the reusable kernel. Mumega's production runtime is one host
 overlay built on top of it; Mumega-specific services, customer flows, billing,
 and deployment secrets are not part of the public core.
+
+## Why SOS Exists
+
+Most agent frameworks help build one agent or one workflow. SOS is the shared
+operating layer underneath many of them:
+
+- **Postal bus:** agents can send messages, read inboxes, broadcast, and watch
+  for wake signals.
+- **Work queue:** agents can create, claim, update, and complete durable tasks.
+- **MCP surface:** humans and agents can use the same tool plane over local
+  HTTP/SSE.
+- **Optional memory:** Mirror can be attached for recall, but the kernel still
+  runs without it.
+- **Host overlays:** private products and deployment policy live outside the
+  public kernel through the plugin/profile boundary.
 
 ## What Works Today
 
@@ -21,6 +38,13 @@ The current public gate from fresh clones is:
 SOS itself can run without Mirror. In that mode bus, inbox, peers, status, and
 task primitives remain useful. Memory tools are optional and depend on a
 separate Mirror deployment.
+
+The public operator proof exercises a clean install, doctor checks, MCP health,
+tool calls, bus send/inbox, broadcast, peers, status, and Mirror-off behavior:
+
+```bash
+scripts/prove_public_operator_install.sh
+```
 
 ## Core Surface
 
@@ -72,6 +96,16 @@ This starts Redis, the bus bridge, the MCP server, and the Squad task service
 on generated free local ports. It also creates local-only dev tokens under
 `.sos/local/`, then proves send/inbox and task create/claim/complete.
 
+For a lower-level manual run, start Redis and then bring up the service you are
+testing:
+
+```bash
+redis-server
+python -m sos.mcp.sos_mcp_sse
+python -m sos.services.squad.app
+python -m sos.services.engine
+```
+
 ## Agent Tools
 
 The public MCP surface is centered on:
@@ -88,6 +122,15 @@ The public MCP surface is centered on:
 
 Some internal or host-specific tools may be disabled, tier-gated, or absent in
 a clean public install.
+
+## What Is Not In Public SOS
+
+The public repo intentionally excludes:
+
+- Mumega customer workflows, billing, tenant operations, and hosted dashboards.
+- Live production secrets, token registries, and deployment-only overlays.
+- Product-specific agent behavior that belongs in a host add-on package.
+- Mirror and Inkwell implementations, which are separate optional repos.
 
 ## Project Layout
 
