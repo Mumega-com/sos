@@ -131,7 +131,6 @@ def get_service_statuses_sync() -> list[dict[str, str]]:
         "calcifer",
         "agent-wake-daemon",
         "bus-bridge",
-        "openclaw-gateway",
         "kasra-agent-watchdog",
         "mumcp-agent-watchdog",
     ]
