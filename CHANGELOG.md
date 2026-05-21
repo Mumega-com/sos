@@ -5,6 +5,16 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Removed
+
+---
+
+## [0.10.4] — 2026-05-21 — Public kernel S110-S114 sync
+
+### Added
 - S111 MCP public kernel split: generic `sos.mcp.transport` JSON-RPC/SSE
   helpers, a fail-closed public `sos.mcp.tool_registry`, and compatibility
   public tool exports limited to `send`, `inbox`, `broadcast`, `recall`,
@@ -104,7 +114,7 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
   `.[dev]`, accepts the current Vertex Gemini provider backend in the
   ProviderCard contract, and recognizes the private agent-join add-on shim.
 - `sos.__version__` and the legacy `mumega version` command now report the
-  package version `0.10.3` instead of stale pre-0.10 values.
+  package version `0.10.4` instead of stale pre-0.10 values.
 - Historical Mumega/MIND whitepaper and website-copy docs now carry status
   notes so they are not mistaken for current public SOS product claims.
 - Public SDK wheel now includes the `sos.watch` package and the
@@ -2495,7 +2505,7 @@ multi-seat tokens, build queue, audit logging, rate limiting, RBAC,
 notification router + webhooks, MSG-002/003, SEC-001/002/004/005, PIP-001/002/003,
 customer tool gating, signup → build pipeline, ToRivers marketplace.
 
-## [Unreleased]
+## Historical Pending Notes
 
 ### Pending
 - **Service restart** to pick up the 0.4.0 producers (sos_mcp_sse, sos_mcp, bridge, redis_bus). Running processes import `sos_msg()` at boot and continue to use the legacy builder until restart.

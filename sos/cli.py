@@ -24,7 +24,7 @@ from sos.observability.logging import get_logger
 
 log = get_logger("cli")
 
-__version__ = "0.1.0"
+__version__ = "0.10.4"
 
 
 def cmd_version(args):

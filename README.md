@@ -122,14 +122,14 @@ External runtimes and overlays should integrate through
 
 ## Version And Release State
 
-Current package version: `0.10.3`.
+Current package version: `0.10.4`.
 
 This is active alpha software. The repo is useful for operators who are
 comfortable with Python services, Redis, and MCP. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
 [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).
 For the current release candidate, see
-[docs/releases/v0.10.3.md](docs/releases/v0.10.3.md) and
-[docs/releases/v0.10.3-tag-checklist.md](docs/releases/v0.10.3-tag-checklist.md).
+[docs/releases/v0.10.4.md](docs/releases/v0.10.4.md) and
+[docs/releases/v0.10.4-tag-checklist.md](docs/releases/v0.10.4-tag-checklist.md).
 
 ## License
 
