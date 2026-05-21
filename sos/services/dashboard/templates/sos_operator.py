@@ -2,23 +2,36 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger("dashboard")
 
-_SERVICE_MAP_PATH = Path(__file__).resolve().parent.parent / "service_map.svg"
+_DEFAULT_SERVICE_MAP_PATH = Path(__file__).resolve().parent.parent / "service_map.svg"
+_SERVICE_MAP_PATH_ENV = "SOS_SERVICE_MAP_SVG_PATH"
 _service_map_cache: str | None = None
+_service_map_cache_path: Path | None = None
+
+
+def _service_map_path() -> Path:
+    configured = os.environ.get(_SERVICE_MAP_PATH_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return _DEFAULT_SERVICE_MAP_PATH
 
 
 def _load_service_map_svg() -> str:
     """Read the service-map SVG once, cache in-process. Empty string on failure."""
-    global _service_map_cache
-    if _service_map_cache is None:
+    global _service_map_cache, _service_map_cache_path
+    path = _service_map_path()
+    if _service_map_cache is None or _service_map_cache_path != path:
         try:
-            _service_map_cache = _SERVICE_MAP_PATH.read_text(encoding="utf-8")
+            _service_map_cache = path.read_text(encoding="utf-8")
+            _service_map_cache_path = path
         except Exception:
-            logger.exception("Failed to load service map SVG")
+            logger.exception("Failed to load service map SVG from %s", path)
             _service_map_cache = ""
+            _service_map_cache_path = path
     return _service_map_cache
 
 

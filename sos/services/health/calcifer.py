@@ -1,25 +1,17 @@
 # Moved from scripts/calcifer.py — heartbeat, health checks, task dispatch
 #!/usr/bin/env python3
 """
-Calcifer — The Fire That Moves the Castle
+Calcifer — SOS health and dispatch loop
 
-Autonomous heartbeat loop for Howl's Moving Castle.
 Runs every N minutes as a systemd service.
 
 Responsibilities:
-  1. Service health checks (Mirror, Redis, OpenClaw gateway)
+  1. Service health checks (Mirror, Redis, Squad)
   2. Task dispatch — assign unblocked backlog tasks to idle agents
-  3. Heartbeat — publish pulse to Redis so agents know the castle breathes
+  3. Heartbeat — publish pulse to Redis
   4. Stale task detection — warn about tasks stuck in_progress too long
   5. Agent wake — ping dormant agents with pending work
-  6. Incident alerting — post to Discord and restart critical services
-
-"Without me the castle wouldn't move at all." — Calcifer
-
-Agents supported:
-  - kasra   (Claude Code in tmux:kasra)
-  - river   (Gemini CLI in tmux:river-dev)
-  - athena  (OpenClaw)
+  6. Incident alerting and service restart
 
 Run as:
   systemctl --user start calcifer.service
@@ -75,9 +67,9 @@ REDIS_PASSWORD = _calcifer_settings.redis.password_str
 CYCLE_SECONDS = int(os.environ.get("CALCIFER_CYCLE", "600"))  # 10 minutes
 STALE_IN_PROGRESS_HOURS = int(os.environ.get("CALCIFER_STALE_IN_PROGRESS_HOURS", "2"))
 CLAIMED_STALE_HOURS = int(os.environ.get("CALCIFER_CLAIMED_STALE_HOURS", "1"))
-OPENCLAW_UNRESPONSIVE_MINUTES = int(os.environ.get("CALCIFER_OPENCLAW_UNRESPONSIVE_MINUTES", "60"))
 DISCORD_ALERT_SCRIPT = str(Path.home() / "scripts" / "discord-reply.sh")
-# LOCK-S027-C-1.1 — mumega.com blog directory for post indexing.
+AGENT_REGISTRY_KEY = os.environ.get("SOS_AGENT_REGISTRY_KEY", "sos:registry:agents")
+DEFAULT_COORDINATOR_AGENT = os.environ.get("SOS_DEFAULT_COORDINATOR_AGENT", "coordinator")
 
 
 def _squad_service_token() -> str:
@@ -86,16 +78,9 @@ def _squad_service_token() -> str:
         or os.environ.get("SOS_SQUAD_TOKEN")
         or ""
     )
-# Structural absence is fail-safe: missing dir → metrics return (0, None), warn
-# only. Default points at the canonical content tree; tests inject via env.
-MUMEGA_BLOG_DIR = Path(os.environ.get(
-    "MUMEGA_BLOG_DIR",
-    str(Path.home() / "mumega.com" / "content" / "en" / "blog"),
-))
 SYSTEMD_RESTART_UNITS = {
     "mirror": "mirror.service",
     "squad": "sos-squad.service",
-    # openclaw-gateway removed: needs `openclaw setup` by Hadi — auto-restart does nothing
 }
 
 # ── Self-Healing ───────────────────────────────────────────────────────────
@@ -135,12 +120,12 @@ def _emit_health_event(event_type: str, service_name: str) -> None:
     try:
         from sos.kernel.events import EventBus, HEALTH_DEGRADED, HEALTH_RECOVERED
 
-        resolved_type = HEALTH_RECOVERED if event_type == "recovered" else HEALTH_DEGRADED
+        health_event_type = HEALTH_RECOVERED if event_type == "recovered" else HEALTH_DEGRADED
         bus = EventBus()
 
         async def _emit() -> None:
             try:
-                await bus.emit(resolved_type, {"service": service_name}, source="calcifer")
+                await bus.emit(health_event_type, {"service": service_name}, source="calcifer")
             except Exception:
                 pass
 
@@ -157,7 +142,8 @@ def _get_escalation_target() -> str:
     """Find the current gatekeeper/coordinator to escalate to.
 
     Prefers WARM coordinators (always-on). Falls back to any coordinator.
-    Returns agent name, defaulting to 'athena' if registry is empty.
+    Returns agent name, defaulting to SOS_DEFAULT_COORDINATOR_AGENT if registry
+    is empty.
     """
     try:
         from sos.kernel.agent_registry import get_coordinator_agents, WarmPolicy
@@ -170,7 +156,7 @@ def _get_escalation_target() -> str:
             return next(iter(coordinators))
     except Exception:
         pass
-    return "athena"  # hard fallback
+    return DEFAULT_COORDINATOR_AGENT
 
 
 def _escalate_to_coordinator(service_name: str) -> None:
@@ -189,10 +175,6 @@ def _escalate_to_coordinator(service_name: str) -> None:
         }))
     except Exception as e:
         logger.warning(f"Escalation to {target} failed: {e}")
-
-
-# Legacy alias — kept for any external callers
-_escalate_to_athena = _escalate_to_coordinator
 
 
 def _verify_service_health(service_name: str) -> bool:
@@ -292,44 +274,8 @@ def self_heal(service_name: str) -> dict:
 
 
 # ── Agent Registry ──────────────────────────────────────────────────────────
-# Fallback agent registry — used when Squad Service is unavailable.
-# Prefer dynamic registry: GET /agents on Squad Service (:8060)
-FALLBACK_AGENTS = {
-    "kasra": {
-        "type": "tmux",
-        "tmux_session": "kasra",
-        "idle_patterns": ["❯", "$ "],
-        "busy_patterns": ["Transmuting", "Churning", "Baking", "Warping", "Thinking"],
-        "skills": ["backend", "frontend", "infrastructure", "nginx", "api", "database", "typescript", "python"],
-        "max_concurrent": 1,
-    },
-    "river": {
-        "type": "tmux",
-        "tmux_session": "river",
-        "idle_patterns": ["◆", "> ", "❯"],
-        "busy_patterns": ["Thinking", "Writing", "Generating", "◒"],
-        "skills": ["strategy", "frc", "content", "oracle", "memory", "distillation", "creative"],
-        "max_concurrent": 1,
-    },
-    "athena": {
-        "type": "tmux",
-        "tmux_session": "athena",
-        "idle_patterns": ["❯", "$ ", "> ", "Type your message", "● YOLO"],
-        "busy_patterns": ["Thinking", "Writing", "Transmuting", "Churning"],
-        "skills": ["architecture", "design", "planning", "coordination", "review"],
-        "max_concurrent": 2,
-    },
-    "worker": {
-        "type": "openclaw",
-        "skills": ["seo", "content", "audit", "analysis", "reporting", "squad_tasks"],
-        "max_concurrent": 3,
-    },
-    "dandan": {
-        "type": "openclaw",
-        "skills": ["dental", "outreach", "leads", "google_maps"],
-        "max_concurrent": 2,
-    },
-}
+# Prefer dynamic registry: GET /agents on Squad Service (:8060), then the Redis
+# hash used by the MCP status tool. Empty registry is valid for public kernels.
 
 # Cached dynamic registry (refreshed each cycle)
 _cached_agents: dict | None = None
@@ -340,7 +286,7 @@ _AGENT_CACHE_TTL = 60  # seconds
 def get_registered_agents(squad_url: str = SQUAD_URL) -> dict:
     """Fetch agents from Squad Service dynamic registry.
 
-    Falls back to FALLBACK_AGENTS if Squad Service is down.
+    Falls back to the Redis registry if Squad Service is down.
     Caches result for 60s to avoid hammering the service within a cycle.
     """
     global _cached_agents, _cached_agents_time
@@ -365,22 +311,45 @@ def get_registered_agents(squad_url: str = SQUAD_URL) -> dict:
                     "skills": agent.get("skills", []),
                     "max_concurrent": agent.get("max_concurrent", 1),
                 }
-                # Preserve tmux metadata from fallback if agent type is tmux
-                if name in FALLBACK_AGENTS and FALLBACK_AGENTS[name].get("type") == "tmux":
-                    fb = FALLBACK_AGENTS[name]
-                    result[name].setdefault("tmux_session", fb.get("tmux_session", name))
-                    result[name].setdefault("idle_patterns", fb.get("idle_patterns", []))
-                    result[name].setdefault("busy_patterns", fb.get("busy_patterns", []))
             if result:
                 _cached_agents = result
                 _cached_agents_time = now
                 return result
     except Exception as e:
-        logger.warning(f"Squad Service unavailable, using fallback agents: {e}")
+        logger.warning(f"Squad Service unavailable, checking Redis agent registry: {e}")
 
-    _cached_agents = FALLBACK_AGENTS
+    result = get_registered_agents_from_redis()
+    _cached_agents = result
     _cached_agents_time = now
-    return FALLBACK_AGENTS
+    return result
+
+
+def get_registered_agents_from_redis() -> dict:
+    r = get_redis()
+    if not r:
+        return {}
+    try:
+        raw_agents = r.hgetall(AGENT_REGISTRY_KEY)
+    except Exception as e:
+        logger.warning(f"Redis agent registry unavailable: {e}")
+        return {}
+    result: dict = {}
+    for name, raw in raw_agents.items():
+        try:
+            config = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        result[str(name)] = {
+            "type": config.get("type", "remote"),
+            "tmux_session": config.get("tmux_session", name),
+            "idle_patterns": config.get("idle_patterns", ["❯"]),
+            "busy_patterns": config.get("busy_patterns", []),
+            "skills": config.get("skills", []),
+            "max_concurrent": config.get("max_concurrent", 1),
+        }
+    return result
 
 
 # ── Redis ───────────────────────────────────────────────────────────────────
@@ -540,18 +509,6 @@ def check_redis() -> dict:
     return {"status": "down"}
 
 
-def check_openclaw() -> dict:
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
-            capture_output=True, text=True, timeout=5, env=systemd_user_env()
-        )
-        status = result.stdout.strip()
-        return {"status": "ok" if status == "active" else "down", "systemd": status}
-    except Exception as e:
-        return {"status": "unknown", "error": str(e)}
-
-
 def check_tmux_session(session_name: str) -> bool:
     try:
         result = subprocess.run(
@@ -563,87 +520,13 @@ def check_tmux_session(session_name: str) -> bool:
         return False
 
 
-def index_mumega_posts(blog_dir: Path | None = None) -> dict:
-    """LOCK-S027-C-1.1 — count published posts + last publish timestamp.
-
-    Walks `MUMEGA_BLOG_DIR` for `*.md` files with frontmatter `status: published`.
-    Returns:
-        {
-          "mumega_posts_total": int,                      # count of published posts
-          "mumega_posts_last_publish_ts": str | None,     # ISO 8601 UTC of max date, or None
-        }
-
-    Failure modes (correctness-only — never raises):
-      - Blog dir missing → (0, None) + warn
-      - Frontmatter parse error on individual file → skip that file + warn
-      - No `status: published` files → (0, None)
-    """
-    target = blog_dir if blog_dir is not None else MUMEGA_BLOG_DIR
-    result = {"mumega_posts_total": 0, "mumega_posts_last_publish_ts": None}
-
-    if not target.exists() or not target.is_dir():
-        logger.warning(f"mumega blog dir missing: {target}")
-        return result
-
-    try:
-        import yaml  # local import — health surface should not hard-require yaml at module load
-    except ImportError:
-        logger.warning("PyYAML missing — skipping post indexing")
-        return result
-
-    total = 0
-    max_date: Optional[str] = None
-
-    for md_path in sorted(target.glob("*.md")):
-        try:
-            text = md_path.read_text(encoding="utf-8")
-        except OSError as e:
-            logger.warning(f"post-index: read failed {md_path.name}: {e}")
-            continue
-
-        # Frontmatter is YAML between two `---` lines at the top.
-        if not text.startswith("---"):
-            continue
-        end = text.find("\n---", 4)
-        if end == -1:
-            logger.warning(f"post-index: malformed frontmatter (no close) {md_path.name}")
-            continue
-        fm_text = text[3:end]
-        try:
-            fm = yaml.safe_load(fm_text) or {}
-        except yaml.YAMLError as e:
-            logger.warning(f"post-index: yaml parse failed {md_path.name}: {e}")
-            continue
-        if not isinstance(fm, dict):
-            continue
-
-        if fm.get("status") != "published":
-            continue
-        total += 1
-
-        date_val = fm.get("date")
-        if date_val is None:
-            continue
-        # Normalize to ISO string for comparison (string compare is fine for ISO-8601).
-        date_str = str(date_val)
-        if max_date is None or date_str > max_date:
-            max_date = date_str
-
-    result["mumega_posts_total"] = total
-    result["mumega_posts_last_publish_ts"] = max_date
-    return result
-
-
 def run_health_checks() -> dict:
     health = {
         "mirror": check_mirror(),
         "redis": check_redis(),
         "squad": check_squad_service(),
-        "openclaw": check_openclaw(),
         "agents": {},
     }
-    # LOCK-S027-C-1.1 — post indexing metrics (correctness-only, fail-safe).
-    health.update(index_mumega_posts())
     agents = get_registered_agents()
     for agent_id, config in agents.items():
         if config.get("type") == "tmux":
@@ -827,75 +710,12 @@ def check_skill_match(agent_id: str, task: dict) -> bool:
     task_agent = task.get("agent", "")
 
     # Explicit assignment
-    if task_agent and task_agent != "athena":
+    if task_agent and task_agent != DEFAULT_COORDINATOR_AGENT:
         return task_agent == agent_id
 
     # Unassigned — check skill overlap
     text = (task.get("title", "") + " " + task.get("description", "")).lower()
     return any(skill in text for skill in agent_skills) or not task_agent
-
-
-def check_openclaw_agent_responsiveness() -> dict:
-    agents = get_registered_agents()
-    openclaw_agents = [agent_id for agent_id, config in agents.items() if config.get("type") == "openclaw"]
-    threshold_ms = OPENCLAW_UNRESPONSIVE_MINUTES * 60 * 1000
-    details: dict[str, dict] = {}
-    unresponsive: list[dict] = []
-
-    for agent_id in openclaw_agents:
-        pending_tasks = get_pending_tasks_for_agent(agent_id)
-        try:
-            result = subprocess.run(
-                ["openclaw", "sessions", "--agent", agent_id, "--json"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if result.returncode != 0:
-                error = result.stderr.strip() or result.stdout.strip() or "openclaw sessions failed"
-                if "Unknown agent id" in error and not pending_tasks:
-                    details[agent_id] = {"status": "idle", "reason": "cold openclaw agent not configured"}
-                    continue
-                raise RuntimeError(error)
-            payload = json.loads(result.stdout or "{}")
-            sessions = payload.get("sessions", []) if isinstance(payload, dict) else []
-            latest = min(
-                sessions,
-                key=lambda s: int(s.get("ageMs") or 10**18),
-            ) if sessions else None
-            if not latest:
-                details[agent_id] = {"status": "idle" if not pending_tasks else "down", "reason": "no openclaw sessions"}
-                if pending_tasks:
-                    unresponsive.append({
-                        "agent": agent_id,
-                        "reason": "no openclaw sessions",
-                        "pending_tasks": [task.get("id") for task in pending_tasks[:5]],
-                    })
-                continue
-            age_ms = int(latest.get("ageMs") or 0)
-            details[agent_id] = {
-                "status": "ok" if age_ms <= threshold_ms or not pending_tasks else "stale",
-                "age_ms": age_ms,
-                "session_id": latest.get("sessionId"),
-                "pending_tasks": [task.get("id") for task in pending_tasks[:5]],
-            }
-            if pending_tasks and age_ms > threshold_ms:
-                unresponsive.append({
-                    "agent": agent_id,
-                    "reason": f"no heartbeat for {age_ms // 60000}m",
-                    "session_id": latest.get("sessionId"),
-                    "pending_tasks": [task.get("id") for task in pending_tasks[:5]],
-                })
-        except Exception as e:
-            details[agent_id] = {"status": "unknown", "error": str(e), "pending_tasks": [task.get("id") for task in pending_tasks[:5]]}
-            if pending_tasks:
-                unresponsive.append({"agent": agent_id, "reason": str(e), "pending_tasks": [task.get("id") for task in pending_tasks[:5]]})
-
-    return {
-        "status": "ok" if not unresponsive else "degraded",
-        "agents": details,
-        "unresponsive": unresponsive,
-    }
 
 
 # ── Wire 6: Conductance Network (FRC 531) ─────────────────────────────────────
@@ -1158,7 +978,7 @@ def run_cycle(cycle_num: int):
     squad_ok = health["squad"]["status"] == "ok"
     logger.info(
         f"Health — mirror:{health['mirror']['status']} redis:{health['redis']['status']} "
-        f"squad:{health['squad']['status']} openclaw:{health['openclaw']['status']}"
+        f"squad:{health['squad']['status']}"
     )
 
     # 2. Agent presence
@@ -1174,7 +994,7 @@ def run_cycle(cycle_num: int):
     issues: list[str] = []
     healed_services: set[str] = set()
 
-    for service_name in ("mirror", "redis", "squad", "openclaw"):
+    for service_name in ("mirror", "redis", "squad"):
         service_health = health.get(service_name, {})
         if service_health.get("status") != "ok":
             detail = service_health.get("error") or service_health.get("systemd") or service_health.get("code") or "unhealthy"
@@ -1184,7 +1004,7 @@ def run_cycle(cycle_num: int):
                 issues.append(f"{service_name} was down ({detail}) — self-healed")
                 healed_services.add(service_name)
             else:
-                logger.error(f"Self-heal failed: {service_name}, escalated to athena")
+                logger.error(f"Self-heal failed: {service_name}, escalated to coordinator")
                 issues.append(f"{service_name} down ({detail}) — escalated")
 
     # Update health flags if services were healed
@@ -1199,15 +1019,7 @@ def run_cycle(cycle_num: int):
             + ", ".join(f"{task['id'][:8]} {task['reason']}" for task in stale_tasks[:3])
         )
 
-    # 5. OpenClaw agent responsiveness
-    openclaw_agents = check_openclaw_agent_responsiveness()
-    if openclaw_agents.get("unresponsive"):
-        issues.append(
-            f"{len(openclaw_agents['unresponsive'])} unresponsive OpenClaw agents: "
-            + ", ".join(item["agent"] for item in openclaw_agents["unresponsive"][:5])
-        )
-
-    # 6. Alert once if anything looks wrong
+    # 5. Alert once if anything looks wrong
     if issues:
         alert_discord("; ".join(issues))
 
@@ -1215,7 +1027,7 @@ def run_cycle(cycle_num: int):
         logger.warning("Mirror API down — skipping task dispatch")
         return
 
-    # 7. Task dispatch
+    # 6. Task dispatch
     dispatched = run_dispatch_cycle()
     if dispatched:
         logger.info(f"Dispatched {dispatched} tasks this cycle")

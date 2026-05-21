@@ -243,7 +243,7 @@ def test_agents_returns_cards(
     system_token: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """read_all_cards is called with the scoped project and serialized to JSON."""
+    """RegistryClient.list_cards is called with the scoped project and serialized to JSON."""
     from sos.contracts.agent_card import AgentCard
 
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -260,8 +260,9 @@ def test_agents_returns_cards(
 
     captured: dict[str, Any] = {}
 
-    def fake_read_all_cards(project: str | None = None):
+    def fake_list_agent_cards(project: str | None = None, authorization: str | None = None):
         captured["project"] = project
+        captured["authorization"] = authorization
         return [card]
 
     monkeypatch.setattr(
@@ -270,8 +271,8 @@ def test_agents_returns_cards(
         raising=True,
     )
     monkeypatch.setattr(
-        "sos.services.dashboard.operator_api.read_all_cards",
-        fake_read_all_cards,
+        "sos.services.dashboard.operator_api._list_agent_cards",
+        fake_list_agent_cards,
         raising=True,
     )
 
@@ -286,6 +287,7 @@ def test_agents_returns_cards(
     assert len(body["agents"]) == 1
     assert body["agents"][0]["name"] == "demo"
     assert captured["project"] == "viamar"
+    assert captured["authorization"] == f"Bearer {system_token}"
 
 
 # ---------------------------------------------------------------------------

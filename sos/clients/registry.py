@@ -19,6 +19,7 @@ from sos.clients.base import (
     BaseHTTPClient,
     SOSClientError,
 )
+from sos.contracts.agent_card import AgentCard
 from sos.kernel.identity import (
     AgentDNA,
     AgentEconomics,
@@ -42,6 +43,15 @@ def _resolve_token(token: Optional[str]) -> Optional[str]:
 
 def _auth_headers(token: Optional[str]) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _bearer_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value:
+        return value
+    return authorization
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +134,10 @@ def _deserialize_agent(data: Dict[str, Any]) -> AgentIdentity:
     return ident
 
 
+def _deserialize_card(data: Dict[str, Any]) -> AgentCard:
+    return AgentCard(**data)
+
+
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
@@ -191,6 +205,49 @@ class AsyncRegistryClient(AsyncBaseHTTPClient):
             return None
         try:
             return _deserialize_agent(body)
+        except Exception:
+            return None
+
+    async def list_cards(self, project: Optional[str] = None) -> List[AgentCard]:
+        """Return runtime AgentCards visible to this token."""
+        resp = await self._request(
+            "GET",
+            "/agents/cards",
+            headers=_auth_headers(self._token),
+            params={"project": project} if project is not None else None,
+        )
+        body = resp.json()
+        raw_list = body.get("cards", []) if isinstance(body, dict) else []
+        cards: List[AgentCard] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cards.append(_deserialize_card(item))
+            except Exception:
+                continue
+        return cards
+
+    async def get_card(
+        self, agent_name: str, project: Optional[str] = None
+    ) -> Optional[AgentCard]:
+        """Return one runtime AgentCard or ``None`` if absent."""
+        try:
+            resp = await self._request(
+                "GET",
+                f"/agents/cards/{agent_name}",
+                headers=_auth_headers(self._token),
+                params={"project": project} if project is not None else None,
+            )
+        except SOSClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        body = resp.json()
+        if not isinstance(body, dict):
+            return None
+        try:
+            return _deserialize_card(body)
         except Exception:
             return None
 
@@ -335,5 +392,46 @@ class RegistryClient(BaseHTTPClient):
         except Exception:
             return None
 
+    def list_cards(self, project: Optional[str] = None) -> List[AgentCard]:
+        """Return runtime AgentCards visible to this token."""
+        resp = self._request(
+            "GET",
+            "/agents/cards",
+            headers=_auth_headers(self._token),
+            params={"project": project} if project is not None else None,
+        )
+        body = resp.json()
+        raw_list = body.get("cards", []) if isinstance(body, dict) else []
+        cards: List[AgentCard] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cards.append(_deserialize_card(item))
+            except Exception:
+                continue
+        return cards
 
-__all__ = ["AsyncRegistryClient", "RegistryClient"]
+    def get_card(self, agent_name: str, project: Optional[str] = None) -> Optional[AgentCard]:
+        """Return one runtime AgentCard or ``None`` if absent."""
+        try:
+            resp = self._request(
+                "GET",
+                f"/agents/cards/{agent_name}",
+                headers=_auth_headers(self._token),
+                params={"project": project} if project is not None else None,
+            )
+        except SOSClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        body = resp.json()
+        if not isinstance(body, dict):
+            return None
+        try:
+            return _deserialize_card(body)
+        except Exception:
+            return None
+
+
+__all__ = ["AsyncRegistryClient", "RegistryClient", "_bearer_token"]

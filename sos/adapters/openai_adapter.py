@@ -3,9 +3,10 @@ OpenAI adapter — wraps the OpenAI SDK.
 Tracks token usage and reports cost per call.
 """
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from openai import AsyncOpenAI, APIError
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 from sos.adapters.base import AgentAdapter, ExecutionContext, ExecutionResult, UsageInfo
 from sos.adapters.pricing import PricingEntry, PricingTable, ensure_entry
@@ -66,6 +67,8 @@ class OpenAIAdapter(AgentAdapter):
         if self._client is None:
             if not self._api_key:
                 raise RuntimeError("OPENAI_API_KEY is not set")
+            from openai import AsyncOpenAI
+
             self._client = AsyncOpenAI(api_key=self._api_key)
         return self._client
 
@@ -100,14 +103,6 @@ class OpenAIAdapter(AgentAdapter):
 
         try:
             response = await client.chat.completions.create(**kwargs)
-        except APIError as exc:
-            log.error("OpenAI API error", agent=ctx.agent_id, model=model, error=str(exc))
-            return ExecutionResult(
-                text="",
-                usage=UsageInfo(model=model, provider=self.provider),
-                success=False,
-                error=str(exc),
-            )
         except Exception as exc:
             log.error("OpenAI unexpected error", agent=ctx.agent_id, model=model, error=str(exc))
             return ExecutionResult(

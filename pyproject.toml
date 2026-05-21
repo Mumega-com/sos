@@ -24,7 +24,6 @@ classifiers = [
 
 dependencies = [
     "alembic>=1.13",
-    "asyncpg>=0.29",
     "fastapi>=0.100",
     "httpx>=0.24",
     "pydantic>=2.0",
@@ -91,8 +90,6 @@ dev = [
     "mypy>=1.0",
     "import-linter>=2.0",
     "pre-commit>=3.0",
-    "google-genai>=1.0.0",
-    "openai>=1.0.0",
     "scipy>=1.10",
     # Runtime deps pulled in by contract + service tests. Declared
     # under [dev] (not top-level) because they're only used by tests
@@ -100,15 +97,17 @@ dev = [
     # need them. Without these, a fresh `.venv` can't run pytest.
     "alembic>=1.13",
     "bcrypt>=4.0",
-    "psycopg2-binary>=2.9",
-    "pyotp>=2.9",
-    "webauthn>=2.0",
+    "authlib>=1.0.0",
+    "hvac>=2.0.0",
     "jsonschema>=4.0",
+    "psycopg2-binary>=2.9.0",
+    "pyotp>=2.9.0",
+    "webauthn>=2.7.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Mumega-com/sos"
-Documentation = "https://github.com/Mumega-com/sos/tree/main/docs"
+Homepage = "https://mumega.com"
+Documentation = "https://docs.mumega.com"
 Repository = "https://github.com/Mumega-com/sos"
 Issues = "https://github.com/Mumega-com/sos/issues"
 
@@ -128,6 +127,18 @@ mumega-autonomy = "sos.services.autonomy.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sos*"]
+exclude = [
+    # Mumega-hosted product/private adapters. Public SOS keeps generic
+    # contracts and plugin boundaries; these modules move to private overlays
+    # or optional packages before the stable OSS release.
+    "sos.services.billing*",
+    "sos.services.integrations*",
+    "sos.services.saas*",
+    "sos.services.ghl*",
+    "sos.services.etsy*",
+    "sos.services.gtm*",
+    "sos.squads.trop*",
+]
 
 [tool.setuptools.package-data]
 sos = ["py.typed"]
@@ -143,9 +154,17 @@ select = ["E", "F", "I", "W"]
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "sos/tests"]
+markers = [
+    "integration: live-service integration tests — requires Redis + Mirror + bus consumer (opt-in only)",
+]
 
 [tool.sos.public_release]
-version_policy = "Keep pyproject.toml, sos.__version__, sos.cli.__version__, CLI output, and CHANGELOG.md synchronized before tagging a public release."
+version_policy = "Keep public cleanup under [Unreleased] until the fresh public clone, boundary, security, and release passes complete. Then bump pyproject.toml, sos.__version__, and CLI version together and tag the release."
 forbidden_paths = [
     ".claude",
     ".codex",
@@ -181,14 +200,6 @@ forbidden_paths = [
     "tests/services/etsy",
     "tests/services/gtm",
 ]
-warn_unused_ignores = true
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests", "sos/tests"]
-markers = [
-    "integration: live-service integration tests — requires Redis + Mirror + bus consumer (opt-in only)",
-]
 
 [tool.importlinter]
 root_packages = ["sos", "tests"]
@@ -204,11 +215,22 @@ name = "R6 - contract tests don't import services"
 type = "forbidden"
 source_modules = ["tests.contracts"]
 forbidden_modules = ["sos.services"]
+unmatched_ignore_imports_alerting = "none"
+ignore_imports = [
+  # S083-A: pre-existing internal-contract fixtures still exercise registry
+  # and intake implementations directly. Track for later contract-test cleanup;
+  # keep R6 active for new service imports.
+  "tests.contracts.test_agent_card -> sos.contracts.agent_card",
+  "tests.contracts.test_matchmaking -> sos.contracts.matchmaking",
+  "tests.contracts.test_matchmaking -> sos.services.intake.frc",
+  "tests.contracts.test_mesh_enroll_signed -> sos.contracts.agent_card",
+  "tests.contracts.test_mesh_enroll_signed -> sos.services.registry.app",
+]
 
 [[tool.importlinter.contracts]]
 name = "R2 - clients/adapters/cli/agents don't import service internals"
 type = "forbidden"
-source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.mcp"]
+source_modules = ["sos.clients", "sos.adapters", "sos.cli", "sos.agents", "sos.mcp"]
 forbidden_modules = ["sos.services"]
 # Only flag direct imports from the listed sources. Indirect chains
 # through kernel/* are the kernel's problem (kernel must not reach into
@@ -264,7 +286,6 @@ modules = [
   "sos.services.analytics",
   "sos.services.auth_gateway",
   "sos.services.autonomy",
-  "sos.services.billing",
   "sos.services.brain",
   "sos.services.bus",
   "sos.services.content",
@@ -275,7 +296,6 @@ modules = [
   "sos.services.gateway",
   "sos.services.health",
   "sos.services.identity",
-  "sos.services.integrations",
   "sos.services.journeys",
   "sos.services.memory",
   "sos.services.operations",
@@ -304,16 +324,14 @@ ignore_imports = [
   # from sos.services.health.calcifer to sos.kernel.conductance; feedback
   # and journeys now import from kernel. calcifer re-exports for BC.
   # P1-10 theme: services.bus.discovery is shared infra pending kernel move
+  "sos.services.brain.service -> sos.services.bus.redis_bus",
+  "sos.services.health.bus_consumer -> sos.services.bus.redis_bus",
   "sos.services.engine.** -> sos.services.bus.**",
   "sos.services.memory.** -> sos.services.bus.**",
   "sos.services.integrations.** -> sos.services.bus.**",
   "sos.services.registry.** -> sos.services.bus.**",
   "sos.services.operations.** -> sos.services.bus.**",
   "sos.services.journeys.** -> sos.services.bus.**",
-  # v0.8.1 S5 — dashboard operator API reads AgentCards directly via
-  # sos.services.registry.read_all_cards because RegistryClient has no
-  # list_cards helper yet. Removed once the client grows it (tracked).
-  "sos.services.dashboard.operator_api -> sos.services.registry",
   # v0.9.1 W4 — dashboard DLQ read route imports the shared DLQ schema
   # + read helpers from sos.services.bus.dlq so writer (retry worker)
   # and reader (dashboard) never drift on field names. The bus-shared-
@@ -335,9 +353,7 @@ forbidden_modules = [
   "sos.services.registry",
   "sos.services.bus",
   "sos.services.squad",
-  "sos.services.billing",
   "sos.services.identity",
-  "sos.services.integrations",
   "sos.services.journeys",
   "sos.services.memory",
   "sos.services.analytics",

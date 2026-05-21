@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from sos.clients.registry import RegistryClient, _bearer_token
 from sos.kernel.auth import verify_bearer
-from sos.services.registry import read_all_cards
 
 from ..auth import _is_admin, _tenant_from_cookie
 from ..config import COOKIE_NAME
@@ -47,6 +47,14 @@ def _build_squads(
             for slug in card.squads:
                 squads.setdefault(slug, []).append(card)
     return squads, unsquadded
+
+
+def _list_agent_cards(project: str | None = None, token: str | None = None):  # type: ignore[no-untyped-def]
+    client = RegistryClient(token=token)
+    try:
+        return client.list_cards(project=project)
+    finally:
+        client.close()
 
 
 def _stale_badge(stale: bool) -> str:
@@ -113,7 +121,7 @@ async def sos_mesh(request: Request) -> Response:
 
     cards: list = []
     try:
-        cards = read_all_cards(project=None)
+        cards = _list_agent_cards(project=None, token=tenant.get("token"))
     except Exception:
         logger.debug("Failed to load cards for mesh tab", exc_info=True)
 
@@ -149,7 +157,7 @@ async def sos_mesh_api(
 
     cards: list = []
     try:
-        cards = read_all_cards(project=None)
+        cards = _list_agent_cards(project=None, token=_bearer_token(authorization))
     except Exception:
         logger.debug("Failed to load cards for mesh api", exc_info=True)
 

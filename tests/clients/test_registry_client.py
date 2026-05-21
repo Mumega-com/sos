@@ -25,7 +25,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from sos.clients.registry import AsyncRegistryClient
+from sos.clients.registry import AsyncRegistryClient, RegistryClient
+from sos.contracts.agent_card import AgentCard
 from sos.kernel.identity import AgentIdentity
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ from sos.kernel.identity import AgentIdentity
 
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
+_REAL_CLIENT = httpx.Client
 
 
 def _mock_async_client_factory(
@@ -52,11 +54,37 @@ def _mock_async_client_factory(
     return _factory
 
 
+def _mock_client_factory(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> Callable[..., httpx.Client]:
+    transport = httpx.MockTransport(handler)
+
+    def _factory(*args, **kwargs) -> httpx.Client:
+        kwargs["transport"] = transport
+        return _REAL_CLIENT(*args, **kwargs)
+
+    return _factory
+
+
 def _serialized_agent(name: str, capabilities: list[str] | None = None) -> dict:
     """Produce a dict shaped like the registry service's JSON response."""
     ident = AgentIdentity(name=name, model="gemini")
     ident.capabilities = list(capabilities or [])
     return ident.to_dict()
+
+
+def _serialized_card(name: str, project: str | None = None) -> dict:
+    now = AgentCard.now_iso()
+    return AgentCard(
+        identity_id=f"agent:{name}",
+        name=name,
+        role="executor",
+        tool="sdk",
+        type="service",
+        project=project,
+        registered_at=now,
+        last_seen=now,
+    ).model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +119,55 @@ async def test_list_agents_returns_agent_identities() -> None:
     assert all(isinstance(a, AgentIdentity) for a in agents)
     names = {a.name for a in agents}
     assert names == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
+async def test_list_cards_returns_agent_cards() -> None:
+    body = {"cards": [_serialized_card("alpha", project="acme")], "count": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/agents/cards"
+        assert request.url.params["project"] == "acme"
+        assert request.headers.get("authorization") == "Bearer test-token"
+        return httpx.Response(200, json=body)
+
+    with patch(
+        "sos.clients.base.httpx.AsyncClient",
+        _mock_async_client_factory(handler),
+    ):
+        client = AsyncRegistryClient(base_url="http://fake-registry:6067", token="test-token")
+        cards = await client.list_cards(project="acme")
+
+    assert len(cards) == 1
+    assert isinstance(cards[0], AgentCard)
+    assert cards[0].name == "alpha"
+    assert cards[0].project == "acme"
+
+
+def test_sync_list_cards_returns_agent_cards() -> None:
+    body = {"cards": [_serialized_card("alpha", project="acme")], "count": 1}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/agents/cards"
+        assert request.url.params["project"] == "acme"
+        assert request.headers.get("authorization") == "Bearer test-token"
+        return httpx.Response(200, json=body)
+
+    with patch(
+        "sos.clients.base.httpx.Client",
+        _mock_client_factory(handler),
+    ):
+        client = RegistryClient(base_url="http://fake-registry:6067", token="test-token")
+        try:
+            cards = client.list_cards(project="acme")
+        finally:
+            client.close()
+
+    assert len(cards) == 1
+    assert isinstance(cards[0], AgentCard)
+    assert cards[0].name == "alpha"
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +299,8 @@ async def test_enroll_mesh_posts_expected_body_and_returns_response() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/mesh/challenge":
+            return httpx.Response(200, json={"nonce": "nonce-1"})
         assert request.method == "POST"
         assert request.url.path == "/mesh/enroll"
         assert request.headers.get("authorization") == "Bearer mesh-token"
@@ -264,6 +343,8 @@ async def test_enroll_mesh_includes_optional_fields_when_set() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/mesh/challenge":
+            return httpx.Response(200, json={"nonce": "nonce-1"})
         captured["body"] = json.loads(request.content)
         return httpx.Response(
             200,

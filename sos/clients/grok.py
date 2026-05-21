@@ -2,7 +2,6 @@
 import os
 import logging
 from typing import List, Dict, Any, Optional, AsyncIterator
-from openai import AsyncOpenAI
 import uuid
 
 logger = logging.getLogger("sos.client_grok")
@@ -18,10 +17,16 @@ class GrokClient:
             logger.warning("XAI_API_KEY not found. Grok will be unavailable.")
             self.client = None
         else:
-            self.client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url="https://api.x.ai/v1"
-            )
+            try:
+                from openai import AsyncOpenAI
+
+                self.client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url="https://api.x.ai/v1"
+                )
+            except ImportError:
+                logger.warning("openai package not installed. Grok will be unavailable.")
+                self.client = None
         
         # Per-user conversation IDs for server-side cache isolation
         self._user_conv_ids: Dict[str, str] = {}

@@ -1,10 +1,12 @@
+from __future__ import annotations
 
 import logging
 import hashlib
-from typing import Optional, List, Dict, Any
+from typing import TYPE_CHECKING, Optional, List, Dict, Any
 from pathlib import Path
-from google import genai
-from google.genai import types
+
+if TYPE_CHECKING:
+    from google import genai
 
 logger = logging.getLogger("sos.gemini_cache")
 
@@ -49,6 +51,8 @@ class GeminiCacheManager:
             return self._user_caches[cache_key]
 
         try:
+            from google.genai import types
+
             # Prepare contents
             contents = []
             

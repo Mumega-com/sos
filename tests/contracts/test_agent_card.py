@@ -191,11 +191,11 @@ def test_human_type_accepted():
 
 
 def test_resolve_identity_stub_raises():
-    """resolve_identity() must raise NotImplementedError until registry is wired."""
+    """resolve_identity() is not service-backed from the contract model."""
     import pytest
 
     card = AgentCard(**_valid_card_kwargs())
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(LookupError):
         card.resolve_identity()
 
 

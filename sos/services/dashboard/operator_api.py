@@ -24,10 +24,7 @@ R1 contract):
 - **Summary counts** come from direct Redis SCANs over the objectives
   keyspace (``sos:objectives:{project}:*``). This avoids importing
   ``sos.services.objectives`` at all.
-- **Agent cards** come from ``sos.services.registry.read_all_cards``.
-  ``RegistryClient`` doesn't expose card listing yet, so this is an
-  in-process import with an R1 ignore; a later sprint adds
-  ``list_cards`` to the HTTP client and removes the ignore.
+- **Agent cards** come from ``sos.clients.registry.RegistryClient`` over HTTP.
 """
 from __future__ import annotations
 
@@ -45,7 +42,7 @@ from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.health import health_response
 from sos.kernel.kill_switch import kill_agent
 from sos.kernel.policy.gate import can_execute
-from sos.services.registry import read_all_cards  # noqa: E402  — R1 ignore; see pyproject.toml
+from sos.clients.registry import RegistryClient, _bearer_token
 
 log = logging.getLogger("dashboard.operator")
 
@@ -138,6 +135,14 @@ def _emit_audit(event_type: str, payload: Dict[str, Any]) -> None:
         r.xadd(_AUDIT_STREAM, envelope, maxlen=5000)
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("dashboard audit emit failed: %s", exc)
+
+
+def _list_agent_cards(project: str | None, authorization: str | None):  # type: ignore[no-untyped-def]
+    client = RegistryClient(token=_bearer_token(authorization))
+    try:
+        return client.list_cards(project=project)
+    finally:
+        client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +278,7 @@ async def tenant_agents(
     entry = _verify_bearer(authorization)
     _resolve_project_scope(entry, project)
 
-    cards = read_all_cards(project=project)
+    cards = _list_agent_cards(project=project, authorization=authorization)
     items = [card.model_dump() for card in cards]
     return {"project": project, "agents": items, "count": len(items)}
 
