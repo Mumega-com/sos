@@ -534,7 +534,7 @@ def run_health_checks() -> dict:
             alive = check_tmux_session(session)
             health["agents"][agent_id] = {"tmux": session, "alive": alive}
         else:
-            health["agents"][agent_id] = {"type": config.get("type", "openclaw")}
+            health["agents"][agent_id] = {"type": config.get("type", "remote")}
     return health
 
 
@@ -621,8 +621,8 @@ def get_pending_tasks_for_agent(agent_id: str) -> list[dict]:
 
 def is_agent_idle(agent_id: str) -> bool:
     config = get_registered_agents().get(agent_id, {})
-    if config.get("type") == "openclaw":
-        return True  # OpenClaw handles its own queue
+    if config.get("type") == "bus":
+        return True  # Bus agents handle their own queue via Redis
 
     session = config.get("tmux_session", agent_id)
     if not check_tmux_session(session):
@@ -653,8 +653,8 @@ def send_task_to_agent(agent_id: str, task: dict) -> bool:
         f"When done, report what you did. Do not ask for clarification — execute."
     )
 
-    if config.get("type") == "openclaw":
-        # Send via Redis to OpenClaw agent
+    if config.get("type") == "bus":
+        # Send via Redis to bus agent
         r = get_redis()
         if r:
             r.xadd(
@@ -983,7 +983,7 @@ def run_cycle(cycle_num: int):
 
     # 2. Agent presence
     for agent_id, agent_health in health["agents"].items():
-        if agent_health.get("type") != "openclaw":
+        if agent_health.get("type") not in ("bus", "remote"):
             alive = agent_health.get("alive", False)
             if not alive:
                 logger.info(f"Agent {agent_id}: tmux session not running")

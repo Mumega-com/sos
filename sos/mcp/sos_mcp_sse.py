@@ -3,7 +3,7 @@
 SOS MCP SSE Server — Persistent HTTP-based MCP transport for Claude Code.
 
 Replaces the stdio MCP that disconnects mid-session.
-All agents can share this server.
+All agents (kasra, mumega, codex) share this server.
 
 Endpoints:
   GET  /sse       — Claude Code connects here (SSE stream)
@@ -51,7 +51,7 @@ from sos.bus import envelope as bus_envelope
 from sos.clients.squad import SquadClient
 from sos.contracts.messages import SendMessage
 from sos.kernel.bus import enforce_scope
-from sos.mcp.tool_policy import (
+from sos.mcp.customer_tools import (
     BLOCKED_TOOLS,
     CUSTOMER_TOOLS,
     IDENTITY_TOOLS,
@@ -62,7 +62,6 @@ from sos.mcp.tool_policy import (
     is_tool_allowed_for_role,
     is_tool_allowed_for_tier,
 )
-from sos.mcp.transport import jsonrpc_error, jsonrpc_ok
 from sos.kernel.auth import verify_bearer as _auth_verify_bearer
 from sos.kernel.audit_chain import AuditChainEvent, emit_audit as _emit_audit
 try:
@@ -76,28 +75,17 @@ except ModuleNotFoundError:
 
 # ---------------------------------------------------------------------------
 # Mirror kernel — direct import (no HTTP to :8844)
-# Operators can set SOS_MIRROR_KERNEL_ROOT when Mirror is checked out beside SOS
-# instead of installed as a package.
+# PYTHONPATH=/home/mumega is set in sos-mcp-sse.service so this import works.
 # psycopg2 is sync — all calls must be wrapped in run_in_executor.
 # ---------------------------------------------------------------------------
 import sys as _sys
 import concurrent.futures as _futures
 
-if os.environ.get("SOS_MIRROR_KERNEL_ROOT"):
-    _sys.path.insert(0, os.environ["SOS_MIRROR_KERNEL_ROOT"])
-try:
-    from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
-    from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
-except ModuleNotFoundError as _e:
-    _mirror_import_error = _e
-    _get_mirror_db = None  # type: ignore[assignment]
-    _get_mirror_embedding = None  # type: ignore[assignment]
-else:
-    _mirror_import_error = None
+_sys.path.insert(0, "/home/mumega")
+from mirror.kernel.db import get_db as _get_mirror_db  # noqa: E402
+from mirror.kernel.embeddings import get_embedding as _get_mirror_embedding  # noqa: E402
 
 try:
-    if _get_mirror_db is None:
-        raise RuntimeError(f"Mirror kernel unavailable: {_mirror_import_error}")
     _mirror_db = _get_mirror_db()  # singleton connection pool
 except Exception as _e:
     import logging as _logging
@@ -117,7 +105,7 @@ _squad_client = SquadClient(token=SQUAD_SYSTEM_TOKEN)
 _saas_client = SaasClient()
 _async_saas_client = AsyncSaasClient()
 _async_billing_client = AsyncBillingClient()
-_async_integrations_client = AsyncIntegrationsClient()
+_async_integrations_client = AsyncIntegrationsClient(token=os.environ.get("SOS_SYSTEM_TOKEN"))
 
 
 async def _audit_tool_call_async_safe(
@@ -175,22 +163,6 @@ logging.basicConfig(
     format="%(asctime)s [sos-mcp-sse] %(levelname)s %(message)s",
 )
 log = logging.getLogger("sos_mcp_sse")
-
-
-async def _emit_audit_best_effort(event: AuditChainEvent) -> None:
-    try:
-        await _emit_audit(event)
-    except ModuleNotFoundError as exc:
-        if exc.name == "asyncpg":
-            log.warning("audit chain unavailable: install asyncpg/postgres extras to persist audit rows")
-        else:
-            log.warning("audit chain dependency unavailable: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("audit chain emit failed: %s", exc)
-
-
-def _schedule_audit_event(event: AuditChainEvent) -> None:
-    asyncio.create_task(_emit_audit_best_effort(event))
 
 # ---------------------------------------------------------------------------
 # Config
@@ -271,7 +243,12 @@ _sync_redis = _redis_sync_mod.Redis(
 )
 AUDIT_LOG_DIR = Path.home() / ".sos" / "logs"
 MCP_AUDIT_LOG = AUDIT_LOG_DIR / "mcp_audit.jsonl"
-BUS_TOKENS_PATH = Path.home() / "SOS" / "sos" / "bus" / "tokens.json"
+_BUS_TOKENS_CANDIDATES = [
+    Path("/mnt/HC_Volume_104325311/SOS/sos/bus/tokens.json"),
+    Path("/home/mumega/SOS/sos/bus/tokens.json"),
+    Path.home() / "SOS" / "sos" / "bus" / "tokens.json",
+]
+BUS_TOKENS_PATH = next((p for p in _BUS_TOKENS_CANDIDATES if p.exists()), _BUS_TOKENS_CANDIDATES[-1])
 CF_ACCOUNT = os.environ.get("CF_ACCOUNT_ID", "e39eaf94f33092c4efd029d94ae1e9dd")
 CF_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 KV_NAMESPACE = os.environ.get("BUS_KV_NAMESPACE_ID", "05b010acf24f45ee96c2351dfb5a6dab")
@@ -1020,10 +997,10 @@ def _prefix(project: str | None) -> str:
     return f"sos:stream:project:{project}" if project else "sos:stream:global"
 
 
-# S018 Track E — read agent specialist slugs from an operator overlay.
+# S018 Track E — read agent's specialist slugs from mumega.com/agents/<a>/specialists.yml.
 # Best-effort: never raises. Missing or malformed file => empty list.
 _SPECIALISTS_REPO_ROOT = Path(
-    os.getenv("SOS_SPECIALISTS_ROOT", "")
+    os.getenv("MUMEGA_COM_REPO", "/home/mumega/mumega.com")
 )
 
 
@@ -1373,6 +1350,25 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             from dataclasses import replace as _replace
             return _replace(local_bus, token=token)
         # Fallback: construct MCPAuthContext from AuthContext alone.
+        scope = "agent"  # default
+        plan = None
+        role = "admin" if auth_ctx.is_admin else "viewer"
+        try:
+            records = load_tokens(BUS_TOKENS_PATH)
+            for record in records:
+                if not record.get("active", True):
+                    continue
+                sh = str(record.get("token_hash") or "").removeprefix("sha256:")
+                rt = str(record.get("token") or "")
+                rh = hashlib.sha256(rt.encode()).hexdigest() if rt else ""
+                if (sh and sh == token_hash) or (rh and rh == token_hash):
+                    scope = record.get("scope", "agent")
+                    plan = record.get("plan") or None
+                    role = record.get("role") or role
+                    break
+        except Exception:
+            pass
+
         return MCPAuthContext(
             token=token,
             tenant_id=auth_ctx.project,
@@ -1380,7 +1376,9 @@ def _resolve_token_context(token: str) -> MCPAuthContext | None:
             source="bus_tokens",
             tenant_slug=getattr(auth_ctx, "tenant_slug", None) or auth_ctx.project,
             agent_name=auth_ctx.agent or "",
-            role="admin" if auth_ctx.is_admin else "viewer",
+            role=role,
+            scope=scope,
+            plan=plan,
             permissions=_normalize_permissions(getattr(auth_ctx, "scopes", [])),
         )
     # Local compatibility fallback for tests and hot-reload windows where
@@ -2072,51 +2070,49 @@ def get_tools() -> list[dict[str, Any]]:
 # Agent Status Registry (Redis-backed)
 # ---------------------------------------------------------------------------
 
-AGENT_REGISTRY_KEY = os.environ.get("SOS_AGENT_REGISTRY_KEY", "sos:registry:agents")
+KNOWN_AGENTS = {
+    "kasra": {"type": "tmux", "model": "Claude Opus/Sonnet", "role": "Builder"},
+    "loom": {"type": "tmux", "model": "Claude Opus 4.7", "role": "SOS Protocol Custodian — bus, MCP, sessions, tokens, memory scoping, minting authority (v1)"},
+    "mumega": {"type": "tmux", "model": "Claude Opus", "role": "Orchestrator"},
+    "codex": {"type": "tmux", "model": "GPT-5.4", "role": "Infra + Security"},
+    "mumcp": {"type": "tmux", "model": "Claude Sonnet", "role": "MumCP — WordPress + Elementor"},
+    "mumega-web": {"type": "tmux", "model": "Claude Sonnet", "role": "Website"},
+    "athena": {"type": "tmux", "model": "Claude Sonnet", "role": "Architecture Review"},
+    "sol": {"type": "openclaw", "model": "Claude Opus", "role": "Content"},
+    "worker": {"type": "openclaw", "model": "Haiku 4.5", "role": "Task Execution"},
+    "dandan": {"type": "openclaw", "model": "OpenRouter free", "role": "DNU Lead"},
+    "gemma": {"type": "openclaw", "model": "Gemma 4 31B", "role": "Bulk Tasks"},
+    "mizan": {"type": "openclaw", "model": "Haiku", "role": "Business Agent"},
+    "river": {"type": "tmux", "model": "Gemini 3.1 Pro", "role": "Oracle (dormant)"},
+    "cyrus": {"type": "remote", "model": "Claude Code", "role": "Mac Frontend"},
+    "antigravity": {"type": "remote", "model": "Gemini", "role": "Google IDE"},
+}
 
 
 async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
-    """Get status of registered agents from tmux + Redis activity."""
-    try:
-        raw_agents = await r.hgetall(AGENT_REGISTRY_KEY)
-    except Exception:
-        raw_agents = {}
-    if not raw_agents:
-        return []
-
+    """Get status of all known agents from tmux + Redis registry."""
     statuses = []
-    for name, raw_info in sorted(raw_agents.items()):
-        try:
-            info = json.loads(raw_info) if isinstance(raw_info, str) else {}
-        except (TypeError, json.JSONDecodeError):
-            info = {}
-        if not isinstance(info, dict):
-            info = {}
-        agent_type = str(info.get("type") or "remote")
+    for name, info in KNOWN_AGENTS.items():
         status = "unknown"
 
-        if agent_type == "tmux":
-            session_name = str(info.get("tmux_session") or name)
-            idle_patterns = info.get("idle_patterns")
-            if not isinstance(idle_patterns, list) or not idle_patterns:
-                idle_patterns = ["❯", "›", "$ ", "waiting", "you:"]
+        if info["type"] == "tmux":
             # Check tmux session
             try:
                 result = subprocess.run(
-                    ["tmux", "has-session", "-t", session_name],
+                    ["tmux", "has-session", "-t", name],
                     capture_output=True,
                     timeout=3,
                 )
                 if result.returncode == 0:
                     # Check if at prompt (idle) or working (busy)
                     cap = subprocess.run(
-                        ["tmux", "capture-pane", "-t", session_name, "-p"],
+                        ["tmux", "capture-pane", "-t", name, "-p"],
                         capture_output=True,
                         text=True,
                         timeout=3,
                     )
                     last_lines = " ".join(cap.stdout.strip().split("\n")[-3:]).lower()
-                    if any(str(p).lower() in last_lines for p in idle_patterns):
+                    if any(p in last_lines for p in ["❯", "›", "$ ", "waiting", "you:"]):
                         status = "idle"
                     else:
                         status = "busy"
@@ -2148,9 +2144,9 @@ async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
         statuses.append(
             {
                 "agent": name,
-                "type": agent_type,
-                "model": str(info.get("model") or ""),
-                "role": str(info.get("role") or ""),
+                "type": info["type"],
+                "model": info["model"],
+                "role": info["role"],
                 "status": status,
             }
         )
@@ -2159,14 +2155,16 @@ async def _get_agent_statuses(r: aioredis.Redis) -> list[dict[str, Any]]:
 
 def _get_service_statuses_sync() -> list[dict[str, str]]:
     """Check systemd service statuses (sync, runs in executor)."""
-    configured = os.environ.get("SOS_MONITORED_SERVICES", "")
-    services = [s.strip() for s in configured.split(",") if s.strip()] or [
+    services = [
         "sos-mcp-sse",
         "sos-squad",
         "sovereign-loop",
         "calcifer",
         "agent-wake-daemon",
         "bus-bridge",
+        "openclaw-gateway",
+        "kasra-agent-watchdog",
+        "mumcp-agent-watchdog",
     ]
     statuses = []
     for svc in services:
@@ -3100,7 +3098,7 @@ async def _handle_as_agent(
         _clear_as_agent_state(auth, session_id)
         # L-5 — reset audit row (fail-open).
         try:
-            _schedule_audit_event(AuditChainEvent(
+            asyncio.create_task(_emit_audit(AuditChainEvent(
                 stream_id="mcp",
                 actor_id=auth.agent_name or auth.scope or "system",
                 actor_type="agent",
@@ -3114,7 +3112,7 @@ async def _handle_as_agent(
                     "caller_scope": auth.scope or "system",
                     "was_active": was_active,
                 },
-            ))
+            )))
         except Exception as exc:  # noqa: BLE001
             log.warning("as_agent reset audit emit failed: %s", exc)
         return _text(json.dumps({
@@ -3330,7 +3328,7 @@ async def _handle_as_agent(
     # (in-memory state is canonical until next attributed tool call). Substrate
     # callers ALSO emit (Athena clause: higher privilege = MORE traceability).
     try:
-        _schedule_audit_event(AuditChainEvent(
+        asyncio.create_task(_emit_audit(AuditChainEvent(
             stream_id="mcp",
             actor_id=pre_swap_actor,
             actor_type="agent",
@@ -3343,7 +3341,7 @@ async def _handle_as_agent(
                 "session_id": session_id or "",
                 "caller_scope": auth.scope or "system",
             },
-        ))
+        )))
     except Exception as exc:  # noqa: BLE001
         # Fail-open: log + continue. The swap is in effect; only the durable
         # trail is missing for this single call.
@@ -3519,7 +3517,7 @@ async def handle_tool(
     # Read tools (inbox/peers/recall) excluded for volume; all WRITE_TOOLS emitted.
     # Fire-and-forget — never blocks the tool call path.
     if name in MCP_WRITE_TOOLS:
-        _schedule_audit_event(AuditChainEvent(
+        asyncio.create_task(_emit_audit(AuditChainEvent(
             stream_id="mcp",
             actor_id=auth.agent_scope,
             actor_type="agent" if not auth.is_customer else "human",
@@ -3530,7 +3528,7 @@ async def handle_tool(
                 "token_prefix": auth.token[:12] if auth.token else "",
                 "tool": name,
             },
-        ))
+        )))
 
     # Capability gate — restrict dangerous tools for non-system tokens
     SYSTEM_ONLY_TOOLS = {"onboard"}  # customer onboard mode requires system token
@@ -3620,8 +3618,6 @@ async def handle_tool(
                     "and substrate system operators."
                 )
             try:
-                if run_linkedin_connector is None:
-                    return _text("linkedin_connector unavailable: optional skill is not installed")
                 return _json_result(run_linkedin_connector(args))
             except Exception as exc:  # noqa: BLE001
                 return _text(f"linkedin_connector failed: {exc}")
@@ -3629,16 +3625,15 @@ async def handle_tool(
         # --- sprout_tenant ---
         if name == "sprout_tenant":
             try:
-                if SproutTenantEngine is None:
-                    return _text("sprout_tenant unavailable: optional engine is not installed")
                 engine = SproutTenantEngine(use_gemini=bool(args.get("use_gemini", True)))
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: engine.sprout(
-                        str(args["project_path"]),
-                        tenant_slug=args.get("tenant_slug"),
-                        overwrite_existing=bool(args.get("overwrite_existing", False)),
-                    ),
+                _project_path = str(args["project_path"])
+                _tenant_slug = args.get("tenant_slug")
+                _overwrite = bool(args.get("overwrite_existing", False))
+                result = await asyncio.to_thread(
+                    engine.sprout,
+                    _project_path,
+                    tenant_slug=_tenant_slug,
+                    overwrite_existing=_overwrite,
                 )
             except Exception as exc:  # noqa: BLE001
                 return _text(f"sprout_tenant failed: {exc}")
@@ -6510,6 +6505,36 @@ async def onboarding_login(request: Request) -> JSONResponse:
     return JSONResponse(_context_public(auth))
 
 
+@app.post("/heartbeat")
+async def onboarding_heartbeat(request: Request) -> JSONResponse:
+    """Handle agent keep-alive heartbeats for onboarded agent hooks."""
+    token = _request_bearer_token(request)
+    if not token:
+        try:
+            body = await request.json()
+            token = str(body.get("token") or "").strip()
+        except Exception:
+            pass
+    if not token:
+        raise HTTPException(status_code=401, detail="token required")
+    
+    auth = _resolve_token_context(token)
+    if not auth:
+        raise HTTPException(status_code=401, detail="invalid_token")
+    
+    agent = auth.agent_name or "unknown"
+    project = auth.project_scope or "mumega-internal"
+    
+    r = _get_redis()
+    reg_key = f"sos:agent:{agent}:{project}"
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await r.hset(reg_key, "last_seen", now_iso)
+    await r.expire(reg_key, 600)
+    
+    return JSONResponse({"status": "ok"})
+
+
 @app.get("/api/v1/onboarding/graph")
 async def onboarding_graph(request: Request) -> JSONResponse:
     """Return the tenant/node onboarding graph for the authenticated caller."""
@@ -6738,7 +6763,7 @@ async def google_oauth_callback(request: Request) -> Response:
 
     tenant, service = parts[0], parts[1]
 
-    if service not in ("analytics", "search_console", "ads"):
+    if service not in ("analytics", "search_console", "ads", "gdrive", "drive"):
         raise HTTPException(status_code=400, detail=f"unknown service: {service}")
 
     try:
@@ -6929,16 +6954,11 @@ async def get_config(request: Request) -> JSONResponse:
         "openclaw": {"port": 18789},
     }
 
-    # 3. Agents
-    try:
-        r = _get_redis()
-        raw_agents = await r.hgetall(AGENT_REGISTRY_KEY)
-        config["agents"] = {
-            name: json.loads(raw)
-            for name, raw in raw_agents.items()
-        }
-    except Exception:
-        config["agents"] = {}
+    # 3. Agents (from KNOWN_AGENTS)
+    config["agents"] = {
+        name: {"type": info["type"], "model": info["model"], "role": info["role"]}
+        for name, info in KNOWN_AGENTS.items()
+    }
 
     # 4. Bus tokens (count only, not values)
     try:
@@ -7227,8 +7247,6 @@ async def _process_jsonrpc(
             },
         )
     if method == "notifications/initialized":
-        # S111 carry-forward: hosted onboarding behavior remains in the legacy
-        # gateway until the host overlay owns the product-specific routes.
         # B3 — Auto-onboard: push welcome prompt to new tenant SSE queue (non-critical)
         if auth.is_customer and auth.tenant_id and session_id:
             try:
@@ -7376,11 +7394,11 @@ async def _process_jsonrpc(
 
 
 def _jsonrpc_ok(msg_id: Any, result: Any) -> dict[str, Any]:
-    return jsonrpc_ok(msg_id, result)
+    return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
 def _jsonrpc_err(msg_id: Any, message: str) -> dict[str, Any]:
-    return jsonrpc_error(msg_id, message)
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": message}}
 
 
 # ---------------------------------------------------------------------------
