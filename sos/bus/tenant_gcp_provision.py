@@ -142,8 +142,11 @@ def _writeback_d1(tenant_id: str, gcp: dict[str, str]) -> None:
             log.info("D1 write-back ok: tenant=%s status=%s", tenant_id, resp.status)
     except urllib.error.HTTPError as e:
         log.error("D1 write-back failed: tenant=%s status=%s", tenant_id, e.code)
+        # P1-3 FIX: alert bus on D1 write-back failure too, not just provisioning failure
+        _alert_bus(tenant_id, "unknown-slug", Exception(f"D1 write-back HTTP {e.code}"))
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         log.error("D1 write-back unreachable: tenant=%s error=%s", tenant_id, e)
+        _alert_bus(tenant_id, "unknown-slug", e)
 
 
 # ── Core provisioning ─────────────────────────────────────────────────────────
@@ -174,17 +177,13 @@ def provision_tenant_gcp(
          f"--display-name=Hermes {slug}", f"--project={GCP_PROJECT}"],
         ignore="already exists",
     )
-    # P0-1 FIX: do NOT grant project-level roles/secretmanager.secretAccessor.
-    # Secret access is bound per-secret in _upsert_secret() so each SA can only
-    # read its own 3 secrets. Project-level binding would let any tenant SA read
-    # every other tenant's secrets — cross-tenant secret read vulnerability.
-    for role in [
-        "roles/run.invoker",
-        "roles/aiplatform.user",
-        "roles/datastore.user",
-    ]:
-        _run(["gcloud", "projects", "add-iam-policy-binding", GCP_PROJECT,
-              f"--member=serviceAccount:{sa_email}", f"--role={role}"])
+    # P0-1 / P1-2 FIX: tenant SA gets NO project-level IAM roles.
+    # - roles/secretmanager.secretAccessor: bound per-secret in _upsert_secret()
+    # - roles/run.invoker: Pub/Sub push SA (not tenant SA) needs this; granted below
+    # - roles/aiplatform.user: not needed — model calls go via OpenRouter, not Vertex AI
+    # - roles/datastore.user: not needed — Firestore memory not wired yet
+    # Result: tenant SA has zero project-level permissions, cannot access any other tenant's resources.
+    pass  # no project-level bindings
 
     # ── 2. Secrets ────────────────────────────────────────────────────────────
     _upsert_secret(f"tenant-{slug}-bus-token",  bus_token,      sa_email)
