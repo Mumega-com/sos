@@ -82,6 +82,35 @@ def _upsert_secret(name: str, value: str, sa_email: str) -> None:
           f"--project={GCP_PROJECT}"])
 
 
+# ── Bus alert on failure ──────────────────────────────────────────────────────
+
+def _alert_bus(tenant_id: str, slug: str, error: Exception) -> None:
+    """P0-3: Emit a bus alert when GCP provisioning fails so it is not silent."""
+    bus_url = os.environ.get("SOS_BUS_INTERNAL_URL", "http://localhost:6380")
+    bridge_token = os.environ.get("SOS_BRIDGE_TOKEN", "")
+    if not bridge_token:
+        log.warning("SOS_BRIDGE_TOKEN not set — cannot emit GCP failure alert to bus")
+        return
+    payload = json.dumps({
+        "to": "kasra",
+        "text": (
+            f"[GCP-PROVISION-FAIL] tenant={slug} id={tenant_id} "
+            f"error={type(error).__name__}: {error}"
+        ),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{bus_url}/api/messages/send",
+        data=payload,
+        headers={"Authorization": f"Bearer {bridge_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception as alert_err:
+        log.error("failed to emit bus alert: %s", alert_err)
+
+
 # ── D1 write-back ─────────────────────────────────────────────────────────────
 
 def _writeback_d1(tenant_id: str, gcp: dict[str, str]) -> None:
@@ -100,7 +129,7 @@ def _writeback_d1(tenant_id: str, gcp: dict[str, str]) -> None:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{base}/api/internal/tenants/{tenant_id}",
+        f"{base}/api/tenants/{tenant_id}/gcp",  # P0-2 FIX: correct route
         data=payload,
         headers={
             "Authorization": f"Bearer {secret}",
@@ -145,9 +174,12 @@ def provision_tenant_gcp(
          f"--display-name=Hermes {slug}", f"--project={GCP_PROJECT}"],
         ignore="already exists",
     )
+    # P0-1 FIX: do NOT grant project-level roles/secretmanager.secretAccessor.
+    # Secret access is bound per-secret in _upsert_secret() so each SA can only
+    # read its own 3 secrets. Project-level binding would let any tenant SA read
+    # every other tenant's secrets — cross-tenant secret read vulnerability.
     for role in [
         "roles/run.invoker",
-        "roles/secretmanager.secretAccessor",
         "roles/aiplatform.user",
         "roles/datastore.user",
     ]:
@@ -247,7 +279,9 @@ def provision_tenant_gcp_background(
             _writeback_d1(tenant_id, gcp)
             log.info("GCP provisioning complete: tenant=%s url=%s", slug, gcp["cloud_run_url"])
         except Exception as e:
+            # P0-3 FIX: emit bus alert so the failure is visible, not just logged.
             log.error("GCP provisioning failed: tenant=%s error=%s", slug, e)
+            _alert_bus(tenant_id, slug, e)
 
     t = threading.Thread(target=_run_in_thread, daemon=True, name=f"gcp-provision-{slug}")
     t.start()
