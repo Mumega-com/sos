@@ -113,7 +113,7 @@ def _alert_bus(tenant_id: str, slug: str, error: Exception) -> None:
 
 # ── D1 write-back ─────────────────────────────────────────────────────────────
 
-def _writeback_d1(tenant_id: str, gcp: dict[str, str]) -> None:
+def _writeback_d1(tenant_id: str, gcp: dict[str, str], slug: str = "") -> None:
     """PATCH cloud_run_url + gcp fields back to inkwell-api → D1."""
     base = os.environ.get("INKWELL_INTERNAL_URL", "").rstrip("/")
     secret = os.environ.get("INTERNAL_API_SECRET", "")
@@ -143,10 +143,10 @@ def _writeback_d1(tenant_id: str, gcp: dict[str, str]) -> None:
     except urllib.error.HTTPError as e:
         log.error("D1 write-back failed: tenant=%s status=%s", tenant_id, e.code)
         # P1-3 FIX: alert bus on D1 write-back failure too, not just provisioning failure
-        _alert_bus(tenant_id, "unknown-slug", Exception(f"D1 write-back HTTP {e.code}"))
+        _alert_bus(tenant_id, slug, Exception(f"D1 write-back HTTP {e.code}"))
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         log.error("D1 write-back unreachable: tenant=%s error=%s", tenant_id, e)
-        _alert_bus(tenant_id, "unknown-slug", e)
+        _alert_bus(tenant_id, slug, e)
 
 
 # ── Core provisioning ─────────────────────────────────────────────────────────
@@ -275,7 +275,7 @@ def provision_tenant_gcp_background(
                 openrouter_key=openrouter_key,
                 im_token=im_token,
             )
-            _writeback_d1(tenant_id, gcp)
+            _writeback_d1(tenant_id, gcp, slug)
             log.info("GCP provisioning complete: tenant=%s url=%s", slug, gcp["cloud_run_url"])
         except Exception as e:
             # P0-3 FIX: emit bus alert so the failure is visible, not just logged.
