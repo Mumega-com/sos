@@ -154,6 +154,14 @@ def _audit_tool_call(
         log.warning("audit log_tool_call failed: %s", exc)
 
 
+def _schedule_audit_event(event: AuditChainEvent) -> None:
+    """Fire-and-forget audit chain emit; never blocks MCP tool responses."""
+    try:
+        asyncio.create_task(_emit_audit(event))
+    except RuntimeError as exc:
+        log.warning("audit emit schedule failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -2471,11 +2479,41 @@ def _skill_key(project: str, name: str) -> str:
     return f"sos:skills:{project}:{name}"
 
 
+INKWELL_PUBLISH_SKILL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["title", "slug", "content_md", "type", "visibility"],
+    "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "slug": {"type": "string", "minLength": 1},
+        "content_md": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "enum": ["topic", "post", "page"]},
+        "visibility": {"type": "string", "enum": ["draft", "published"]},
+    },
+    "additionalProperties": True,
+}
+
+PLATFORM_SKILLS: dict[str, dict[str, Any]] = {
+    "inkwell_publish": {
+        "name": "inkwell_publish",
+        "description": (
+            "Create an Inkwell topic/page/post through the tenant-scoped "
+            "publish substrate using the caller's bus token."
+        ),
+        "owner_tenant": None,
+        "scope": "tenant-self",
+        "input_schema": json.dumps(INKWELL_PUBLISH_SKILL_SCHEMA, sort_keys=True),
+        "registered_at": "builtin",
+    }
+}
+
+
 async def _handle_register_skill(args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     name = _skill_slug(str(args.get("name") or ""))
     description = str(args.get("description") or "").strip()
     if not name:
         return _text("skill name required")
+    if name in PLATFORM_SKILLS:
+        return _json_result({"ok": False, "error": "reserved_skill_name", "name": name})
     if not description:
         return _text("skill description required")
     project = _workspace_project(auth)
@@ -2504,17 +2542,147 @@ async def _handle_list_skills(args: dict[str, Any], auth: MCPAuthContext) -> dic
     index_key = f"sos:skills:{project}:peer:{peer}" if peer else f"sos:skills:{project}:index"
     names = sorted(await r.smembers(index_key))
     skills = []
+    listed_names: set[str] = set()
     for name in names:
         skill = await r.hgetall(_skill_key(project, name))
         if skill:
             skills.append(dict(skill))
+            listed_names.add(name)
+    if not peer and not auth.is_system and _tenant_slug_for_auth(auth):
+        skills.extend(
+            dict(skill, project=project)
+            for name, skill in PLATFORM_SKILLS.items()
+            if name not in listed_names
+        )
     return _json_result({"project": project, "peer": peer or None, "skills": skills, "count": len(skills)})
+
+
+def _validate_inkwell_publish_input(input_payload: Any) -> tuple[dict[str, str], str | None]:
+    if not isinstance(input_payload, dict):
+        return {}, "input must be an object"
+
+    title = str(input_payload.get("title") or "").strip()
+    slug = str(input_payload.get("slug") or "").strip().lower()
+    content_md = str(input_payload.get("content_md") or "").strip()
+    page_type = str(input_payload.get("type") or "").strip().lower()
+    visibility = str(input_payload.get("visibility") or "").strip().lower()
+
+    if not title:
+        return {}, "title is required"
+    if not slug:
+        return {}, "slug is required"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,126}[a-z0-9]", slug) and not re.fullmatch(r"[a-z0-9]", slug):
+        return {}, "slug must be lowercase alphanumeric with optional hyphens"
+    if not content_md:
+        return {}, "content_md is required"
+    if page_type not in {"topic", "post", "page"}:
+        return {}, "type must be one of: topic, post, page"
+    if visibility not in {"draft", "published"}:
+        return {}, "visibility must be one of: draft, published"
+
+    return {
+        "title": title,
+        "slug": slug,
+        "content_md": content_md,
+        "type": page_type,
+        "visibility": visibility,
+    }, None
+
+
+def _tenant_override_error(input_payload: Any, tenant_slug: str) -> str | None:
+    if not isinstance(input_payload, dict):
+        return None
+    for key in ("tenant_slug", "tenant_id", "project", "project_id"):
+        raw = input_payload.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        return f"{key} must not be supplied; tenant is derived from the caller token"
+    return None
+
+
+async def _post_inkwell_publish(tenant_slug: str, token: str, payload: dict[str, str]) -> tuple[int, dict[str, Any]]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"{INKWELL_API_URL.rstrip('/')}/api/tenant/{tenant_slug}/inkwell-publish",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+    try:
+        data = response.json()
+    except Exception:
+        data = {"error": "non_json_response", "body": response.text[:500]}
+    return response.status_code, data if isinstance(data, dict) else {"response": data}
+
+
+async def _handle_inkwell_publish_skill(args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
+    tenant_slug = _tenant_slug_for_auth(auth)
+    if auth.is_system or auth.is_customer or not tenant_slug:
+        return _json_result({
+            "ok": False,
+            "error": "tenant_scope_required",
+            "message": "inkwell_publish requires a tenant-scoped bus token",
+        })
+    tenant_slug = _workspace_slug(tenant_slug.lower())
+    if not auth.token:
+        return _json_result({
+            "ok": False,
+            "error": "caller_token_required",
+            "message": "inkwell_publish requires the caller's bus token",
+        })
+
+    input_payload = args.get("input") or {}
+    override_error = _tenant_override_error(input_payload, tenant_slug)
+    if override_error:
+        return _json_result({
+            "ok": False,
+            "error": "tenant_override_forbidden",
+            "message": override_error,
+            "tenant_slug": tenant_slug,
+        })
+
+    publish_payload, validation_error = _validate_inkwell_publish_input(input_payload)
+    if validation_error:
+        return _json_result({
+            "ok": False,
+            "error": "invalid_input",
+            "message": validation_error,
+        })
+
+    try:
+        status_code, substrate = await _post_inkwell_publish(tenant_slug, auth.token, publish_payload)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inkwell_publish skill POST failed for tenant=%s: %s", tenant_slug, exc)
+        status_code = 502
+        substrate = {"error": "substrate_unavailable", "message": str(exc)}
+
+    result_status = substrate.get("status") or substrate.get("error") or ("ok" if status_code < 400 else "error")
+    _schedule_audit_event(AuditChainEvent(
+        stream_id="mcp",
+        actor_id=auth.agent_scope,
+        actor_type="agent" if not auth.is_customer else "human",
+        action="tenant_skill_invoked",
+        resource="skill:inkwell_publish",
+        payload={
+            "tenant_id": tenant_slug,
+            "skill_name": "inkwell_publish",
+            "result_status": str(result_status),
+            "http_status": status_code,
+        },
+    ))
+    return _json_result({**substrate, "http_status": status_code})
 
 
 async def _handle_invoke_skill(args: dict[str, Any], auth: MCPAuthContext) -> dict[str, Any]:
     name = _skill_slug(str(args.get("name") or ""))
     if not name:
         return _text("skill name required")
+    if name == "inkwell_publish":
+        return await _handle_inkwell_publish_skill(args, auth)
     project = _workspace_project(auth)
     r = _get_redis()
     skill = await r.hgetall(_skill_key(project, name))

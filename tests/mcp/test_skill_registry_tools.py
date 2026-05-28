@@ -71,6 +71,18 @@ def _auth(agent: str = "calliope-acme", permissions: list[str] | None = None) ->
     )
 
 
+def _customer_auth(permissions: list[str] | None = None) -> MCPAuthContext:
+    return MCPAuthContext(
+        token="sk-customer",
+        tenant_id="acme",
+        is_system=False,
+        source="bus_tokens",
+        agent_name="customer-acme",
+        scope="customer",
+        permissions=permissions or ["skills:*"],
+    )
+
+
 async def test_register_and_list_skill(monkeypatch):
     from sos.mcp import sos_mcp_sse as module
 
@@ -91,12 +103,38 @@ async def test_register_and_list_skill(monkeypatch):
 
     listed = await handle_tool("list_skills", {}, _auth("athena-acme"))
     skills = listed["structuredContent"]["skills"]
-    assert listed["structuredContent"]["count"] == 1
-    assert skills[0]["name"] == "blog-draft"
-    assert skills[0]["description"] == "Draft a blog post"
+    by_name = {skill["name"]: skill for skill in skills}
+    assert listed["structuredContent"]["count"] == 2
+    assert by_name["blog-draft"]["description"] == "Draft a blog post"
+    assert by_name["inkwell_publish"]["scope"] == "tenant-self"
+    assert by_name["inkwell_publish"]["owner_tenant"] is None
+    assert "handler" not in by_name["inkwell_publish"]
 
     by_peer = await handle_tool("list_skills", {"peer": "calliope-acme"}, _auth("athena-acme"))
     assert by_peer["structuredContent"]["count"] == 1
+
+
+async def test_register_rejects_builtin_skill_shadow(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    redis = _RedisStub()
+    monkeypatch.setattr(module, "_get_redis", lambda: redis)
+
+    registered = await handle_tool(
+        "register_skill",
+        {"name": "inkwell_publish", "description": "shadow builtin"},
+        _auth(),
+    )
+
+    assert registered["structuredContent"] == {
+        "ok": False,
+        "error": "reserved_skill_name",
+        "name": "inkwell_publish",
+    }
+
+    listed = await handle_tool("list_skills", {}, _auth("athena-acme"))
+    skills = listed["structuredContent"]["skills"]
+    assert [skill["name"] for skill in skills] == ["inkwell_publish"]
 
 
 async def test_invoke_skill_routes_structured_request_to_owner(monkeypatch):
@@ -145,3 +183,160 @@ async def test_skill_tools_visible_with_skill_permission():
     assert "list_skills" in names
     assert "register_skill" not in names
     assert "invoke_skill" not in names
+
+
+async def test_invoke_inkwell_publish_uses_auth_tenant_and_forwards_token(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_post(tenant_slug: str, token: str, payload: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        calls.append({"tenant_slug": tenant_slug, "token": token, "payload": payload})
+        return 409, {"error": "approval_required", "approval_id": "appr_123"}
+
+    monkeypatch.setattr(module, "_post_inkwell_publish", _fake_post)
+    monkeypatch.setattr(module, "_schedule_audit_event", lambda event: None)
+
+    invoked = await handle_tool(
+        "invoke_skill",
+        {
+            "name": "inkwell_publish",
+            "input": {
+                "title": "S164 smoke",
+                "slug": "s164-smoke",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        },
+        _auth(agent="hermes-aionboard", permissions=["skills:invoke"]),
+    )
+
+    assert calls == [
+        {
+            "tenant_slug": "acme",
+            "token": "sk-test",
+            "payload": {
+                "title": "S164 smoke",
+                "slug": "s164-smoke",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        }
+    ]
+    assert invoked["structuredContent"]["error"] == "approval_required"
+    assert invoked["structuredContent"]["approval_id"] == "appr_123"
+    assert invoked["structuredContent"]["http_status"] == 409
+
+
+async def test_invoke_inkwell_publish_rejects_customer_token(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    async def _unexpected_post(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        raise AssertionError("customer token must fail before substrate POST")
+
+    monkeypatch.setattr(module, "_post_inkwell_publish", _unexpected_post)
+
+    invoked = await handle_tool(
+        "invoke_skill",
+        {
+            "name": "inkwell_publish",
+            "input": {
+                "title": "S164 smoke",
+                "slug": "s164-smoke",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        },
+        _customer_auth(permissions=["skills:invoke"]),
+    )
+
+    assert invoked["structuredContent"]["ok"] is False
+    assert invoked["structuredContent"]["error"] == "tenant_scope_required"
+
+
+async def test_invoke_inkwell_publish_rejects_cross_tenant_override(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    async def _unexpected_post(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        raise AssertionError("cross-tenant override must fail before substrate POST")
+
+    monkeypatch.setattr(module, "_post_inkwell_publish", _unexpected_post)
+
+    invoked = await handle_tool(
+        "invoke_skill",
+        {
+            "name": "inkwell_publish",
+            "input": {
+                "tenant_slug": "other-tenant",
+                "title": "S164 smoke",
+                "slug": "s164-smoke",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        },
+        _auth(agent="hermes-aionboard", permissions=["skills:invoke"]),
+    )
+
+    assert invoked["structuredContent"]["ok"] is False
+    assert invoked["structuredContent"]["error"] == "tenant_override_forbidden"
+    assert invoked["structuredContent"]["tenant_slug"] == "acme"
+
+
+async def test_invoke_inkwell_publish_rejects_same_tenant_override(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    async def _unexpected_post(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        raise AssertionError("tenant override must fail before substrate POST")
+
+    monkeypatch.setattr(module, "_post_inkwell_publish", _unexpected_post)
+
+    invoked = await handle_tool(
+        "invoke_skill",
+        {
+            "name": "inkwell_publish",
+            "input": {
+                "tenant_slug": "acme",
+                "title": "S164 smoke",
+                "slug": "s164-smoke",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        },
+        _auth(agent="hermes-aionboard", permissions=["skills:invoke"]),
+    )
+
+    assert invoked["structuredContent"]["ok"] is False
+    assert invoked["structuredContent"]["error"] == "tenant_override_forbidden"
+    assert invoked["structuredContent"]["tenant_slug"] == "acme"
+
+
+async def test_invoke_inkwell_publish_rejects_invalid_payload(monkeypatch):
+    from sos.mcp import sos_mcp_sse as module
+
+    async def _unexpected_post(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        raise AssertionError("invalid payload must fail before substrate POST")
+
+    monkeypatch.setattr(module, "_post_inkwell_publish", _unexpected_post)
+
+    invoked = await handle_tool(
+        "invoke_skill",
+        {
+            "name": "inkwell_publish",
+            "input": {
+                "title": "S164 smoke",
+                "slug": "../bad",
+                "content_md": "test",
+                "type": "topic",
+                "visibility": "draft",
+            },
+        },
+        _auth(agent="hermes-aionboard", permissions=["skills:invoke"]),
+    )
+
+    assert invoked["structuredContent"]["ok"] is False
+    assert invoked["structuredContent"]["error"] == "invalid_input"
