@@ -1320,8 +1320,11 @@ class BusHandler(BaseHTTPRequestHandler):
         """S027 D-1b — POST /api/internal/tenants/provision.
 
         Auth: INTERNAL_API_SECRET env-var Bearer (NOT tokens.json — separate s2s domain).
-        Body: { tenant_id, slug, display_name, industry }
-        Returns 200 with { mirror_key, bus_token, scaffold_path, idempotency: {...} }.
+        Body: { tenant_id, slug, display_name, industry, charter? }
+          charter (optional): per-agent boot_context charter STRING. When present and
+          non-empty it is written to sos:onboarding:{slug}:{slug}-admin so the
+          provisioned tenant admin self-orients on first boot_context call.
+        Returns 200 with { mirror_key, bus_token, scaffold_path, charter_written, idempotency: {...} }.
 
         LOCK-D-1b-internal-bearer-fail-closed: missing env → 503 BEFORE any disk read.
         Bad/missing Bearer → 401 BEFORE body parse. Body validation → 422 BEFORE disk write.

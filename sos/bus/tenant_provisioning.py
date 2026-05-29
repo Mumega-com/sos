@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -64,6 +65,9 @@ SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9._-]{1,64}$")
 INDUSTRY_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 DISPLAY_NAME_MAX = 200
+CHARTER_MAX = 16384  # boot_context charter is a STRING in Redis; cap to bound payload
+
+logger = logging.getLogger(__name__)
 
 
 class ProvisionError(Exception):
@@ -162,11 +166,26 @@ def validate_provision_body(body: dict) -> dict:
     elif not isinstance(industry, str) or not INDUSTRY_RE.match(industry):
         raise ProvisionError(422, "invalid_industry", "industry must match ^[a-z0-9_]{1,32}$ or be null")
 
+    # charter is OPTIONAL — the per-agent boot_context charter (server-side STRING
+    # at sos:onboarding:{project}:{agent}). When omitted/null/empty, no charter is
+    # written and boot_context falls back to baseline onboarding only. When present
+    # it must be a non-empty string within the size cap.
+    charter = body.get("charter")
+    if charter is None:
+        charter = ""
+    elif not isinstance(charter, str):
+        raise ProvisionError(422, "invalid_charter", "charter must be a string or null")
+    else:
+        charter = charter.strip()
+        if len(charter) > CHARTER_MAX:
+            raise ProvisionError(422, "invalid_charter", f"charter must be <= {CHARTER_MAX} chars after trim")
+
     return {
         "tenant_id": tenant_id,
         "slug": slug,
         "display_name": display_name,
         "industry": industry,
+        "charter": charter,
     }
 
 
@@ -533,6 +552,65 @@ def scaffold_or_skip(slug: str, display_name: str, industry: str) -> tuple[Path,
 
 
 # -----------------------------------------------------------------------
+# Boot-context charter — write the per-agent charter STRING that
+# boot_context reads at sos:onboarding:{project}:{agent}
+# (sos/mcp/sos_mcp_sse.py: `_r.get(f"sos:onboarding:{memory.project}:{memory.agent}")`).
+# For a tenant-admin token, memory.project = slug and memory.agent = "{slug}-admin",
+# so the key is sos:onboarding:{slug}:{slug}-admin.
+#
+# NOTE: this is the STRING key. Do NOT confuse with the squad-routing HASH key
+# sos:onboarding:{project}:agent:{agent} (note the extra ":agent:" segment) —
+# that one is unrelated to the boot_context charter reader.
+# -----------------------------------------------------------------------
+def onboarding_charter_key(project: str, agent: str) -> str:
+    """Build the EXACT Redis key boot_context reads for a per-agent charter."""
+    return f"sos:onboarding:{project}:{agent}"
+
+
+def _redis_client():
+    """Build a sync Redis client from the same env vars the bridge uses.
+
+    Mirrors sos/bus/bridge.py main(): REDIS_URL first, else host/port/password.
+    Returns None if the redis package is unavailable so provisioning never hard-fails
+    on a charter-write best-effort step.
+    """
+    try:
+        import redis  # local import — keep provisioning import-light
+    except ImportError:
+        return None
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url:
+        return redis.Redis.from_url(redis_url, decode_responses=True)
+    host = os.environ.get("REDIS_HOST", "localhost")
+    port = int(os.environ.get("REDIS_PORT", "6379"))
+    password = os.environ.get("REDIS_PASSWORD", "")
+    return redis.Redis(host=host, port=port, password=password, decode_responses=True)
+
+
+def write_boot_context_charter(project: str, agent: str, charter: str) -> bool:
+    """Best-effort write of the boot_context charter STRING.
+
+    Only writes when charter is a non-empty string. Wrapped so a Redis hiccup
+    NEVER fails provisioning — logs and returns False instead.
+    Returns True iff the SET was issued.
+    """
+    if not charter or not charter.strip():
+        return False
+    key = onboarding_charter_key(project, agent)
+    try:
+        client = _redis_client()
+        if client is None:
+            logger.warning("charter write skipped: redis client unavailable (key=%s)", key)
+            return False
+        client.set(key, charter)
+        logger.info("wrote boot_context charter (key=%s, len=%d)", key, len(charter))
+        return True
+    except Exception as e:  # noqa: BLE001 — best-effort; must not fail provision
+        logger.warning("charter write failed (key=%s): %s", key, e)
+        return False
+
+
+# -----------------------------------------------------------------------
 # Orchestrator — top-level provisioning
 # -----------------------------------------------------------------------
 def provision_tenant(body: dict) -> dict:
@@ -557,6 +635,14 @@ def provision_tenant(body: dict) -> dict:
     bus_token, token_minted = mint_or_get_bus_token(slug, display_name)
     scaffold_path, scaffold_created = scaffold_or_skip(slug, display_name, industry)
 
+    # Boot-context charter — set the per-agent charter STRING boot_context reads
+    # so the provisioned tenant admin self-orients on first connect with no manual
+    # redis-cli. The minted bus token uses agent="{slug}-admin", project=slug, and
+    # boot_context resolves memory.project=slug / memory.agent="{slug}-admin", so the
+    # key lines up exactly. Best-effort: never fails provisioning.
+    admin_agent = f"{slug}-admin"
+    charter_written = write_boot_context_charter(slug, admin_agent, sanitized["charter"])
+
     # S144 Track F — fire GCP Cloud Run provisioning in background.
     # Does not block this response. Writes cloud_run_url back to D1 when done.
     provision_tenant_gcp_background(
@@ -576,6 +662,7 @@ def provision_tenant(body: dict) -> dict:
         "mirror_key": mirror_key,
         "bus_token": bus_token,
         "scaffold_path": str(scaffold_path),
+        "charter_written": charter_written,
         "idempotency": {
             "mirror_minted": mirror_minted,
             "token_minted": token_minted,
