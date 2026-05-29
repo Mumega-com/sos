@@ -153,6 +153,110 @@ def cmd_status(args):
             print(f"[--] {name}: not running")
 
 
+def _repo_root() -> Path:
+    """Find the repository root for the installed package.
+
+    Prefers the git toplevel of the package directory; falls back to cwd.
+    """
+    import subprocess
+
+    pkg_dir = Path(__file__).resolve().parent
+    for candidate in (pkg_dir, Path.cwd()):
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return Path(out.stdout.strip())
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    return Path.cwd()
+
+
+def cmd_update(args):
+    """Pull upstream improvements into a tenant's SOS fork.
+
+    Fast-forwards the local checkout onto ``upstream/main`` and runs a
+    post-update ``doctor`` health check as proof. Never force-merges.
+    """
+    import subprocess
+
+    root = _repo_root()
+
+    def git(*cmd, capture=True):
+        return subprocess.run(
+            ["git", "-C", str(root), *cmd],
+            capture_output=capture,
+            text=True,
+        )
+
+    # Confirm we are inside a git repo at all.
+    inside = git("rev-parse", "--is-inside-work-tree")
+    if inside.returncode != 0:
+        print(f"[XX] Not a git repository: {root}")
+        print("     Run 'sos update' from inside your SOS fork.")
+        return 1
+
+    print(f"SOS Update — repo: {root}")
+    print("=" * 50)
+
+    # 1. Require an 'upstream' remote.
+    upstream = git("remote", "get-url", "upstream")
+    if upstream.returncode != 0:
+        print("[XX] No 'upstream' remote configured.")
+        print("     Add it with:")
+        print("       git remote add upstream https://github.com/Mumega-com/sos.git")
+        print("     then re-run 'sos update'.")
+        return 1
+    print(f"[OK] upstream: {upstream.stdout.strip()}")
+
+    # 2. Fetch upstream.
+    print("\nFetching upstream...")
+    fetched = git("fetch", "upstream", capture=False)
+    if fetched.returncode != 0:
+        print("[XX] git fetch upstream failed.")
+        return 1
+
+    # 3. Report how many commits behind upstream/main.
+    behind = git("rev-list", "--count", "HEAD..upstream/main")
+    if behind.returncode != 0:
+        print("[XX] Could not compare against upstream/main.")
+        print("     Ensure upstream has a 'main' branch.")
+        return 1
+    behind_count = behind.stdout.strip()
+    if behind_count == "0":
+        print("[OK] Already up to date with upstream/main.")
+        update_failed = False
+    else:
+        print(f"[!!] {behind_count} commit(s) behind upstream/main.")
+        # 4. Fast-forward only — never force.
+        print("\nFast-forwarding onto upstream/main...")
+        ff = git("merge", "--ff-only", "upstream/main", capture=False)
+        if ff.returncode != 0:
+            print("[XX] Fast-forward merge failed — local history has diverged.")
+            print("     Your fork has commits not in upstream. Merge manually:")
+            print("       git fetch upstream")
+            print("       git merge upstream/main   # resolve conflicts, then commit")
+            print("     (Not force-merging to protect your local changes.)")
+            return 1
+        print(f"[OK] Updated to upstream/main ({behind_count} commit(s) applied).")
+        update_failed = False
+
+    # 5. Post-update health proof via doctor.
+    print("\n--- Post-update health check ---")
+    try:
+        doctor_rc = cmd_doctor(args)
+    except Exception as exc:  # doctor may need deps not present in a bare fork
+        print(f"[--] doctor skipped: {exc}")
+        doctor_rc = 0
+
+    if update_failed:
+        return 1
+    return 0 if not doctor_rc else doctor_rc
+
+
 def cmd_chat(args):
     """Interactive chat with pluggable frontend."""
     config = ChatConfig(
@@ -195,6 +299,10 @@ def main():
     subparsers.add_parser("version", help="Show version info")
     subparsers.add_parser("doctor", help="Check system health")
     subparsers.add_parser("status", help="Show service status")
+    subparsers.add_parser(
+        "update",
+        help="Pull upstream SOS improvements into this fork (ff-only)",
+    )
     operator_parser = subparsers.add_parser("operator", help="Show compact operator snapshot")
     operator_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
@@ -226,6 +334,8 @@ def main():
         return cmd_doctor(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "update":
+        return cmd_update(args)
     if args.command == "operator":
         from sos.cli.operator import run_operator_command
 
@@ -257,6 +367,7 @@ __all__ = [
     "cmd_doctor",
     "cmd_start",
     "cmd_status",
+    "cmd_update",
     "cmd_version",
     "get_frontend",
     "list_frontends",
