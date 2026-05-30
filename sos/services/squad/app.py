@@ -2238,6 +2238,34 @@ async def list_role_assignments(
     return {"assignments": assignments}
 
 
+@app.get("/agents")
+async def list_agents(
+    auth: AuthContext = Depends(require_capability("squads", "read")),
+) -> dict[str, Any]:
+    """Authoritative agent -> home-tenant roster from the static agent registry.
+
+    Used by the Sovereign brain's colony capability gate (S180-A) to decide
+    whether a tenant-bound agent may be dispatched for a given project. Returns
+    only non-sensitive identity fields (name, project/home-tenant, role, type) —
+    never tokens or sessions.
+    """
+    from sos.kernel.agent_registry import AGENTS
+
+    def _enum(value: Any) -> str:
+        return getattr(value, "value", str(value)) if value else ""
+
+    agents = [
+        {
+            "name": a.name,
+            "project": a.project or "",
+            "role": _enum(getattr(a, "role", "")),
+            "type": _enum(getattr(a, "type", "")),
+        }
+        for a in AGENTS.values()
+    ]
+    return {"agents": agents}
+
+
 @app.get("/agents/{agent_id}/roles")
 async def get_agent_roles(
     agent_id: str,

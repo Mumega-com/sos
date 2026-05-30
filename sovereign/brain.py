@@ -119,6 +119,76 @@ def _assert_in_scope(project: str) -> None:
         )
 
 
+# ── Colony capability gate (agent dimension) — S180-A ─────────────────────────
+# Defense-in-depth alongside _assert_in_scope (which is a NO-OP for a GLOBAL
+# colony brain). The colony brain legitimately sees all tenants, so its real
+# fault mode is cross-tenant CAPABILITY APPLICATION — dispatching a tenant-bound
+# agent for another tenant's goal (the observed "use viamar-ceo-strategy for a
+# Mumega goal" bleed). The authoritative agent->home-tenant map lives in
+# sos.kernel.agent_registry (AgentDef.project), which this brain CANNOT import
+# (separate module root), so we resolve it over HTTP from the squad service
+# /agents roster. The SKILL-dimension gate is enforced separately by the squad
+# service, which owns squad_skills.tenant_id.
+
+_AGENT_HOME_CACHE: dict[str, str] = {}
+_AGENT_HOME_CACHE_TS: float = 0.0
+_AGENT_HOME_TTL = 300.0  # seconds
+
+
+def _agent_home_tenant(agent: str) -> str | None:
+    """Resolve an agent's home tenant (its AgentDef.project) via the squad
+    service /agents roster. Returns the normalized home project, or None for
+    shared/colony agents (no project binding) and unknown agents.
+
+    Caching: refreshed every _AGENT_HOME_TTL. On a refresh failure a previously
+    fetched (stale) map is RETAINED, so a transient resolver outage does not open
+    the gate; only a cold-start failure (empty cache) returns None (gate open),
+    logged loudly. The gate is one of several defense-in-depth layers.
+    """
+    global _AGENT_HOME_CACHE, _AGENT_HOME_CACHE_TS
+    now = time.time()
+    if not _AGENT_HOME_CACHE or (now - _AGENT_HOME_CACHE_TS) > _AGENT_HOME_TTL:
+        try:
+            r = requests.get(f"{SQUAD_URL}/agents", headers=SQUAD_HEADERS, timeout=5)
+            r.raise_for_status()
+            payload = r.json()
+            rows = payload.get("agents", payload) if isinstance(payload, dict) else payload
+            mapping = {
+                str(row.get("name", "")).strip().lower(): str(row.get("project", "") or "").strip().lower()
+                for row in rows
+                if str(row.get("name", "")).strip()
+            }
+            if mapping:
+                _AGENT_HOME_CACHE = mapping
+                _AGENT_HOME_CACHE_TS = now
+        except Exception as exc:
+            if not _AGENT_HOME_CACHE:
+                logger.warning(f"[capability-gate] agent resolver cold-start failed — gate OPEN: {exc}")
+            else:
+                logger.warning(f"[capability-gate] agent resolver refresh failed — using stale roster: {exc}")
+    home = _AGENT_HOME_CACHE.get(str(agent).strip().lower(), "")
+    return home or None
+
+
+def _assert_agent_in_tenant(agent: str, project: str) -> None:
+    """Raise if a tenant-bound agent is dispatched for a different tenant.
+
+    Shared/colony agents (no home tenant) may act for any project. A tenant-bound
+    agent (e.g. sol -> therealmofpatterns) may act only for its own tenant. This
+    is the colony brain's load-bearing cross-tenant guard; scoped per-tenant
+    brains cannot reach this situation at all.
+    """
+    home = _agent_home_tenant(agent)
+    if not home:
+        return  # shared/colony or unknown agent — allowed for any project
+    if normalize_project(home) != normalize_project(project):
+        raise ValueError(
+            f"Capability scope violation: agent {agent!r} belongs to tenant "
+            f"{home!r} but this directive targets project {project!r}. A "
+            f"tenant-bound agent may only act for its own tenant."
+        )
+
+
 def _blocked_stale_cleanup_reason(action: dict[str, object]) -> str | None:
     """Return a reason when a brain action targets retired quest-fixture cleanup.
 
@@ -177,6 +247,11 @@ def normalize_project(project: str) -> str:
     aliases = {
         "dnu": "dentalnearyou",
         "trop": "realm-of-patterns",
+        # The agent registry stores TROP's project as "therealmofpatterns"
+        # (no hyphens) while goals/squads use "trop"/"realm-of-patterns".
+        # Canonicalize all three to one tenant id so the S180-A capability gate
+        # does not falsely block sol on legitimate same-tenant work.
+        "therealmofpatterns": "realm-of-patterns",
         "dental": "dentalnearyou",
     }
     return aliases.get(project, project)
@@ -495,6 +570,17 @@ def motor_execute(action: dict) -> dict:
     if project_lead and project_lead != agent:
         logger.info(f"Rerouting from {agent} to {project_lead} for project {project}")
         agent = project_lead
+
+    # S180-A colony capability gate (agent dimension): after rerouting to the
+    # project lead, refuse to dispatch a tenant-bound agent for another tenant.
+    # This is the load-bearing cross-tenant guard for the GLOBAL colony brain,
+    # where _assert_in_scope above is a no-op.
+    if method in _task_creating_methods:
+        try:
+            _assert_agent_in_tenant(agent, project)
+        except ValueError as cap_err:
+            logger.error(f"[capability-gate] {cap_err}")
+            return {"success": False, "result": str(cap_err)}
 
     try:
         if method == "create_task":
