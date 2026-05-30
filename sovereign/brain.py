@@ -134,7 +134,10 @@ def _assert_in_scope(project: str) -> None:
 # /agents resolver is unavailable (cold start / outage) so these sensitive
 # identities stay GATED even without the live roster. The live roster
 # (sos.kernel.agent_registry) is the source of truth whenever reachable; this is
-# the deny-side default, not a parallel registry. Keep tiny + in sync.
+# the deny-side default, not a parallel registry.
+# MUST be kept in sync with the tenant-bound agents in sos.kernel.agent_registry
+# (AgentDef.project != ""): a NEW tenant-bound agent not listed here goes
+# UNGATED during a cold-start resolver outage. (Athena G180-A advisory 2.)
 _TENANT_BOUND_FALLBACK: dict[str, str] = {
     "sol": "realm-of-patterns",
     "dandan": "dentalnearyou",
@@ -650,6 +653,11 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": f"Task created: {task_id}", "task_id": task_id}
 
         elif method == "post_content":
+            # Dispatches as agent="brain" (colony → always passes); gate kept for
+            # the "every dispatch branch is gated" invariant (Athena G180-A adv.1),
+            # so a future tenant-bound post_content path can't silently skip it.
+            if (block := _capability_block("brain", project)) is not None:
+                return block
             # Generate content using a cheap model and store it.
             # Skipped gracefully when BRAIN_CONTENT_MODE=off.
             content = _generate_content(details)

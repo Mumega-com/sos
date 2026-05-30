@@ -228,6 +228,16 @@ def test_motor_execute_allows_shared_agent(monkeypatch):
     assert len(posts) == 1
 
 
+def test_motor_execute_post_content_not_capability_blocked(monkeypatch):
+    # post_content dispatches as colony "brain" — even with a tenant-bound agent
+    # in the directive, the (now-present) gate must not block it.
+    _patch_dispatch(monkeypatch)
+    monkeypatch.setattr(brain, "_generate_content", lambda d: "__CONTENT_MODE_OFF__")
+    res = brain.motor_execute(_action("post_content", "sol", title="post something"))
+    assert res["success"] is True
+    assert "Capability scope violation" not in res.get("result", "")
+
+
 def test_motor_execute_blocks_cross_tenant_outreach(monkeypatch):
     # send_outreach, agent=sol, goal=mumega, no 'dent' → outreach stays project=mumega,
     # assignee=sol (fallback) → cross-tenant → blocked on the FINAL pair.
