@@ -93,12 +93,16 @@ def test_cache_hits_avoid_refetch(monkeypatch):
     assert calls["n"] == 1  # second resolution served from cache
 
 
-def test_cold_start_failure_opens_gate(monkeypatch):
+def test_cold_start_failsafe_for_tenant_bound(monkeypatch):
     def _boom(url, **kw):
         raise RuntimeError("resolver down")
     monkeypatch.setattr(brain.requests, "get", _boom)
-    # empty cache + failure → None (gate open), no raise
-    assert brain._agent_home_tenant("sol") is None
+    # cold start + resolver down: known tenant-bound agents stay GATED via the
+    # static failsafe; genuinely unknown/shared agents remain ungated (None).
+    assert brain._agent_home_tenant("sol") == "realm-of-patterns"
+    assert brain._agent_home_tenant("dandan") == "dentalnearyou"
+    assert brain._agent_home_tenant("worker") is None
+    assert brain._agent_home_tenant("nobody") is None
 
 
 def test_stale_cache_retained_on_refresh_failure(monkeypatch):
@@ -154,3 +158,71 @@ def test_dandan_blocked_outside_dnu(monkeypatch):
 def test_dandan_allowed_in_dnu_alias(monkeypatch):
     _patch_roster(monkeypatch)
     brain._assert_agent_in_tenant("dandan", "dnu")  # dnu → dentalnearyou, no raise
+
+
+def test_gate_blocks_cross_tenant_during_resolver_outage(monkeypatch):
+    def _boom(url, **kw):
+        raise RuntimeError("resolver down")
+    monkeypatch.setattr(brain.requests, "get", _boom)
+    # cold start, resolver down — sol must still be gated out of Mumega (failsafe)
+    with pytest.raises(ValueError, match="Capability scope violation"):
+        brain._assert_agent_in_tenant("sol", "mumega")
+
+
+# ── motor_execute end-to-end (the real observed bleed) ────────────────────────
+
+def _action(method, agent, goal="goal_mumega", details="", title="do a thing"):
+    return {"method": method, "agent": agent, "goal_id": goal,
+            "details": details, "action": title}
+
+
+def _patch_dispatch(monkeypatch):
+    """Stub the squad roster GET + capture any task POST; neutralize side checks."""
+    posts = []
+    monkeypatch.setattr(brain, "_agent_available", lambda a: True)
+    monkeypatch.setattr(brain, "_task_exists", lambda *a, **k: False)
+
+    def _get(url, **kw):
+        return _Resp(_ROSTER)
+
+    def _post(url, **kw):
+        posts.append((url, kw.get("json", {})))
+        return _Resp({"task": {"id": "brain-test"}})
+
+    monkeypatch.setattr(brain.requests, "get", _get)
+    monkeypatch.setattr(brain.requests, "post", _post)
+    return posts
+
+
+def test_motor_execute_blocks_cross_tenant_create_task(monkeypatch):
+    # the literal observed bleed: create_task, agent=sol, goal=mumega
+    posts = _patch_dispatch(monkeypatch)
+    res = brain.motor_execute(_action("create_task", "sol"))
+    assert res["success"] is False
+    assert "Capability scope violation" in res["result"]
+    assert posts == []  # nothing dispatched
+
+
+def test_motor_execute_allows_same_tenant_via_alias(monkeypatch):
+    # sol on a 'trop' goal (alias of realm-of-patterns / therealmofpatterns) — allowed
+    posts = _patch_dispatch(monkeypatch)
+    res = brain.motor_execute(_action("create_task", "sol", goal="goal_trop"))
+    assert res["success"] is True
+    assert len(posts) == 1
+
+
+def test_motor_execute_allows_shared_agent(monkeypatch):
+    posts = _patch_dispatch(monkeypatch)
+    res = brain.motor_execute(_action("create_task", "kasra"))  # shared → any project
+    assert res["success"] is True
+    assert len(posts) == 1
+
+
+def test_motor_execute_blocks_cross_tenant_outreach(monkeypatch):
+    # send_outreach, agent=sol, goal=mumega, no 'dent' → outreach stays project=mumega,
+    # assignee=sol (fallback) → cross-tenant → blocked on the FINAL pair.
+    posts = _patch_dispatch(monkeypatch)
+    res = brain.motor_execute(_action("send_outreach", "sol", details="generic outreach"))
+    assert res["success"] is False
+    assert "Capability scope violation" in res["result"]
+    assert posts == []

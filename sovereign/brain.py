@@ -130,6 +130,17 @@ def _assert_in_scope(project: str) -> None:
 # /agents roster. The SKILL-dimension gate is enforced separately by the squad
 # service, which owns squad_skills.tenant_id.
 
+# Failsafe map of the known tenant-bound agents — used ONLY when the live
+# /agents resolver is unavailable (cold start / outage) so these sensitive
+# identities stay GATED even without the live roster. The live roster
+# (sos.kernel.agent_registry) is the source of truth whenever reachable; this is
+# the deny-side default, not a parallel registry. Keep tiny + in sync.
+_TENANT_BOUND_FALLBACK: dict[str, str] = {
+    "sol": "realm-of-patterns",
+    "dandan": "dentalnearyou",
+    "gaf": "gaf",
+}
+
 _AGENT_HOME_CACHE: dict[str, str] = {}
 _AGENT_HOME_CACHE_TS: float = 0.0
 _AGENT_HOME_TTL = 300.0  # seconds
@@ -138,12 +149,14 @@ _AGENT_HOME_TTL = 300.0  # seconds
 def _agent_home_tenant(agent: str) -> str | None:
     """Resolve an agent's home tenant (its AgentDef.project) via the squad
     service /agents roster. Returns the normalized home project, or None for
-    shared/colony agents (no project binding) and unknown agents.
+    shared/colony agents (no project binding) and genuinely unknown agents.
 
     Caching: refreshed every _AGENT_HOME_TTL. On a refresh failure a previously
     fetched (stale) map is RETAINED, so a transient resolver outage does not open
-    the gate; only a cold-start failure (empty cache) returns None (gate open),
-    logged loudly. The gate is one of several defense-in-depth layers.
+    the gate. On a COLD-START failure (cache never populated) we fall back to the
+    static _TENANT_BOUND_FALLBACK set, so the known tenant-bound agents stay
+    gated even when the roster cannot be fetched; only genuinely unknown agents
+    go ungated. The gate is one of several defense-in-depth layers.
     """
     global _AGENT_HOME_CACHE, _AGENT_HOME_CACHE_TS
     now = time.time()
@@ -163,10 +176,15 @@ def _agent_home_tenant(agent: str) -> str | None:
                 _AGENT_HOME_CACHE_TS = now
         except Exception as exc:
             if not _AGENT_HOME_CACHE:
-                logger.warning(f"[capability-gate] agent resolver cold-start failed — gate OPEN: {exc}")
+                logger.error(f"[capability-gate] agent resolver cold-start failed — failing safe to static tenant-bound set: {exc}")
             else:
                 logger.warning(f"[capability-gate] agent resolver refresh failed — using stale roster: {exc}")
-    home = _AGENT_HOME_CACHE.get(str(agent).strip().lower(), "")
+    key = str(agent).strip().lower()
+    if _AGENT_HOME_CACHE:
+        home = _AGENT_HOME_CACHE.get(key, "")
+    else:
+        # Resolver never succeeded — fail SAFE for the known tenant-bound agents.
+        home = _TENANT_BOUND_FALLBACK.get(key, "")
     return home or None
 
 
@@ -187,6 +205,23 @@ def _assert_agent_in_tenant(agent: str, project: str) -> None:
             f"{home!r} but this directive targets project {project!r}. A "
             f"tenant-bound agent may only act for its own tenant."
         )
+
+
+def _capability_block(assignee: str | None, project: str) -> dict | None:
+    """Gate a single dispatch. Returns a failure dict if dispatching `assignee`
+    for `project` violates the colony capability gate, else None.
+
+    MUST be called with the FINAL dispatched (assignee, project) at each branch —
+    not once up front — because branches recompute the assignee/project after the
+    PROJECT_LEADS reroute (e.g. send_outreach flips to dentalnearyou/dandan on a
+    'dent' substring). Gating the final pair is the only correct subject.
+    """
+    try:
+        _assert_agent_in_tenant(assignee or "", project)
+        return None
+    except ValueError as cap_err:
+        logger.error(f"[capability-gate] {cap_err}")
+        return {"success": False, "result": str(cap_err)}
 
 
 def _blocked_stale_cleanup_reason(action: dict[str, object]) -> str | None:
@@ -571,20 +606,19 @@ def motor_execute(action: dict) -> dict:
         logger.info(f"Rerouting from {agent} to {project_lead} for project {project}")
         agent = project_lead
 
-    # S180-A colony capability gate (agent dimension): after rerouting to the
-    # project lead, refuse to dispatch a tenant-bound agent for another tenant.
-    # This is the load-bearing cross-tenant guard for the GLOBAL colony brain,
-    # where _assert_in_scope above is a no-op.
-    if method in _task_creating_methods:
-        try:
-            _assert_agent_in_tenant(agent, project)
-        except ValueError as cap_err:
-            logger.error(f"[capability-gate] {cap_err}")
-            return {"success": False, "result": str(cap_err)}
+    # S180-A colony capability gate (agent dimension): gated PER-BRANCH below on
+    # the FINAL dispatched (assignee, project) — NOT once here — because several
+    # branches recompute the assignee/project after the reroute (e.g. send_outreach
+    # flips to dentalnearyou/dandan on a 'dent' substring in free text). Gating the
+    # final pair is the only correct subject. See _capability_block.
 
     try:
         if method == "create_task":
             title = action.get("action", "Brain-generated task")
+            # squad path dispatches assignee=project_lead; mirror path dispatches agent.
+            ct_assignee = project_lead if squad_id else agent
+            if (block := _capability_block(ct_assignee, project)) is not None:
+                return block
 
             if squad_id:
                 # Route through Squad Service — project isolation
@@ -638,6 +672,10 @@ def motor_execute(action: dict) -> dict:
             outreach_labels = method_labels["send_outreach"]
             squad_id = resolve_squad(outreach_labels, outreach_project)
             outreach_assignee = PROJECT_LEADS.get(outreach_project, agent)
+            # P0 guard: outreach recomputes project+assignee above (a 'dent' substring
+            # flips to dentalnearyou/dandan), so gate the FINAL pair, not the original.
+            if (block := _capability_block(outreach_assignee, outreach_project)) is not None:
+                return block
             if squad_id:
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -668,6 +706,8 @@ def motor_execute(action: dict) -> dict:
             code_labels = method_labels["fix_code"]
             squad_id = resolve_squad(code_labels, project)
             code_assignee = project_lead or "kasra"
+            if (block := _capability_block(code_assignee, project)) is not None:
+                return block
             if squad_id:
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -694,7 +734,9 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": "Code task created for Kasra"}
 
         elif method == "research":
-            # Create research task for River
+            # Create research task for River (shared/colony agent — gate for uniformity)
+            if (block := _capability_block("river", project)) is not None:
+                return block
             r = requests.post(f"{MIRROR_URL}/tasks", json={
                 "title": f"Research: {action.get('action', '')}",
                 "agent": "river",
@@ -718,6 +760,8 @@ def motor_execute(action: dict) -> dict:
         else:
             # Default: create a generic task
             default_title = action.get("action", "Brain action")
+            if (block := _capability_block(agent, project)) is not None:
+                return block
             if _task_exists(default_title, agent):
                 return {"success": True, "result": f"Duplicate task skipped for {agent}: {default_title[:60]}"}
             r = requests.post(f"{MIRROR_URL}/tasks", json={
