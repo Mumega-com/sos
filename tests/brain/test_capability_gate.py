@@ -47,6 +47,7 @@ class _Resp:
 _ROSTER = {"agents": [
     {"name": "sol", "project": "therealmofpatterns", "role": "SPECIALIST", "type": "OPENCLAW"},
     {"name": "dandan", "project": "dentalnearyou", "role": "SPECIALIST", "type": "OPENCLAW"},
+    {"name": "gaf", "project": "gaf", "role": "SPECIALIST", "type": "OPENCLAW"},
     {"name": "worker", "project": "", "role": "EXECUTOR", "type": "OPENCLAW"},
     {"name": "kasra", "project": "", "role": "EXECUTOR", "type": "TMUX"},
 ]}
@@ -153,6 +154,15 @@ def test_dandan_blocked_outside_dnu(monkeypatch):
     _patch_roster(monkeypatch)
     with pytest.raises(ValueError, match="Capability scope violation"):
         brain._assert_agent_in_tenant("dandan", "gaf")
+
+
+def test_gaf_blocked_cross_tenant(monkeypatch):
+    # regression net: gaf must be gated under the live roster (catches gaf being
+    # dropped from AGENTS / the /agents roster in future)
+    _patch_roster(monkeypatch)
+    with pytest.raises(ValueError, match="Capability scope violation"):
+        brain._assert_agent_in_tenant("gaf", "mumega")
+    brain._assert_agent_in_tenant("gaf", "gaf")  # own tenant — no raise
 
 
 def test_dandan_allowed_in_dnu_alias(monkeypatch):
