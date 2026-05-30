@@ -676,11 +676,25 @@ class BusHandler(BaseHTTPRequestHandler):
 
         entries: list[tuple[str, dict, str, str]] = []
         seen: set[tuple[str, str]] = set()
+        # Forward-poll (`since` cursor) wants ascending-from-cursor; xrange is right.
+        # But a fresh snapshot (/inbox, no cursor, newest_first) with
+        # xrange(min="-", count=limit) returns the OLDEST `limit` entries and never
+        # reaches recent messages once the buffer is deeper than `limit` — so the
+        # caller sees stale messages. Fetch the newest `limit` via xrevrange in that
+        # case; the sort below re-orders regardless. /watch (newest_first=False)
+        # keeps ascending replay.
+        snapshot_newest = range_start == "-" and newest_first
         for stream_kind, stream in streams_to_check:
             try:
-                batch = r.xrange(stream, min=range_start, max="+", count=limit)
+                if snapshot_newest:
+                    batch = r.xrevrange(stream, max="+", min="-", count=limit)
+                else:
+                    batch = r.xrange(stream, min=range_start, max="+", count=limit)
             except TypeError:
-                batch = r.xrange(stream, range_start, "+", limit)
+                if snapshot_newest:
+                    batch = r.xrevrange(stream, "+", "-", limit)
+                else:
+                    batch = r.xrange(stream, range_start, "+", limit)
             except Exception:
                 continue
             for mid, data in batch:
@@ -1320,8 +1334,11 @@ class BusHandler(BaseHTTPRequestHandler):
         """S027 D-1b — POST /api/internal/tenants/provision.
 
         Auth: INTERNAL_API_SECRET env-var Bearer (NOT tokens.json — separate s2s domain).
-        Body: { tenant_id, slug, display_name, industry }
-        Returns 200 with { mirror_key, bus_token, scaffold_path, idempotency: {...} }.
+        Body: { tenant_id, slug, display_name, industry, charter? }
+          charter (optional): per-agent boot_context charter STRING. When present and
+          non-empty it is written to sos:onboarding:{slug}:{slug}-admin so the
+          provisioned tenant admin self-orients on first boot_context call.
+        Returns 200 with { mirror_key, bus_token, scaffold_path, charter_written, idempotency: {...} }.
 
         LOCK-D-1b-internal-bearer-fail-closed: missing env → 503 BEFORE any disk read.
         Bad/missing Bearer → 401 BEFORE body parse. Body validation → 422 BEFORE disk write.
