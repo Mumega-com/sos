@@ -371,8 +371,14 @@ class TestL3TokenMintIdempotent:
         assert rec["agent_kind"] == "athena"
         assert rec["agent"] == "athena-acme"
 
+    _STANDARD_AGENT_PERMISSIONS = frozenset([
+        "bus:send", "bus:read", "health",
+        "memory:*", "tasks:*",
+        "skills:read", "skills:invoke",
+    ])
+
     def test_token_record_carries_full_scopes_s156(self, tmp_substrate):
-        """S156 regression — D-2b fork-mint must carry bus:read + health + permissions."""
+        """S156-harden — D-2b fork-mint must carry bus:read + health + explicit permissions (no mcp:* wildcard)."""
         taa.mint_or_get_tenant_agent_token("athena-acme", "athena", "acme")
         tokens = json.loads(tmp_substrate["tokens_path"].read_text())
         rec = next(t for t in tokens if t["agent"] == "athena-acme")
@@ -382,7 +388,13 @@ class TestL3TokenMintIdempotent:
         assert "health" in scopes, "S156: health required for boot_context/status MCP tools"
         permissions = rec.get("permissions")
         assert permissions is not None, "S156: permissions must not be null"
-        assert "mcp:*" in permissions, "S156: mcp:* required for full tool visibility"
+        # No wildcard — new tools are opt-in, not auto-granted
+        assert "mcp:*" not in permissions, "S156-harden: mcp:* wildcard must not be present"
+        assert "*" not in permissions, "S156-harden: bare wildcard must not be present"
+        # Explicit standard-agent allowlist must be present in full
+        granted = frozenset(permissions)
+        missing = self._STANDARD_AGENT_PERMISSIONS - granted
+        assert not missing, f"S156-harden: missing standard-agent permissions: {missing}"
 
     def test_existing_record_missing_plaintext_raises(self, tmp_substrate):
         # Seed token record without plaintext

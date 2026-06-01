@@ -53,8 +53,15 @@ def test_custom_agent_token_mint_carries_full_scopes(tmp_path, monkeypatch):
     assert "health" in scopes, "S156: health must be present for boot_context/status tools"
 
 
+_STANDARD_AGENT_PERMISSIONS = frozenset([
+    "bus:send", "bus:read", "health",
+    "memory:*", "tasks:*",
+    "skills:read", "skills:invoke",
+])
+
+
 def test_custom_agent_token_mint_carries_permissions(tmp_path, monkeypatch):
-    """S156 — permissions must be non-null and include mcp:* so tool-visibility returns > 0."""
+    """S156-harden — permissions must be the explicit least-privilege allowlist, not mcp:*."""
     tokens_path = tmp_path / "runtime" / "tokens.json"
     monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
 
@@ -66,7 +73,13 @@ def test_custom_agent_token_mint_carries_permissions(tmp_path, monkeypatch):
     permissions = entry.get("permissions")
     assert permissions is not None, "S156: permissions must not be null/missing"
     assert len(permissions) > 0, "S156: permissions list must not be empty"
-    assert "mcp:*" in permissions, "S156: mcp:* grants all tool visibility in MCP dispatcher"
+    # No wildcard — new tools are opt-in, not auto-granted
+    assert "mcp:*" not in permissions, "S156-harden: mcp:* wildcard must not be present"
+    assert "*" not in permissions, "S156-harden: bare wildcard must not be present"
+    # Explicit standard-agent allowlist must be present in full
+    granted = frozenset(permissions)
+    missing = _STANDARD_AGENT_PERMISSIONS - granted
+    assert not missing, f"S156-harden: missing standard-agent permissions: {missing}"
 
 
 def test_bus_state_lock_defaults_next_to_env_tokens_path(tmp_path, monkeypatch):
