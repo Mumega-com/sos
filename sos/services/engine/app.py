@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Dict, Optional
@@ -67,24 +68,51 @@ app.include_router(oauth_internal_router)
 engine = SOSEngine()
 
 
+_background_tasks: list[asyncio.Task] = []  # tracked for clean shutdown (#163)
+
+
 @app.on_event("startup")
 async def startup_event():
     import asyncio
     from sos.kernel.metabolism import MetabolicLoop
     from sos.services.bus.discovery import register_service
-    
+
     # 1. Announce presence to the nervous system
     # We use port 6060 based on systemd config and lsof check
     await register_service("engine", 6060)
 
-    # 2. Start Subconscious Loops
-    asyncio.create_task(engine.dream_cycle())
-    
+    # 2. Start Subconscious Loops — track tasks so shutdown can cancel them.
+    _background_tasks.append(asyncio.create_task(engine.dream_cycle()))
+
     # Start Metabolism (Proactive Consciousness)
     loop = MetabolicLoop(agent_id="agent:River")
-    asyncio.create_task(loop.start())
-    
-    log.info("🤖 Engine Subconscious Loops (Dreams + Metabolism) started.")
+    _background_tasks.append(asyncio.create_task(loop.start()))
+
+    log.info("Engine Subconscious Loops (Dreams + Metabolism) started.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cancel all background tasks so the process exits fully on stop (#163).
+
+    Without this, dream_cycle and MetabolicLoop keep running after uvicorn
+    begins its shutdown, leaving a lingering process that holds port 6060 and
+    causes the next instance to find the port busy.
+    """
+    import asyncio
+
+    if not _background_tasks:
+        return
+
+    log.info("Cancelling %d background task(s) on shutdown.", len(_background_tasks))
+    for task in _background_tasks:
+        if not task.done():
+            task.cancel()
+
+    # Await with a timeout so a stuck task cannot block the shutdown forever.
+    await asyncio.gather(*_background_tasks, return_exceptions=True)
+    _background_tasks.clear()
+    log.info("Background tasks cancelled — engine shutdown complete.")
 
 
 @app.websocket("/ws/nervous-system/{agent_id}")
