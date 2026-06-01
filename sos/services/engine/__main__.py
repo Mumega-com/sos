@@ -31,7 +31,9 @@ def main() -> None:
                 print(f"Port {port} busy, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait)
             else:
-                print(f"Port {port} still busy after {max_retries} attempts, starting anyway (uvicorn may handle)")
+                raise RuntimeError(
+                    f"Port {port} still busy after {max_retries} attempts — aborting for clean systemd restart (ExecStopPost frees the port)"
+                )
 
     config = uvicorn.Config(
         app,
