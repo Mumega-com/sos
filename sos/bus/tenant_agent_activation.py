@@ -357,11 +357,15 @@ def mint_or_get_tenant_agent_token(
             # wildcard. Covers full standard agent toolset via
             # _TOOL_PERMISSION_ALIASES. New tools are opt-in, not auto-granted.
             # skills:write/register excluded — tenant agents do not self-register.
+            # workspace:* included — workspace tools are project-scoped
+            # (sos:workspace:{project}:… keys, project = auth.project_scope),
+            # so join/leave/members cannot reach another tenant's workspace.
             "scopes": ["bus:send", "bus:read", "health"],
             "permissions": [
                 "bus:send", "bus:read", "health",
                 "memory:*", "tasks:*",
                 "skills:read", "skills:invoke",
+                "workspace:*",
             ],
         }
         tokens.append(new_record)

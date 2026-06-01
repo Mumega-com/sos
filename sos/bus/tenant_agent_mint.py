@@ -476,7 +476,10 @@ def mint_or_get_custom_tenant_agent_token(
             # status/flow_health/sprint_capsule/remember/recall/squad_*/memories/
             # task_*/list_skills/invoke_skill). New tools are opt-in, not
             # auto-granted. skills:write/register excluded — tenant agents do not
-            # self-register skills. workspace:* excluded — not in standard toolset.
+            # self-register skills. workspace:* is included — workspace tools are
+            # project-scoped (key prefix sos:workspace:{project}:…, project derived
+            # from auth.project_scope — caller cannot supply a foreign project), so
+            # workspace_join/leave/members cannot cross tenant boundaries.
             # Only D-3b custom-agent tokens are affected — human/operator/customer
             # tokens follow separate mint paths with no change here.
             "scopes": ["bus:send", "bus:read", "health"],
@@ -484,6 +487,7 @@ def mint_or_get_custom_tenant_agent_token(
                 "bus:send", "bus:read", "health",
                 "memory:*", "tasks:*",
                 "skills:read", "skills:invoke",
+                "workspace:*",
             ],
         }
         tokens.append(new_record)

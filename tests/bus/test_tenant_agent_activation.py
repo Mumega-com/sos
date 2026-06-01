@@ -375,6 +375,7 @@ class TestL3TokenMintIdempotent:
         "bus:send", "bus:read", "health",
         "memory:*", "tasks:*",
         "skills:read", "skills:invoke",
+        "workspace:*",
     ])
 
     def test_token_record_carries_full_scopes_s156(self, tmp_substrate):
@@ -395,6 +396,29 @@ class TestL3TokenMintIdempotent:
         granted = frozenset(permissions)
         missing = self._STANDARD_AGENT_PERMISSIONS - granted
         assert not missing, f"S156-harden: missing standard-agent permissions: {missing}"
+
+    def test_workspace_tools_allowed_under_standard_allowlist(self, tmp_substrate):
+        """S156 + workspace grant — workspace_join/leave/members must resolve ALLOWED (D-2b path)."""
+        from sos.mcp.sos_mcp_sse import _tool_allowed_by_permissions
+        taa.mint_or_get_tenant_agent_token("kasra-acme", "kasra", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "kasra-acme")
+        permissions = rec["permissions"]
+
+        assert _tool_allowed_by_permissions("workspace_join", permissions), "workspace_join must be ALLOWED"
+        assert _tool_allowed_by_permissions("workspace_leave", permissions), "workspace_leave must be ALLOWED"
+        assert _tool_allowed_by_permissions("workspace_members", permissions), "workspace_members must be ALLOWED"
+
+    def test_admin_tools_denied_under_standard_allowlist(self, tmp_substrate):
+        """S156 — sprout_tenant and register_skill must remain DENIED (no regression, D-2b path)."""
+        from sos.mcp.sos_mcp_sse import _tool_allowed_by_permissions
+        taa.mint_or_get_tenant_agent_token("calliope-acme", "calliope", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "calliope-acme")
+        permissions = rec["permissions"]
+
+        assert not _tool_allowed_by_permissions("sprout_tenant", permissions), "sprout_tenant must be DENIED"
+        assert not _tool_allowed_by_permissions("register_skill", permissions), "register_skill must be DENIED"
 
     def test_existing_record_missing_plaintext_raises(self, tmp_substrate):
         # Seed token record without plaintext

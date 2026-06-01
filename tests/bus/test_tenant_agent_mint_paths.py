@@ -57,6 +57,7 @@ _STANDARD_AGENT_PERMISSIONS = frozenset([
     "bus:send", "bus:read", "health",
     "memory:*", "tasks:*",
     "skills:read", "skills:invoke",
+    "workspace:*",
 ])
 
 
@@ -80,6 +81,45 @@ def test_custom_agent_token_mint_carries_permissions(tmp_path, monkeypatch):
     granted = frozenset(permissions)
     missing = _STANDARD_AGENT_PERMISSIONS - granted
     assert not missing, f"S156-harden: missing standard-agent permissions: {missing}"
+
+
+# -----------------------------------------------------------------------
+# S156 — workspace tools ALLOWED, admin tools DENIED
+# -----------------------------------------------------------------------
+
+def _tool_allowed(tool_name: str, permissions: list[str]) -> bool:
+    """Inline replica of _tool_allowed_by_permissions for test isolation."""
+    from sos.mcp.sos_mcp_sse import _tool_allowed_by_permissions
+    return _tool_allowed_by_permissions(tool_name, permissions)
+
+
+def test_workspace_tools_allowed_under_standard_allowlist(tmp_path, monkeypatch):
+    """S156 + workspace grant — workspace_join/leave/members must resolve ALLOWED."""
+    tokens_path = tmp_path / "runtime" / "tokens.json"
+    monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
+
+    _raw, _hash, _minted = tam.mint_or_get_custom_tenant_agent_token("bot-acme3", "acme")
+
+    records = json.loads(tokens_path.read_text())
+    permissions = records[0]["permissions"]
+
+    assert _tool_allowed("workspace_join", permissions), "workspace_join must be ALLOWED"
+    assert _tool_allowed("workspace_leave", permissions), "workspace_leave must be ALLOWED"
+    assert _tool_allowed("workspace_members", permissions), "workspace_members must be ALLOWED"
+
+
+def test_admin_tools_denied_under_standard_allowlist(tmp_path, monkeypatch):
+    """S156 — sprout_tenant and register_skill must remain DENIED (no regression)."""
+    tokens_path = tmp_path / "runtime" / "tokens.json"
+    monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
+
+    _raw, _hash, _minted = tam.mint_or_get_custom_tenant_agent_token("bot-acme4", "acme")
+
+    records = json.loads(tokens_path.read_text())
+    permissions = records[0]["permissions"]
+
+    assert not _tool_allowed("sprout_tenant", permissions), "sprout_tenant must be DENIED"
+    assert not _tool_allowed("register_skill", permissions), "register_skill must be DENIED"
 
 
 def test_bus_state_lock_defaults_next_to_env_tokens_path(tmp_path, monkeypatch):
