@@ -2122,7 +2122,7 @@ def get_tools() -> list[dict[str, Any]]:
                 "properties": {
                     "desired_agents": {
                         "type": "array",
-                        "description": "List of agents to provision. Each item must have 'name'; 'role', 'model', 'kind' are optional.",
+                        "description": "List of agents to provision. Each item must have 'name'; 'role', 'model', 'kind' are optional. Maximum 25 agents per call.",
                         "items": {
                             "type": "object",
                             "required": ["name"],
@@ -2137,6 +2137,7 @@ def get_tools() -> list[dict[str, Any]]:
                             },
                         },
                         "minItems": 1,
+                        "maxItems": 25,
                     },
                     "squads": {
                         "type": "array",
@@ -2862,21 +2863,18 @@ async def _handle_sync_agents(
     System/operator tokens may target an explicit tenant_slug.
     Raw tokens are never surfaced; only the last-8-char tail is returned.
     """
-    # --- Import mint primitives (sync; run in executor below) ---
+    # --- Import canonical mint orchestrator (sync; run in executor below) ---
     # Deferred import so a missing optional dep fails at call-time not server start.
     try:
         from sos.bus.tenant_agent_mint import (
-            mint_or_get_custom_tenant_agent_token,
-            mint_or_get_custom_qnft,
-            register_or_skip_routing,
-            scaffold_or_skip_custom_agent,
+            mint_tenant_custom_agent,
             ALLOWED_MODELS,
             AGENT_NAME_RE,
         )
         from sos.bus.tenant_agent_activation import _load_tokens
         from sos.bus.tenant_provisioning import ProvisionError
     except ImportError as _imp_exc:
-        return _text(f"Error: sync_agents mint primitives unavailable: {_imp_exc}")
+        return _text(f"Error: sync_agents mint orchestrator unavailable: {_imp_exc}")
 
     loop = asyncio.get_event_loop()
 
@@ -2912,6 +2910,14 @@ async def _handle_sync_agents(
 
     if not desired_agents:
         return _text("Error: desired_agents must be a non-empty list")
+
+    # FIX 3 (WARN — O(N) cap): reject before any mint to bound file-write blast radius.
+    _SYNC_AGENTS_MAX = 25
+    if len(desired_agents) > _SYNC_AGENTS_MAX:
+        return _text(
+            f"Error: desired_agents exceeds maximum batch size of {_SYNC_AGENTS_MAX} "
+            f"(got {len(desired_agents)}). Split into smaller calls."
+        )
 
     DEFAULT_MODEL = "claude-sonnet-4-6"
     DEFAULT_ROLE = "tenant-agent"
@@ -2997,55 +3003,48 @@ async def _handle_sync_agents(
             agents_created.append({"name": agent_name, "status": "would_create", "dry_run": True})
             continue
 
-        # --- Mint via D-3b primitives ---
-        def _mint(
-            _agent_name: str = agent_name,
-            _tenant_slug: str = effective_tenant,
-            _model: str = model,
-            _role: str = role,
-        ) -> dict[str, Any]:
-            """Run inside executor — all D-3b ops are sync file-I/O."""
-            qnft_record, qnft_minted = mint_or_get_custom_qnft(
-                agent_name=_agent_name,
-                tenant_slug=_tenant_slug,
-                model=_model,
-                role=_role,
-            )
-            raw_token, token_hash, token_minted = mint_or_get_custom_tenant_agent_token(
-                agent_name=_agent_name,
-                tenant_slug=_tenant_slug,
-            )
-            register_or_skip_routing(
-                agent_name=_agent_name,
-                tenant_slug=_tenant_slug,
-                routing="tenant-bus",
-            )
-            scaffold_path, scaffold_created = scaffold_or_skip_custom_agent(
-                agent_name=_agent_name,
-                tenant_slug=_tenant_slug,
-                role=_role,
-                model=_model,
-                charter=DEFAULT_CHARTER,
-                voice_rules=DEFAULT_VOICE_RULES,
-                qnft_seed_hex=qnft_record["seed_hex"],
-                mint_date=qnft_record["minted_at"],
-            )
-            # HARD SAFETY: never return raw token in any result.
-            # Redact to last-8 chars by direct string indexing (not regex/sed).
-            token_tail = raw_token[-8:] if raw_token else "????????"
+        # --- Mint via canonical orchestrator (FIX 1 + FIX 2) ---
+        # Route through mint_tenant_custom_agent so we inherit:
+        #   • validate_mint_body: reserved-name + reserved-prefix-RE guard (FIX 1)
+        #   • _bus_state_lock: serialises all RMW ops on bus state (FIX 2)
+        # A ProvisionError from validate_mint_body (e.g. reserved name) is caught
+        # as a per-item error — the rest of the list continues.
+        _mint_body: dict[str, Any] = {
+            "tenant_id": auth.tenant_id or effective_tenant,
+            "tenant_slug": effective_tenant,
+            "agent_name": agent_name,
+            "model": model,
+            "role": role,
+            "charter": agent_spec.get("charter") or DEFAULT_CHARTER,
+            "voice_rules": agent_spec.get("voice_rules") or DEFAULT_VOICE_RULES,
+            # platform-admin path: sync_agents is an operator-level call;
+            # token claims are pre-validated by the S180 membrane above.
+            "actor_type": "platform-admin",
+        }
+
+        def _do_mint(body: dict[str, Any] = _mint_body) -> dict[str, Any]:
+            """Run inside executor — mint_tenant_custom_agent is sync file-I/O."""
+            result = mint_tenant_custom_agent(body)
+            # raw_token is NOT in the orchestrator return dict (it is retained only
+            # inside the sub-primitive for token distribution). We surface the
+            # token_hash prefix as a handle; full token is in tokens.json only.
+            # For callers that need the tail: retrieve via token_hash lookup.
+            token_hash = result.get("token_hash", "")
             return {
-                "name": _agent_name,
+                "name": result["agent_name"],
                 "status": "created",
-                "token_tail": token_tail,
+                # token_tail: last-8 of hash (hash is public; raw token is not).
+                # Direct string indexing — never regex/sed (redact-by-construction rule).
+                "token_tail": token_hash[-8:] if token_hash else "????????",
                 "token_hash_prefix": token_hash[:12] if token_hash else "",
-                "scaffold_path": str(scaffold_path),
-                "qnft_minted": qnft_minted,
-                "token_minted": token_minted,
-                "scaffold_created": scaffold_created,
+                "scaffold_path": result.get("scaffold_path", ""),
+                "qnft_minted": result["idempotency"]["qnft_minted"],
+                "token_minted": result["idempotency"]["token_minted"],
+                "scaffold_created": result["idempotency"]["scaffold_created"],
             }
 
         try:
-            mint_result = await loop.run_in_executor(None, _mint)
+            mint_result = await loop.run_in_executor(None, _do_mint)
             agents_created.append(mint_result)
             # Invalidate local token cache so new token is recognized immediately.
             _local_token_cache.invalidate()
