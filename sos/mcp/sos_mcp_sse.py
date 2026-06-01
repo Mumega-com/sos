@@ -3444,8 +3444,13 @@ async def _handle_boot_context(auth: MCPAuthContext, args: dict[str, Any] | None
         },
         "node": _node_contract_from_auth(auth, memory),
         "peers": await _boot_context_peers(auth, requested_project or memory.project),
-        "sprint": _current_sprint_capsule(compact=True),
     }
+    # The sprint capsule is Mumega-internal platform state (loom's S061 — owner,
+    # theme, slices, contracts). It must NEVER reach a tenant agent (cross-tenant
+    # scope leak). Gate it to system tokens only — same rule as the standalone
+    # sprint_capsule tool (_handle_sprint_capsule) and flow_health.
+    if auth.is_system:
+        payload["sprint"] = _current_sprint_capsule(compact=True)
 
     # Self-onboarding: baseline protocols/governance + per-agent charter, so an
     # agent fully orients itself on first connect with no hand-pasted prompt.
