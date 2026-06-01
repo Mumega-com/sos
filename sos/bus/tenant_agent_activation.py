@@ -348,7 +348,14 @@ def mint_or_get_tenant_agent_token(
             "tenant_slug": tenant_slug,
             "agent_kind": agent_kind,
             "role": "agent",
-            "scopes": ["bus:send"],
+            # S156 fix: full scope set so MCP dispatcher gate (bus:read) and
+            # tool-visibility check (permissions) both pass for new tenant agents.
+            # Matches working pattern of existing fork-mint agents in tokens.json.
+            # D-2b fork-mint path (athena/kasra/calliope variants) — agent_kind
+            # is one of FORK_ALLOWLIST values, not "custom"; only this path is
+            # affected, not human/operator/customer tokens.
+            "scopes": ["bus:send", "bus:read", "health"],
+            "permissions": ["mcp:*"],
         }
         tokens.append(new_record)
         write_tokens_atomic(_tokens_path(), tokens)

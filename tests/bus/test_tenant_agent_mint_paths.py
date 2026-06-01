@@ -32,6 +32,43 @@ def test_custom_agent_qnft_mint_honors_sos_qnft_path(tmp_path, monkeypatch):
     assert registry["custom:acme:helper"]["agent_name"] == "helper"
 
 
+# -----------------------------------------------------------------------
+# S156 regression: newly-minted D-3b tokens must carry full scopes + permissions
+# so the MCP dispatcher gate does not return 0 tools to the new agent.
+# -----------------------------------------------------------------------
+
+def test_custom_agent_token_mint_carries_full_scopes(tmp_path, monkeypatch):
+    """S156 — scopes must include bus:read + health, not just bus:send."""
+    tokens_path = tmp_path / "runtime" / "tokens.json"
+    monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
+
+    _raw, _hash, minted = tam.mint_or_get_custom_tenant_agent_token("bot-acme", "acme")
+
+    assert minted is True
+    records = json.loads(tokens_path.read_text())
+    entry = records[0]
+    scopes = entry.get("scopes", [])
+    assert "bus:send" in scopes, "bus:send must be present"
+    assert "bus:read" in scopes, "S156: bus:read must be present for inbox/peers tools"
+    assert "health" in scopes, "S156: health must be present for boot_context/status tools"
+
+
+def test_custom_agent_token_mint_carries_permissions(tmp_path, monkeypatch):
+    """S156 — permissions must be non-null and include mcp:* so tool-visibility returns > 0."""
+    tokens_path = tmp_path / "runtime" / "tokens.json"
+    monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))
+
+    _raw, _hash, minted = tam.mint_or_get_custom_tenant_agent_token("bot-acme2", "acme")
+
+    assert minted is True
+    records = json.loads(tokens_path.read_text())
+    entry = records[0]
+    permissions = entry.get("permissions")
+    assert permissions is not None, "S156: permissions must not be null/missing"
+    assert len(permissions) > 0, "S156: permissions list must not be empty"
+    assert "mcp:*" in permissions, "S156: mcp:* grants all tool visibility in MCP dispatcher"
+
+
 def test_bus_state_lock_defaults_next_to_env_tokens_path(tmp_path, monkeypatch):
     tokens_path = tmp_path / "runtime" / "tokens.json"
     monkeypatch.setenv("SOS_BUS_TOKENS_PATH", str(tokens_path))

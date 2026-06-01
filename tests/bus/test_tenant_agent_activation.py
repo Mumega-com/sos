@@ -371,6 +371,19 @@ class TestL3TokenMintIdempotent:
         assert rec["agent_kind"] == "athena"
         assert rec["agent"] == "athena-acme"
 
+    def test_token_record_carries_full_scopes_s156(self, tmp_substrate):
+        """S156 regression — D-2b fork-mint must carry bus:read + health + permissions."""
+        taa.mint_or_get_tenant_agent_token("athena-acme", "athena", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "athena-acme")
+        scopes = rec.get("scopes", [])
+        assert "bus:send" in scopes
+        assert "bus:read" in scopes, "S156: bus:read required for inbox/peers MCP tools"
+        assert "health" in scopes, "S156: health required for boot_context/status MCP tools"
+        permissions = rec.get("permissions")
+        assert permissions is not None, "S156: permissions must not be null"
+        assert "mcp:*" in permissions, "S156: mcp:* required for full tool visibility"
+
     def test_existing_record_missing_plaintext_raises(self, tmp_substrate):
         # Seed token record without plaintext
         rec = {

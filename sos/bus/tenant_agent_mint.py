@@ -465,7 +465,16 @@ def mint_or_get_custom_tenant_agent_token(
             "tenant_slug": tenant_slug,
             "agent_kind": "custom",  # three-discriminator sentinel
             "role": "agent",
-            "scopes": ["bus:send"],
+            # S156 fix: full scope set so MCP dispatcher gate (bus:read) and
+            # tool-visibility check (permissions) both pass for new tenant agents.
+            # "bus:send" alone → 0 tools visible (dispatcher gates inbox/peers on
+            # bus:read; boot_context/status on health). "mcp:*" is the wildcard
+            # that _tool_allowed_by_permissions() honors, matching every tool name.
+            # This matches the working pattern of D-2b fork-mint agents in
+            # tokens.json. Only D-3b custom-agent tokens are affected — human/
+            # operator/customer tokens follow separate mint paths with no change here.
+            "scopes": ["bus:send", "bus:read", "health"],
+            "permissions": ["mcp:*"],
         }
         tokens.append(new_record)
         token_path = _runtime_path(
