@@ -479,11 +479,14 @@ def _tools_visible_to_auth(auth: MCPAuthContext) -> list[dict[str, Any]]:
     ]
 
 
+# s184/#167: substrate-squad agent names. Membership alone NO LONGER grants
+# mumega-internal memory — _is_substrate_identity() also requires a substrate
+# project. Removed AGENT_SELF (no-name tokens must not reach substrate — the
+# claude.ai collapse vector) and tenant agents (dandan → its own tenant cell).
 _INTERNAL_MEMORY_AGENTS = frozenset({
     "kasra", "athena", "loom", "sovereign", "mumega", "codex",
-    "sol", "hermes", "river", "worker", "dandan", "mkt-lead",
+    "sol", "hermes", "river", "worker", "mkt-lead",
     "mizan", "gemma", "dara", "sos-medic", "agentlink",
-    AGENT_SELF,
 })
 
 
@@ -499,6 +502,25 @@ class MCPMemoryScope:
     owner_id: str
     boundary: str
     as_agent_active: bool
+
+
+_SUBSTRATE_PROJECTS = frozenset({"sos", "mumega"})
+
+
+def _is_substrate_identity(auth: MCPAuthContext) -> bool:
+    """s184/#167: a token reaches the shared ``mumega-internal`` substrate memory
+    ONLY if it is an explicit system token, OR a recognised internal agent bound to
+    a substrate project (sos/mumega) or to no project. A tenant-project token
+    (dnu/torivers/viamar/…) NEVER qualifies — even if its agent name collides with
+    an internal name. This replaces the forgeable bare-name match that leaked
+    cross-tenant substrate memory (GH #167)."""
+    if auth.is_system:
+        return True
+    name = (auth.agent_scope or "").lower()
+    if name and name in _INTERNAL_MEMORY_AGENTS:
+        proj = _scope_project(auth)
+        return proj in _SUBSTRATE_PROJECTS or proj is None
+    return False
 
 
 def _memory_scope(auth: MCPAuthContext) -> MCPMemoryScope:
@@ -536,7 +558,7 @@ def _memory_scope(auth: MCPAuthContext) -> MCPMemoryScope:
             as_agent_active=False,
         )
 
-    if auth.is_system or agent.lower() in _INTERNAL_MEMORY_AGENTS:
+    if _is_substrate_identity(auth):
         return MCPMemoryScope(
             agent=agent,
             project=project,
