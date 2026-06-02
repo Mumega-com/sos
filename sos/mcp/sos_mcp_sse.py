@@ -519,6 +519,9 @@ def _is_substrate_identity(auth: MCPAuthContext) -> bool:
     name = (auth.agent_scope or "").lower()
     if name and name in _INTERNAL_MEMORY_AGENTS:
         proj = _scope_project(auth)
+        # proj is None only when no project resolves at all (PROJECT env unset) —
+        # production-unreachable defensive path for substrate agents, NOT a tenant
+        # escape (a tenant token always carries its tenant project). Athena G184-A.
         return proj in _SUBSTRATE_PROJECTS or proj is None
     return False
 
