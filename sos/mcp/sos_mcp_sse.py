@@ -4949,7 +4949,11 @@ async def handle_tool(
 
         # --- task_update ---
         elif name == "task_update":
-            # Redirected from Mirror (retired /tasks) → Squad Service (:8060)
+            # Squad Service has NO generic PUT /tasks/{id} — it returns 405 and
+            # the old code ignored the response, reporting success on a no-op
+            # (GH #177, same phantom-success class as the brain motor defect).
+            # Route to the real state-transition endpoints and claim success
+            # only on a 2xx (verify effect, not status).
             task = await loop.run_in_executor(
                 None,
                 lambda: requests.get(
@@ -4959,21 +4963,43 @@ async def handle_tool(
                 ).json(),
             )
             _ensure_task_in_scope(task, auth)
-            body: dict[str, Any] = {}
-            if args.get("status"):
-                body["status"] = args["status"]
-            if args.get("notes"):
-                body["notes"] = args["notes"]
-            await loop.run_in_executor(
+            status = str(args.get("status") or "").strip().lower()
+            notes = str(args.get("notes") or "")
+            if status in {"done", "completed", "complete"}:
+                endpoint = "complete"
+                payload_body: dict[str, Any] = {"result": {"notes": notes} if notes else {}}
+            elif status in {"failed", "fail", "cancelled", "canceled", "obsolete"}:
+                endpoint = "fail"
+                payload_body = {"error": notes or f"marked {status} via task_update"}
+            elif status in {"claimed", "in_progress", "in-progress"}:
+                endpoint = "claim"
+                payload_body = {"assignee": auth.agent_scope or AGENT_SELF, "attempt": 1}
+            elif not status:
+                return _text(
+                    "task_update: nothing applied — the Squad Service has no "
+                    "notes-only update endpoint; pass status "
+                    "(done|failed|cancelled|claimed)."
+                )
+            else:
+                return _text(
+                    f"task_update: unsupported status {status!r} — supported: "
+                    "done/completed, failed/cancelled, claimed/in_progress."
+                )
+            upd = await loop.run_in_executor(
                 None,
-                lambda: requests.put(
-                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}",
+                lambda: requests.post(
+                    f"{SQUAD_SERVICE_URL}/tasks/{args['task_id']}/{endpoint}",
                     headers={"Authorization": f"Bearer {SQUAD_SYSTEM_TOKEN}"},
-                    json=body,
+                    json=payload_body,
                     timeout=5,
                 ),
             )
-            return _text(f"Task {args['task_id']} updated")
+            if not upd.ok:
+                return _text(
+                    f"task_update FAILED: POST /tasks/{args['task_id']}/{endpoint} "
+                    f"→ HTTP {upd.status_code} {upd.text[:200]}"
+                )
+            return _text(f"Task {args['task_id']} → {endpoint} (HTTP {upd.status_code})")
 
         # --- task_board (prioritized unified view) ---
         elif name == "task_board":
