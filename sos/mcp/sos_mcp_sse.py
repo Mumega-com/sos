@@ -1508,12 +1508,44 @@ def _scoped_context_id(auth: MCPAuthContext, value: str | None) -> str:
     return context_id if context_id.startswith(prefix) else f"{prefix}{context_id}"
 
 
+# Internal coordination projects whose agents may act on cross-project tasks
+# ASSIGNED TO THEM (brain routes substrate work to kasra/river across projects).
+# Deliberately NOT an agent-name allowlist — the s184 leak class rode the
+# agent-name branch in _memory_scope; names are claimable, token scope is not.
+_TASK_ASSIGNEE_SUBSTRATE_PROJECTS = frozenset({"sos", "mumega"})
+# Narrowing set, not a grant (adv B1): tenant-bound agents (sol, dandan,
+# worker) and human/assistant names hold empty-scope sos tokens too — only
+# these colony coordination agents may use the assignee exception. A name
+# here grants nothing by itself; all four conditions below must hold.
+_TASK_ASSIGNEE_SUBSTRATE_AGENTS = frozenset({"kasra", "river"})
+
+
 def _ensure_task_in_scope(task: dict[str, Any], auth: MCPAuthContext) -> None:
     if auth.is_system:
         return
     project = task.get("project")
-    if project != auth.tenant_id:
-        raise HTTPException(status_code=403, detail="cross_tenant_task_access")
+    if project == auth.tenant_id:
+        return
+    # Assignee exception: an internal substrate agent may act on a task the
+    # brain assigned to it in another project. Four conjunctive conditions:
+    #   1. the caller IS the assignee (agent_name is server-derived from the
+    #      token, never claimable by the client),
+    #   2. the token is an internal one (empty scope — excludes "tenant-agent"
+    #      and "customer" tokens, so a tenant fork named "kasra" cannot ride
+    #      its name across projects),
+    #   3. the token's home project is a substrate project (sos/mumega), not
+    #      a tenant,
+    #   4. the agent is a colony coordination agent (narrowing — keeps
+    #      tenant-bound agents like sol with empty-scope sos tokens out).
+    if (
+        auth.agent_name
+        and task.get("assignee") == auth.agent_name
+        and not auth.scope
+        and auth.tenant_id in _TASK_ASSIGNEE_SUBSTRATE_PROJECTS
+        and auth.agent_name in _TASK_ASSIGNEE_SUBSTRATE_AGENTS
+    ):
+        return
+    raise HTTPException(status_code=403, detail="cross_tenant_task_access")
 
 
 # ---------------------------------------------------------------------------
