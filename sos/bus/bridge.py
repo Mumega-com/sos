@@ -1004,7 +1004,7 @@ class BusHandler(BaseHTTPRequestHandler):
         body = self._body()
 
         if path == "/announce":
-            agent = body.get("agent", "unknown")
+            agent = body.get("agent", "unknown").removeprefix("agent:")
             tool = body.get("tool", "remote")
             summary = body.get("summary", f"{tool} session")
             project = self._project(token, body.get("project"))
@@ -1035,8 +1035,10 @@ class BusHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "announced", "agent": agent, "project": project})
 
         elif path == "/send":
-            from_agent = body.get("from", "unknown")
-            to_agent = body.get("to", "")
+            # Accept both bare names and "agent:name" — callers routinely pass
+            # the prefixed form; double-prefixing crashed sos_msg validation.
+            from_agent = body.get("from", "unknown").removeprefix("agent:")
+            to_agent = body.get("to", "").removeprefix("agent:")
             text = body.get("text", "")
             project = self._project(token, body.get("project"))
             wait_for_delivery = body.get("wait_for_delivery", False)
@@ -1057,7 +1059,13 @@ class BusHandler(BaseHTTPRequestHandler):
                 return
             stream = _agent_stream(to_agent, project)
             channel = _agent_channel(to_agent, project)
-            msg = sos_msg("chat", f"agent:{from_agent}", f"agent:{to_agent}", text, project)
+            try:
+                msg = sos_msg("chat", f"agent:{from_agent}", f"agent:{to_agent}", text, project)
+            except Exception as exc:
+                # Pydantic contract rejection (bad agent name etc.) must be a
+                # 400, not an unhandled crash that drops the connection.
+                self._json(400, {"error": "invalid_message", "message": str(exc)})
+                return
             message_id = msg.get("message_id", "")
             try:
                 entry_id = r.xadd(stream, msg)
@@ -1086,7 +1094,7 @@ class BusHandler(BaseHTTPRequestHandler):
             self._json(200, result)
 
         elif path == "/broadcast":
-            from_agent = body.get("from", "unknown")
+            from_agent = body.get("from", "unknown").removeprefix("agent:")
             text = body.get("text", "")
             squad = body.get("squad")
             project = self._project(token, body.get("project"))
@@ -1114,7 +1122,11 @@ class BusHandler(BaseHTTPRequestHandler):
             else:
                 channel = f"sos:channel:project:{project}:global" if project else "sos:channel:global"
             stream = f"{_prefix(project)}:{'squad:' + squad if squad else 'broadcast'}"
-            msg = sos_msg("broadcast", f"agent:{from_agent}", channel, text, project)
+            try:
+                msg = sos_msg("broadcast", f"agent:{from_agent}", channel, text, project)
+            except Exception as exc:
+                self._json(400, {"error": "invalid_message", "message": str(exc)})
+                return
             mid = r.xadd(stream, msg)
             r.publish(channel, json.dumps(msg))
             self._json(200, {"status": "broadcast", "channel": channel, "stream_id": mid, "project": project})
