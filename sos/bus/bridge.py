@@ -964,6 +964,54 @@ class BusHandler(BaseHTTPRequestHandler):
                         break
             self._json(200, {"project": project, "registered": registry, "streams": streams})
 
+        elif path == "/fleet":
+            # Fleet roster: token registry (identity + label + active flag — never
+            # hashes/secrets) merged with per-agent stream liveness. last_seen is
+            # decoded from the stream's last-generated id (redis stream ids are
+            # ms timestamps). Read-only; any valid token may view.
+            project = self._project(token, params.get("project"))
+            roster: dict = {}
+            for t in _load_tokens():
+                agent_name = t.get("agent")
+                if not agent_name:
+                    continue
+                if project and t.get("project") not in (project, None):
+                    continue
+                entry = roster.setdefault(agent_name, {
+                    "agent": agent_name,
+                    "label": t.get("label", ""),
+                    "project": t.get("project"),
+                    "active_token": False,
+                    "last_seen_ms": None,
+                    "messages": 0,
+                })
+                if t.get("active"):
+                    entry["active_token"] = True
+                    if t.get("label"):
+                        entry["label"] = t["label"]
+            stream_pat = _scan_streams(project)
+            cursor = 0
+            while True:
+                cursor, keys = r.scan(cursor, match=stream_pat, count=100)
+                for key in keys:
+                    agent_name = key.split(":")[-1]
+                    entry = roster.setdefault(agent_name, {
+                        "agent": agent_name, "label": "", "project": project,
+                        "active_token": False, "last_seen_ms": None, "messages": 0,
+                    })
+                    try:
+                        info = r.xinfo_stream(key)
+                        entry["messages"] = int(info.get("length", 0))
+                        last_id = info.get("last-generated-id", "0-0")
+                        ms = int(str(last_id).split("-")[0])
+                        if ms and (entry["last_seen_ms"] is None or ms > entry["last_seen_ms"]):
+                            entry["last_seen_ms"] = ms
+                    except Exception:
+                        pass
+                if cursor == 0:
+                    break
+            self._json(200, {"project": project, "fleet": sorted(roster.values(), key=lambda e: e["agent"])})
+
         else:
             self._json(404, {"error": "Not found"})
 
