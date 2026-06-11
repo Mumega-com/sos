@@ -91,8 +91,15 @@ async def _upsert_tenant(
     """
     try:
         import sys
-        if '/home/sos' not in sys.path:
-            sys.path.insert(0, '/home/sos')
+        # Mirror's kernel/db.py does absolute `from kernel.embeddings import ...`,
+        # so the mirror root must be on sys.path for `kernel.*` to resolve.
+        # Keep /home/mumega ahead (already on PYTHONPATH) so `mirror.kernel.db`
+        # still resolves as a package; APPEND the mirror root (do not insert at 0,
+        # which would shadow the `mirror` package itself). The legacy /home/sos
+        # path no longer exists (relocated to /home/mumega/mirror).
+        mirror_root = os.environ.get("SOS_MIRROR_KERNEL_ROOT", "/home/mumega/mirror")
+        if mirror_root and mirror_root not in sys.path:
+            sys.path.append(mirror_root)
         from mirror.kernel.db import get_db  # Mirror PG pool
     except Exception as exc:
         log.error("DB import failed: %s: %s", type(exc).__name__, exc)
