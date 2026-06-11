@@ -63,9 +63,6 @@ def _resolve_token(raw_token: str) -> dict | None:
         stored_hash = t.get("token_hash") or t.get("hash", "")
         if stored_hash and hmac.compare_digest(stored_hash, raw_hash):
             return t
-        plaintext = t.get("token", "")
-        if plaintext and hmac.compare_digest(plaintext, raw_token):
-            return t
     return None
 
 
@@ -676,11 +673,25 @@ class BusHandler(BaseHTTPRequestHandler):
 
         entries: list[tuple[str, dict, str, str]] = []
         seen: set[tuple[str, str]] = set()
+        # Forward-poll (`since` cursor) wants ascending-from-cursor; xrange is right.
+        # But a fresh snapshot (/inbox, no cursor, newest_first) with
+        # xrange(min="-", count=limit) returns the OLDEST `limit` entries and never
+        # reaches recent messages once the buffer is deeper than `limit` — so the
+        # caller sees stale messages. Fetch the newest `limit` via xrevrange in that
+        # case; the sort below re-orders regardless. /watch (newest_first=False)
+        # keeps ascending replay.
+        snapshot_newest = range_start == "-" and newest_first
         for stream_kind, stream in streams_to_check:
             try:
-                batch = r.xrange(stream, min=range_start, max="+", count=limit)
+                if snapshot_newest:
+                    batch = r.xrevrange(stream, max="+", min="-", count=limit)
+                else:
+                    batch = r.xrange(stream, min=range_start, max="+", count=limit)
             except TypeError:
-                batch = r.xrange(stream, range_start, "+", limit)
+                if snapshot_newest:
+                    batch = r.xrevrange(stream, "+", "-", limit)
+                else:
+                    batch = r.xrange(stream, range_start, "+", limit)
             except Exception:
                 continue
             for mid, data in batch:
@@ -950,6 +961,54 @@ class BusHandler(BaseHTTPRequestHandler):
                         break
             self._json(200, {"project": project, "registered": registry, "streams": streams})
 
+        elif path == "/fleet":
+            # Fleet roster: token registry (identity + label + active flag — never
+            # hashes/secrets) merged with per-agent stream liveness. last_seen is
+            # decoded from the stream's last-generated id (redis stream ids are
+            # ms timestamps). Read-only; any valid token may view.
+            project = self._project(token, params.get("project"))
+            roster: dict = {}
+            for t in _load_tokens():
+                agent_name = t.get("agent")
+                if not agent_name:
+                    continue
+                if project and t.get("project") not in (project, None):
+                    continue
+                entry = roster.setdefault(agent_name, {
+                    "agent": agent_name,
+                    "label": t.get("label", ""),
+                    "project": t.get("project"),
+                    "active_token": False,
+                    "last_seen_ms": None,
+                    "messages": 0,
+                })
+                if t.get("active"):
+                    entry["active_token"] = True
+                    if t.get("label"):
+                        entry["label"] = t["label"]
+            stream_pat = _scan_streams(project)
+            cursor = 0
+            while True:
+                cursor, keys = r.scan(cursor, match=stream_pat, count=100)
+                for key in keys:
+                    agent_name = key.split(":")[-1]
+                    entry = roster.setdefault(agent_name, {
+                        "agent": agent_name, "label": "", "project": project,
+                        "active_token": False, "last_seen_ms": None, "messages": 0,
+                    })
+                    try:
+                        info = r.xinfo_stream(key)
+                        entry["messages"] = int(info.get("length", 0))
+                        last_id = info.get("last-generated-id", "0-0")
+                        ms = int(str(last_id).split("-")[0])
+                        if ms and (entry["last_seen_ms"] is None or ms > entry["last_seen_ms"]):
+                            entry["last_seen_ms"] = ms
+                    except Exception:
+                        pass
+                if cursor == 0:
+                    break
+            self._json(200, {"project": project, "fleet": sorted(roster.values(), key=lambda e: e["agent"])})
+
         else:
             self._json(404, {"error": "Not found"})
 
@@ -990,7 +1049,7 @@ class BusHandler(BaseHTTPRequestHandler):
         body = self._body()
 
         if path == "/announce":
-            agent = body.get("agent", "unknown")
+            agent = body.get("agent", "unknown").removeprefix("agent:")
             tool = body.get("tool", "remote")
             summary = body.get("summary", f"{tool} session")
             project = self._project(token, body.get("project"))
@@ -1021,8 +1080,10 @@ class BusHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "announced", "agent": agent, "project": project})
 
         elif path == "/send":
-            from_agent = body.get("from", "unknown")
-            to_agent = body.get("to", "")
+            # Accept both bare names and "agent:name" — callers routinely pass
+            # the prefixed form; double-prefixing crashed sos_msg validation.
+            from_agent = body.get("from", "unknown").removeprefix("agent:")
+            to_agent = body.get("to", "").removeprefix("agent:")
             text = body.get("text", "")
             project = self._project(token, body.get("project"))
             wait_for_delivery = body.get("wait_for_delivery", False)
@@ -1043,7 +1104,13 @@ class BusHandler(BaseHTTPRequestHandler):
                 return
             stream = _agent_stream(to_agent, project)
             channel = _agent_channel(to_agent, project)
-            msg = sos_msg("chat", f"agent:{from_agent}", f"agent:{to_agent}", text, project)
+            try:
+                msg = sos_msg("chat", f"agent:{from_agent}", f"agent:{to_agent}", text, project)
+            except Exception as exc:
+                # Pydantic contract rejection (bad agent name etc.) must be a
+                # 400, not an unhandled crash that drops the connection.
+                self._json(400, {"error": "invalid_message", "message": str(exc)})
+                return
             message_id = msg.get("message_id", "")
             try:
                 entry_id = r.xadd(stream, msg)
@@ -1072,7 +1139,7 @@ class BusHandler(BaseHTTPRequestHandler):
             self._json(200, result)
 
         elif path == "/broadcast":
-            from_agent = body.get("from", "unknown")
+            from_agent = body.get("from", "unknown").removeprefix("agent:")
             text = body.get("text", "")
             squad = body.get("squad")
             project = self._project(token, body.get("project"))
@@ -1100,7 +1167,11 @@ class BusHandler(BaseHTTPRequestHandler):
             else:
                 channel = f"sos:channel:project:{project}:global" if project else "sos:channel:global"
             stream = f"{_prefix(project)}:{'squad:' + squad if squad else 'broadcast'}"
-            msg = sos_msg("broadcast", f"agent:{from_agent}", channel, text, project)
+            try:
+                msg = sos_msg("broadcast", f"agent:{from_agent}", channel, text, project)
+            except Exception as exc:
+                self._json(400, {"error": "invalid_message", "message": str(exc)})
+                return
             mid = r.xadd(stream, msg)
             r.publish(channel, json.dumps(msg))
             self._json(200, {"status": "broadcast", "channel": channel, "stream_id": mid, "project": project})
@@ -1320,8 +1391,11 @@ class BusHandler(BaseHTTPRequestHandler):
         """S027 D-1b — POST /api/internal/tenants/provision.
 
         Auth: INTERNAL_API_SECRET env-var Bearer (NOT tokens.json — separate s2s domain).
-        Body: { tenant_id, slug, display_name, industry }
-        Returns 200 with { mirror_key, bus_token, scaffold_path, idempotency: {...} }.
+        Body: { tenant_id, slug, display_name, industry, charter? }
+          charter (optional): per-agent boot_context charter STRING. When present and
+          non-empty it is written to sos:onboarding:{slug}:{slug}-admin so the
+          provisioned tenant admin self-orients on first boot_context call.
+        Returns 200 with { mirror_key, bus_token, scaffold_path, charter_written, idempotency: {...} }.
 
         LOCK-D-1b-internal-bearer-fail-closed: missing env → 503 BEFORE any disk read.
         Bad/missing Bearer → 401 BEFORE body parse. Body validation → 422 BEFORE disk write.

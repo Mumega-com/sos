@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from pathlib import Path
 from typing import Optional
@@ -46,11 +47,7 @@ def lookup_sos_token(raw_token: str) -> Optional[dict]:
         stored = t.get("token_hash", "")
         # token_hash may be plain sha256 hex or prefixed "sha256:..."
         stored_hex = stored.removeprefix("sha256:")
-        if stored_hex == h and t.get("active", False):
-            return t
-    # Also allow direct token match (some legacy entries store plain token)
-    for t in _load_tokens():
-        if t.get("token") == raw_token and t.get("active", False):
+        if stored_hex and hmac.compare_digest(stored_hex, h) and t.get("active", False):
             return t
     return None
 

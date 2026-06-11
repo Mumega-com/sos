@@ -119,6 +119,114 @@ def _assert_in_scope(project: str) -> None:
         )
 
 
+# ── Colony capability gate (agent dimension) — S180-A ─────────────────────────
+# Defense-in-depth alongside _assert_in_scope (which is a NO-OP for a GLOBAL
+# colony brain). The colony brain legitimately sees all tenants, so its real
+# fault mode is cross-tenant CAPABILITY APPLICATION — dispatching a tenant-bound
+# agent for another tenant's goal (the observed "use viamar-ceo-strategy for a
+# Mumega goal" bleed). The authoritative agent->home-tenant map lives in
+# sos.kernel.agent_registry (AgentDef.project), which this brain CANNOT import
+# (separate module root), so we resolve it over HTTP from the squad service
+# /agents roster. The SKILL-dimension gate is enforced separately by the squad
+# service, which owns squad_skills.tenant_id.
+
+# Failsafe map of the known tenant-bound agents — used ONLY when the live
+# /agents resolver is unavailable (cold start / outage) so these sensitive
+# identities stay GATED even without the live roster. The live roster
+# (sos.kernel.agent_registry) is the source of truth whenever reachable; this is
+# the deny-side default, not a parallel registry.
+# MUST be kept in sync with the tenant-bound agents in sos.kernel.agent_registry
+# (AgentDef.project != ""): a NEW tenant-bound agent not listed here goes
+# UNGATED during a cold-start resolver outage. (Athena G180-A advisory 2.)
+_TENANT_BOUND_FALLBACK: dict[str, str] = {
+    "sol": "realm-of-patterns",
+    "dandan": "dentalnearyou",
+    "gaf": "gaf",
+}
+
+_AGENT_HOME_CACHE: dict[str, str] = {}
+_AGENT_HOME_CACHE_TS: float = 0.0
+_AGENT_HOME_TTL = 300.0  # seconds
+
+
+def _agent_home_tenant(agent: str) -> str | None:
+    """Resolve an agent's home tenant (its AgentDef.project) via the squad
+    service /agents roster. Returns the normalized home project, or None for
+    shared/colony agents (no project binding) and genuinely unknown agents.
+
+    Caching: refreshed every _AGENT_HOME_TTL. On a refresh failure a previously
+    fetched (stale) map is RETAINED, so a transient resolver outage does not open
+    the gate. On a COLD-START failure (cache never populated) we fall back to the
+    static _TENANT_BOUND_FALLBACK set, so the known tenant-bound agents stay
+    gated even when the roster cannot be fetched; only genuinely unknown agents
+    go ungated. The gate is one of several defense-in-depth layers.
+    """
+    global _AGENT_HOME_CACHE, _AGENT_HOME_CACHE_TS
+    now = time.time()
+    if not _AGENT_HOME_CACHE or (now - _AGENT_HOME_CACHE_TS) > _AGENT_HOME_TTL:
+        try:
+            r = requests.get(f"{SQUAD_URL}/agents", headers=SQUAD_HEADERS, timeout=5)
+            r.raise_for_status()
+            payload = r.json()
+            rows = payload.get("agents", payload) if isinstance(payload, dict) else payload
+            mapping = {
+                str(row.get("name", "")).strip().lower(): str(row.get("project", "") or "").strip().lower()
+                for row in rows
+                if str(row.get("name", "")).strip()
+            }
+            if mapping:
+                _AGENT_HOME_CACHE = mapping
+                _AGENT_HOME_CACHE_TS = now
+        except Exception as exc:
+            if not _AGENT_HOME_CACHE:
+                logger.error(f"[capability-gate] agent resolver cold-start failed — failing safe to static tenant-bound set: {exc}")
+            else:
+                logger.warning(f"[capability-gate] agent resolver refresh failed — using stale roster: {exc}")
+    key = str(agent).strip().lower()
+    if _AGENT_HOME_CACHE:
+        home = _AGENT_HOME_CACHE.get(key, "")
+    else:
+        # Resolver never succeeded — fail SAFE for the known tenant-bound agents.
+        home = _TENANT_BOUND_FALLBACK.get(key, "")
+    return home or None
+
+
+def _assert_agent_in_tenant(agent: str, project: str) -> None:
+    """Raise if a tenant-bound agent is dispatched for a different tenant.
+
+    Shared/colony agents (no home tenant) may act for any project. A tenant-bound
+    agent (e.g. sol -> therealmofpatterns) may act only for its own tenant. This
+    is the colony brain's load-bearing cross-tenant guard; scoped per-tenant
+    brains cannot reach this situation at all.
+    """
+    home = _agent_home_tenant(agent)
+    if not home:
+        return  # shared/colony or unknown agent — allowed for any project
+    if normalize_project(home) != normalize_project(project):
+        raise ValueError(
+            f"Capability scope violation: agent {agent!r} belongs to tenant "
+            f"{home!r} but this directive targets project {project!r}. A "
+            f"tenant-bound agent may only act for its own tenant."
+        )
+
+
+def _capability_block(assignee: str | None, project: str) -> dict | None:
+    """Gate a single dispatch. Returns a failure dict if dispatching `assignee`
+    for `project` violates the colony capability gate, else None.
+
+    MUST be called with the FINAL dispatched (assignee, project) at each branch —
+    not once up front — because branches recompute the assignee/project after the
+    PROJECT_LEADS reroute (e.g. send_outreach flips to dentalnearyou/dandan on a
+    'dent' substring). Gating the final pair is the only correct subject.
+    """
+    try:
+        _assert_agent_in_tenant(assignee or "", project)
+        return None
+    except ValueError as cap_err:
+        logger.error(f"[capability-gate] {cap_err}")
+        return {"success": False, "result": str(cap_err)}
+
+
 def _blocked_stale_cleanup_reason(action: dict[str, object]) -> str | None:
     """Return a reason when a brain action targets retired quest-fixture cleanup.
 
@@ -177,6 +285,11 @@ def normalize_project(project: str) -> str:
     aliases = {
         "dnu": "dentalnearyou",
         "trop": "realm-of-patterns",
+        # The agent registry stores TROP's project as "therealmofpatterns"
+        # (no hyphens) while goals/squads use "trop"/"realm-of-patterns".
+        # Canonicalize all three to one tenant id so the S180-A capability gate
+        # does not falsely block sol on legitimate same-tenant work.
+        "therealmofpatterns": "realm-of-patterns",
         "dental": "dentalnearyou",
     }
     return aliases.get(project, project)
@@ -496,9 +609,19 @@ def motor_execute(action: dict) -> dict:
         logger.info(f"Rerouting from {agent} to {project_lead} for project {project}")
         agent = project_lead
 
+    # S180-A colony capability gate (agent dimension): gated PER-BRANCH below on
+    # the FINAL dispatched (assignee, project) — NOT once here — because several
+    # branches recompute the assignee/project after the reroute (e.g. send_outreach
+    # flips to dentalnearyou/dandan on a 'dent' substring in free text). Gating the
+    # final pair is the only correct subject. See _capability_block.
+
     try:
         if method == "create_task":
             title = action.get("action", "Brain-generated task")
+            # squad path dispatches assignee=project_lead; mirror path dispatches agent.
+            ct_assignee = project_lead if squad_id else agent
+            if (block := _capability_block(ct_assignee, project)) is not None:
+                return block
 
             if squad_id:
                 # Route through Squad Service — project isolation
@@ -530,6 +653,11 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": f"Task created: {task_id}", "task_id": task_id}
 
         elif method == "post_content":
+            # Dispatches as agent="brain" (colony → always passes); gate kept for
+            # the "every dispatch branch is gated" invariant (Athena G180-A adv.1),
+            # so a future tenant-bound post_content path can't silently skip it.
+            if (block := _capability_block("brain", project)) is not None:
+                return block
             # Generate content using a cheap model and store it.
             # Skipped gracefully when BRAIN_CONTENT_MODE=off.
             content = _generate_content(details)
@@ -552,6 +680,10 @@ def motor_execute(action: dict) -> dict:
             outreach_labels = method_labels["send_outreach"]
             squad_id = resolve_squad(outreach_labels, outreach_project)
             outreach_assignee = PROJECT_LEADS.get(outreach_project, agent)
+            # P0 guard: outreach recomputes project+assignee above (a 'dent' substring
+            # flips to dentalnearyou/dandan), so gate the FINAL pair, not the original.
+            if (block := _capability_block(outreach_assignee, outreach_project)) is not None:
+                return block
             if squad_id:
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -582,6 +714,8 @@ def motor_execute(action: dict) -> dict:
             code_labels = method_labels["fix_code"]
             squad_id = resolve_squad(code_labels, project)
             code_assignee = project_lead or "kasra"
+            if (block := _capability_block(code_assignee, project)) is not None:
+                return block
             if squad_id:
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -608,7 +742,9 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": "Code task created for Kasra"}
 
         elif method == "research":
-            # Create research task for River
+            # Create research task for River (shared/colony agent — gate for uniformity)
+            if (block := _capability_block("river", project)) is not None:
+                return block
             r = requests.post(f"{MIRROR_URL}/tasks", json={
                 "title": f"Research: {action.get('action', '')}",
                 "agent": "river",
@@ -632,6 +768,8 @@ def motor_execute(action: dict) -> dict:
         else:
             # Default: create a generic task
             default_title = action.get("action", "Brain action")
+            if (block := _capability_block(agent, project)) is not None:
+                return block
             if _task_exists(default_title, agent):
                 return {"success": True, "result": f"Duplicate task skipped for {agent}: {default_title[:60]}"}
             r = requests.post(f"{MIRROR_URL}/tasks", json={

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 from sos.bus.token_store import find_active, hash_token, load_tokens, write_tokens_atomic
+from sos.bus.tenant_gcp_provision import provision_tenant_gcp_background
 
 # -----------------------------------------------------------------------
 # Paths — substrate-side artifacts
@@ -556,7 +557,20 @@ def provision_tenant(body: dict) -> dict:
     bus_token, token_minted = mint_or_get_bus_token(slug, display_name)
     scaffold_path, scaffold_created = scaffold_or_skip(slug, display_name, industry)
 
+    # S144 Track F — fire GCP Cloud Run provisioning in background.
+    # Does not block this response. Writes cloud_run_url back to D1 when done.
+    provision_tenant_gcp_background(
+        tenant_id=sanitized["tenant_id"],
+        slug=slug,
+        bus_token=bus_token,
+        industry=industry,
+        tier=body.get("tier", "subscribe"),
+        openrouter_key=body.get("openrouter_key", ""),
+        im_token=body.get("im_token", ""),
+    )
+
     return {
+        "ok": True,
         "tenant_id": sanitized["tenant_id"],
         "slug": slug,
         "mirror_key": mirror_key,

@@ -348,7 +348,25 @@ def mint_or_get_tenant_agent_token(
             "tenant_slug": tenant_slug,
             "agent_kind": agent_kind,
             "role": "agent",
-            "scopes": ["bus:send"],
+            # S156 fix: full scope set so MCP dispatcher gate (bus:read) and
+            # tool-visibility check (permissions) both pass for new tenant agents.
+            # D-2b fork-mint path (athena/kasra/calliope variants) — agent_kind
+            # is one of FORK_ALLOWLIST values, not "custom"; only this path is
+            # affected, not human/operator/customer tokens.
+            # S156-harden: explicit least-privilege allowlist replaces "mcp:*"
+            # wildcard. Covers full standard agent toolset via
+            # _TOOL_PERMISSION_ALIASES. New tools are opt-in, not auto-granted.
+            # skills:write/register excluded — tenant agents do not self-register.
+            # workspace:* included — workspace tools are project-scoped
+            # (sos:workspace:{project}:… keys, project = auth.project_scope),
+            # so join/leave/members cannot reach another tenant's workspace.
+            "scopes": ["bus:send", "bus:read", "health"],
+            "permissions": [
+                "bus:send", "bus:read", "health",
+                "memory:*", "tasks:*",
+                "skills:read", "skills:invoke",
+                "workspace:*",
+            ],
         }
         tokens.append(new_record)
         write_tokens_atomic(_tokens_path(), tokens)

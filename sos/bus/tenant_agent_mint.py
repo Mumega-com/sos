@@ -465,7 +465,30 @@ def mint_or_get_custom_tenant_agent_token(
             "tenant_slug": tenant_slug,
             "agent_kind": "custom",  # three-discriminator sentinel
             "role": "agent",
-            "scopes": ["bus:send"],
+            # S156 fix: full scope set so MCP dispatcher gate (bus:read) and
+            # tool-visibility check (permissions) both pass for new tenant agents.
+            # "bus:send" alone → 0 tools visible (dispatcher gates inbox/peers on
+            # bus:read; boot_context/status on health).
+            # S156-harden: explicit least-privilege allowlist replaces "mcp:*"
+            # wildcard. Each entry maps to the _TOOL_PERMISSION_ALIASES that
+            # _tool_allowed_by_permissions() checks, covering the full standard
+            # agent toolset (send/ask/broadcast/inbox/peers/check_in/boot_context/
+            # status/flow_health/sprint_capsule/remember/recall/squad_*/memories/
+            # task_*/list_skills/invoke_skill). New tools are opt-in, not
+            # auto-granted. skills:write/register excluded — tenant agents do not
+            # self-register skills. workspace:* is included — workspace tools are
+            # project-scoped (key prefix sos:workspace:{project}:…, project derived
+            # from auth.project_scope — caller cannot supply a foreign project), so
+            # workspace_join/leave/members cannot cross tenant boundaries.
+            # Only D-3b custom-agent tokens are affected — human/operator/customer
+            # tokens follow separate mint paths with no change here.
+            "scopes": ["bus:send", "bus:read", "health"],
+            "permissions": [
+                "bus:send", "bus:read", "health",
+                "memory:*", "tasks:*",
+                "skills:read", "skills:invoke",
+                "workspace:*",
+            ],
         }
         tokens.append(new_record)
         token_path = _runtime_path(

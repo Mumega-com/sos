@@ -371,6 +371,55 @@ class TestL3TokenMintIdempotent:
         assert rec["agent_kind"] == "athena"
         assert rec["agent"] == "athena-acme"
 
+    _STANDARD_AGENT_PERMISSIONS = frozenset([
+        "bus:send", "bus:read", "health",
+        "memory:*", "tasks:*",
+        "skills:read", "skills:invoke",
+        "workspace:*",
+    ])
+
+    def test_token_record_carries_full_scopes_s156(self, tmp_substrate):
+        """S156-harden — D-2b fork-mint must carry bus:read + health + explicit permissions (no mcp:* wildcard)."""
+        taa.mint_or_get_tenant_agent_token("athena-acme", "athena", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "athena-acme")
+        scopes = rec.get("scopes", [])
+        assert "bus:send" in scopes
+        assert "bus:read" in scopes, "S156: bus:read required for inbox/peers MCP tools"
+        assert "health" in scopes, "S156: health required for boot_context/status MCP tools"
+        permissions = rec.get("permissions")
+        assert permissions is not None, "S156: permissions must not be null"
+        # No wildcard — new tools are opt-in, not auto-granted
+        assert "mcp:*" not in permissions, "S156-harden: mcp:* wildcard must not be present"
+        assert "*" not in permissions, "S156-harden: bare wildcard must not be present"
+        # Explicit standard-agent allowlist must be present in full
+        granted = frozenset(permissions)
+        missing = self._STANDARD_AGENT_PERMISSIONS - granted
+        assert not missing, f"S156-harden: missing standard-agent permissions: {missing}"
+
+    def test_workspace_tools_allowed_under_standard_allowlist(self, tmp_substrate):
+        """S156 + workspace grant — workspace_join/leave/members must resolve ALLOWED (D-2b path)."""
+        from sos.mcp.sos_mcp_sse import _tool_allowed_by_permissions
+        taa.mint_or_get_tenant_agent_token("kasra-acme", "kasra", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "kasra-acme")
+        permissions = rec["permissions"]
+
+        assert _tool_allowed_by_permissions("workspace_join", permissions), "workspace_join must be ALLOWED"
+        assert _tool_allowed_by_permissions("workspace_leave", permissions), "workspace_leave must be ALLOWED"
+        assert _tool_allowed_by_permissions("workspace_members", permissions), "workspace_members must be ALLOWED"
+
+    def test_admin_tools_denied_under_standard_allowlist(self, tmp_substrate):
+        """S156 — sprout_tenant and register_skill must remain DENIED (no regression, D-2b path)."""
+        from sos.mcp.sos_mcp_sse import _tool_allowed_by_permissions
+        taa.mint_or_get_tenant_agent_token("calliope-acme", "calliope", "acme")
+        tokens = json.loads(tmp_substrate["tokens_path"].read_text())
+        rec = next(t for t in tokens if t["agent"] == "calliope-acme")
+        permissions = rec["permissions"]
+
+        assert not _tool_allowed_by_permissions("sprout_tenant", permissions), "sprout_tenant must be DENIED"
+        assert not _tool_allowed_by_permissions("register_skill", permissions), "register_skill must be DENIED"
+
     def test_existing_record_missing_plaintext_raises(self, tmp_substrate):
         # Seed token record without plaintext
         rec = {
