@@ -29,6 +29,7 @@ import json
 import time
 import logging
 import requests
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -511,6 +512,33 @@ def _task_exists(title: str, agent: str) -> bool:
     return False
 
 
+# ── Layer-C task-creation governor (S-BRAIN-GOV-VPS) ──────────────────────────
+# Sliding-window cap on how many tasks the brain may CREATE per window. Bounds
+# ANY runaway — including the mutating-title self-recursion that the title-prefix
+# dedup in _task_exists() cannot catch (a loop whose title changes every cycle
+# never re-matches the prefix, so dedup lets it through; the governor still stops
+# it). Caps the side-effecting/expensive part (task creation) WITHOUT stopping
+# cognition — the brain keeps deciding, it just can't spawn unbounded work.
+# Env-tunable so ops can adjust without a code change.
+_TASK_GOVERNOR_WINDOW_SEC = int(os.getenv("BRAIN_TASK_GOVERNOR_WINDOW_SEC", "600"))
+_TASK_GOVERNOR_MAX = int(os.getenv("BRAIN_TASK_GOVERNOR_MAX", "12"))
+_recent_task_creations: deque = deque()
+
+
+def _task_governor_allows() -> bool:
+    """Return True if a new task may be created under the sliding-window cap.
+    Prunes expired entries, records the creation on success. Returns False (and
+    records nothing) when the window is saturated, so the caller backs off."""
+    now = time.time()
+    cutoff = now - _TASK_GOVERNOR_WINDOW_SEC
+    while _recent_task_creations and _recent_task_creations[0] < cutoff:
+        _recent_task_creations.popleft()
+    if len(_recent_task_creations) >= _TASK_GOVERNOR_MAX:
+        return False
+    _recent_task_creations.append(now)
+    return True
+
+
 # Agent name → tmux session name (empty string = system/no session needed)
 _AGENT_SESSION: dict[str, str] = {
     "kasra": "kasra",
@@ -581,6 +609,15 @@ def motor_execute(action: dict) -> dict:
             check_agent = PROJECT_LEADS.get(project_for_dedupe, agent)
         if _task_exists(check_title, check_agent):
             return {"success": True, "result": f"Duplicate task skipped for {check_agent}: {check_title[:60]}"}
+        # Layer-C governor: bound runaway task creation (incl. mutating-title
+        # self-recursion that the prefix dedup above misses). Backs off this
+        # cycle when the window is saturated; cognition continues next cycle.
+        if not _task_governor_allows():
+            logger.warning(
+                f"[governor] task-creation cap hit "
+                f"({_TASK_GOVERNOR_MAX}/{_TASK_GOVERNOR_WINDOW_SEC}s) — backing off: {check_title[:60]}"
+            )
+            return {"success": True, "result": "Governor: task-creation rate cap reached, backing off this cycle."}
 
     project = normalize_project(action.get("goal_id", "mumega").replace("goal_", ""))
 
