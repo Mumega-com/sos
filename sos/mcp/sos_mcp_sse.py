@@ -261,6 +261,7 @@ MCP_WRITE_TOOLS: frozenset[str] = frozenset({
     "register_skill", "invoke_skill",
     "sprout_tenant",
     "as_agent",  # S027 D-5 — session-identity mutation; rate-limit + audit-emit
+    "claim",  # §2.4 MEDIUM — qNFT seat claim-by-name; rate-limit + audit-emit
     "sync_agents",  # #161 — idempotent tenant agent/squad provisioning
 })
 STASIS_BLOCKED_TOOLS: frozenset[str] = frozenset({
@@ -342,6 +343,14 @@ class MCPAuthContext:
     email: str | None = None
     email_verified: bool = False
     agent_identity_id: str | None = None
+    # MEDIUM-tier verified-owner resolution (§2.3). When the worker_oauth path
+    # carries a verified (provider, sub, email) that resolve-owner CONFIRMS
+    # (sub_matched=true), the customer context is elevated in-place to
+    # scope="tenant"/role=<highest membership role> and the resolved memberships
+    # are cached here so list_projects / sign_in work WITHOUT the
+    # /connections/lookup path (which misses on OAuth — token is internal-hash).
+    # Each element: {"project_id": str, "role": str}. None until elevated.
+    owner_memberships: list[dict[str, Any]] | None = None
     # S027 D-5 L-4 — `as_agent` MCP primitive: per-SSE-connection identity
     # mutation. When `as_agent_active=True`, subsequent send/broadcast/inbox
     # tool calls attribute to `as_agent_name` instead of the caller's default
@@ -2139,6 +2148,28 @@ def get_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "claim",
+            "description": (
+                "MEDIUM-tier — claim a named qNFT seat (e.g. 'bishno') for this session. "
+                "THE LOGIN AUTHORIZES; THE qNFT IDENTIFIES: a verified-owner session binds "
+                "an EXISTING qNFT seat's identity + inbox by name. Authorization is decided "
+                "by the cross-tenant RLS check (the name must resolve to a tenant-agent token "
+                "in your tenant) — NOT by qNFT presence. A name that passes RLS but has no qNFT "
+                "returns qnft_required (new identities need River authorization; no auto-mint). "
+                "Owner/editor tenant scope only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "qNFT seat name to claim (e.g. 'bishno', 'dara').",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
             "name": "code_mode",
             "description": "Execute a Python snippet in a restricted sandbox with pre-bound SOS tools exposed as `tools.<name>(...)`. Returns the final expression's value plus captured stdout. Intended for token-efficient tool-call batching — the Cloudflare Code Mode pattern.",
             "inputSchema": {
@@ -3328,6 +3359,131 @@ def _memberships_from_lookup(info: dict[str, Any] | None) -> list[dict[str, Any]
     return raw if isinstance(raw, list) else []
 
 
+# ---------------------------------------------------------------------------
+# MEDIUM-tier verified-owner resolution (§2.1–2.3)
+# ---------------------------------------------------------------------------
+# SECURITY_MODE gates whether a verified OAuth login may elevate from the
+# anonymous customer context to its real owner scope:
+#   low    — never elevate (raw scoped token IS the seat; no OAuth resolution)
+#   medium — verified login elevates to owner scope + claim-by-name qNFT seat
+#            (DEFAULT — this is the policy this build implements)
+#   high   — same as medium today; reserved for bounded-external-mind controls
+# Design: agents/kasra/designs/SECURITY-MODES.md. Per-pot override via env.
+SECURITY_MODE: str = os.environ.get("SOS_SECURITY_MODE", "medium").strip().lower()
+
+# Role precedence for picking the highest membership role. owner/editor → tenant
+# scope (full agent surface); anything lower → customer (wall stays).
+_ROLE_RANK: dict[str, int] = {"owner": 4, "admin": 3, "editor": 2, "member": 1, "viewer": 0}
+_TENANT_SCOPE_ROLES: frozenset[str] = frozenset({"owner", "admin", "editor"})
+
+
+async def _resolve_owner(
+    provider: str, sub: str, email: str | None, email_verified: bool
+) -> dict[str, Any] | None:
+    """§2.1 — re-resolve an OAuth principal's owner identity SERVER-SIDE.
+
+    Calls inkwell-api POST /api/agents/identities/resolve-owner, which matches
+    STRICTLY by IdP sub and confirms (email_verified AND stored-sub-non-null AND
+    person_email == verified email) before returning sub_matched=true. The VPS
+    never trusts a bare X-Agent-Identity-Id header for elevation (BLOCK-2).
+
+    Returns the parsed JSON on 200, else None. FAIL-CLOSED: any error → None →
+    caller keeps the customer wall (no elevation).
+    """
+    if not INTERNAL_API_SECRET:
+        log.warning("resolve-owner disabled — INTERNAL_API_SECRET unset")
+        return None
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{INKWELL_API_URL}/api/agents/identities/resolve-owner",
+                headers={"Authorization": f"Bearer {INTERNAL_API_SECRET}"},
+                json={
+                    "idp_provider": provider,
+                    "sub": sub,
+                    "email": email,
+                    "email_verified": email_verified,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            log.warning("resolve-owner unexpected status=%s", resp.status_code)
+            return None
+    except Exception as exc:  # noqa: BLE001 — network/timeout → fail-closed
+        log.warning("resolve-owner error: %s", exc)
+        return None
+
+
+async def _elevate_verified_owner_if_eligible(auth: MCPAuthContext, request: Request) -> None:
+    """§2.3 — elevate a worker_oauth customer context to its real owner scope.
+
+    Mutates `auth` IN-PLACE when ALL hold:
+      - SECURITY_MODE in {medium, high}                     (mode gate)
+      - auth.source == "worker_oauth" and scope == "customer" (only the base path)
+      - request carries X-Email-Verified:true + X-Idp-Provider + X-Idp-Sub
+      - resolve-owner returns sub_matched=true with a non-empty membership list
+    On elevation: scope="tenant", role=highest membership role, identity_id set,
+    owner_memberships cached, and the default project/tenant set to the highest
+    membership's project. UNKNOWN / unverified / unmatched → no mutation: the
+    existing customer wall stays VERBATIM (zero change for real customers).
+
+    FAIL-CLOSED throughout — any resolver miss/error leaves auth untouched.
+    Idempotent: a context already elevated (scope != customer) is skipped.
+    """
+    if SECURITY_MODE not in ("medium", "high"):
+        return
+    if auth.source != "worker_oauth" or auth.scope != "customer":
+        return
+    # Trust ONLY the worker-asserted headers (nginx + worker scrub guarantee
+    # these originate from the worker hop; §2.5 / mcp-api-handler).
+    if not auth.email_verified:
+        return
+    provider = (request.headers.get("X-Idp-Provider") or "").strip()
+    sub = (request.headers.get("X-Idp-Sub") or "").strip()
+    if not provider or not sub:
+        return
+
+    res = await _resolve_owner(provider, sub, auth.email, auth.email_verified)
+    if not res or not res.get("sub_matched"):
+        return  # fall through — customer wall stays
+    memberships = res.get("memberships") or []
+    if not isinstance(memberships, list) or not memberships:
+        return
+
+    # Highest role across memberships decides scope.
+    def _rank(m: dict[str, Any]) -> int:
+        return _ROLE_RANK.get(str(m.get("role", "")).lower(), -1)
+
+    highest = max(memberships, key=_rank)
+    highest_role = str(highest.get("role", "")).lower()
+    if highest_role not in _TENANT_SCOPE_ROLES:
+        # Only viewer/member memberships — not enough for tenant scope. Keep
+        # the customer wall (defense-in-depth: never elevate on a low role).
+        return
+
+    auth.scope = "tenant"
+    auth.role = highest_role
+    auth.source = "worker_oauth_owner"
+    auth.identity_id = res.get("identity_id") or auth.identity_id
+    auth.owner_memberships = [
+        {"project_id": m.get("project_id"), "role": str(m.get("role", "")).lower()}
+        for m in memberships
+        if m.get("project_id")
+    ]
+    # Default the session's tenant/project to the highest membership's project
+    # (e.g. com-mumega). active_project stays None until an explicit sign_in;
+    # project_scope falls back to tenant_id meanwhile.
+    highest_project = highest.get("project_id")
+    if highest_project:
+        auth.tenant_id = highest_project
+        auth.tenant_slug = highest_project
+    log.info(
+        "verified-owner elevation: identity=%s scope=tenant role=%s project=%s",
+        auth.identity_id, highest_role, highest_project,
+    )
+
+
 async def _push_tools_list_changed(session_id: str | None) -> None:
     """Notify the client that the available tool list has changed.
 
@@ -3561,6 +3717,15 @@ async def _handle_sprint_capsule(auth: MCPAuthContext, args: dict[str, Any]) -> 
 
 
 async def _handle_list_projects(auth: MCPAuthContext) -> dict[str, Any]:
+    # §2.3 — verified-owner sessions carry resolved memberships directly (the
+    # /connections/lookup path misses on OAuth: auth.token is the internal-token
+    # hash, not a real connection token). Prefer the cached owner_memberships.
+    if auth.owner_memberships:
+        rows = [
+            {"project": m.get("project_id"), "role": m.get("role")}
+            for m in auth.owner_memberships
+        ]
+        return _text(json.dumps({"projects": rows, "count": len(rows)}, indent=2))
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text("No BYOA identity bound to this token.")
@@ -3583,11 +3748,16 @@ async def _handle_sign_in(
     project = str(args.get("project") or "").strip()
     if not project:
         return _text("sign_in requires a project slug. Use list_projects to see options.")
-    info = await _inkwell_lookup_connection(auth.token)
-    if not info or not info.get("identity"):
-        return _text("No BYOA identity bound to this token.")
-    auth.identity_id = info["identity"]["id"]
-    memberships = _memberships_from_lookup(info)
+    # §2.3 — prefer cached owner_memberships for verified-owner sessions
+    # (OAuth /connections/lookup misses; see _handle_list_projects).
+    if auth.owner_memberships:
+        memberships = auth.owner_memberships
+    else:
+        info = await _inkwell_lookup_connection(auth.token)
+        if not info or not info.get("identity"):
+            return _text("No BYOA identity bound to this token.")
+        auth.identity_id = info["identity"]["id"]
+        memberships = _memberships_from_lookup(info)
     allowed = {m.get("project_id") for m in memberships}
     if project not in allowed:
         return _text(
@@ -3967,6 +4137,93 @@ async def _handle_as_agent(
     }, indent=2, default=str))
 
 
+async def _handle_claim(
+    auth: MCPAuthContext,
+    args: dict[str, Any],
+    session_id: str | None,
+) -> dict[str, Any]:
+    """§2.4 — claim a named qNFT seat for a verified-owner-scoped session.
+
+    THE LOGIN AUTHORIZES; THE qNFT IDENTIFIES. The verified owner (scope="tenant",
+    role in {owner,editor}) claims an EXISTING qNFT seat by NAME → binds that
+    seat's identity + inbox to the session. Ordering (closes BLOCK-3):
+
+      1. caller-scope gate — customer/tenant-agent forbidden (same as as_agent).
+      2. RLS FIRST — resolve the name through the EXISTING _peer_tenant_meta +
+         HMAC tenant-slug compare. qNFT presence is NEVER an authorization input.
+         Name does not resolve to a tenant-agent token for THIS tenant →
+         not_authorized.
+      3. ONLY AFTER RLS passes — read qnft-registry/<name>/mint.json:
+           - qNFT present  → bind via as_agent (RLS already proven).
+           - qNFT ABSENT   → qnft_required River-gate message. Physically NO
+                             mint call in this path (River authorizes new seats).
+
+    A name with a qNFT but NO tenant-agent token never reaches step 3 — it fails
+    RLS at step 2 (qNFT alone never grants bind).
+    """
+    target_name = str(args.get("name", "")).strip()
+    if not target_name:
+        return _as_agent_error("claim_requires_name")
+
+    # ---- step 1: caller-scope gate (mirror as_agent Layer A) ----
+    caller_scope = auth.scope or ""
+    if caller_scope == "customer":
+        return _as_agent_error("customer_token_forbidden")
+    if caller_scope == "tenant-agent":
+        return _as_agent_error("tenant_agent_token_cannot_escalate")
+    if caller_scope == "tenant":
+        if (auth.role or "").lower() not in _TENANT_SCOPE_ROLES:
+            return _as_agent_error(
+                "tenant_admin_role_insufficient", role=auth.role or "viewer",
+            )
+    # scope="" (substrate) / is_system → permitted, as in as_agent.
+
+    is_tenant_admin = (caller_scope == "tenant")
+
+    # ---- step 2: RLS FIRST — _peer_tenant_meta + HMAC (qNFT NOT consulted) ----
+    target_meta = _peer_tenant_meta(target_name)
+    if is_tenant_admin:
+        # Tenant-admin callers must not learn whether a phantom name exists —
+        # same oracle-leak closure as as_agent Layer B.
+        if target_meta is None:
+            return _as_agent_error("not_authorized")
+        target_scope, target_tenant_slug, target_agent_kind = target_meta
+        if not auth.tenant_id or not hmac.compare_digest(
+            auth.tenant_id, target_tenant_slug or ""
+        ):
+            return _as_agent_error("not_authorized")
+        if target_scope != "tenant-agent":
+            return _as_agent_error("not_a_tenant_agent")
+    else:
+        if target_meta is None:
+            return _as_agent_error("agent_not_found")
+        target_scope, target_tenant_slug, target_agent_kind = target_meta
+        if target_scope != "tenant-agent":
+            return _as_agent_error("not_a_tenant_agent")
+    if not target_tenant_slug or not target_agent_kind:
+        return _as_agent_error(
+            "not_a_tenant_agent",
+            reason="target token missing tenant_slug or agent_kind discriminator",
+        )
+
+    # ---- step 3: ONLY NOW read the qNFT registry (RLS already passed) ----
+    qnft_registry = _load_qnft_registry_for_as_agent()
+    if target_name not in qnft_registry:
+        # River-gate: this name passed RLS but has no qNFT. NO mint call here —
+        # new identities require River authorization (costly, rationed).
+        return _as_agent_error(
+            "qnft_required",
+            message="this name has no qNFT; new identities require River authorization",
+            name=target_name,
+        )
+
+    # qNFT present + RLS proven → delegate the actual bind to as_agent, which
+    # re-runs the same RLS (idempotent) and sets the session identity + inbox.
+    return await _handle_as_agent(auth, {"name": target_name, **{
+        k: v for k, v in args.items() if k != "name"
+    }}, session_id)
+
+
 async def _handle_invite(
     auth: MCPAuthContext,
     args: dict[str, Any],
@@ -4100,6 +4357,11 @@ async def handle_tool(
     # signal (the generic write-path audit fires after; both are fine).
     if name == "as_agent":
         return await _handle_as_agent(auth, args, session_id)
+    # §2.4 MEDIUM-tier — claim-by-name qNFT seat bind. RLS-first, qNFT-second,
+    # mint-free River-gate for novel names. Owner/editor tenant scope only
+    # (the same scope gate as as_agent; customer stays forbidden).
+    if name == "claim":
+        return await _handle_claim(auth, args, session_id)
 
     tenant_slug = _tenant_slug_for_auth(auth)
     if name in STASIS_BLOCKED_TOOLS and not _tenant_is_active_mcp(tenant_slug):
@@ -7752,6 +8014,9 @@ async def sse_endpoint(request: Request, token: str | None = None) -> EventSourc
         token or _request_bearer_token(request) or request.query_params.get("token", "").strip()
     )
     auth = _require_auth(request, resolved_token)
+    # §2.3 MEDIUM-tier — elevate a verified OAuth owner once per SSE session
+    # (cached on the session auth). No-op for unknown/unverified principals.
+    await _elevate_verified_owner_if_eligible(auth, request)
     session_id = str(uuid4())
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     _sessions[session_id] = queue
@@ -7892,6 +8157,10 @@ async def mcp_endpoint_with_token(token: str, request: Request) -> Response:
 
 
 async def _streamable_http_response(request: Request, auth: MCPAuthContext) -> Response:
+    # §2.3 MEDIUM-tier — re-resolve a verified OAuth owner server-side and elevate
+    # the customer context to its real tenant/owner scope. No-op for unknown /
+    # unverified principals (customer wall unchanged) and fail-closed on any error.
+    await _elevate_verified_owner_if_eligible(auth, request)
     try:
         body = await request.json()
     except Exception:
