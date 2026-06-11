@@ -4165,14 +4165,20 @@ async def _handle_claim(
     if not target_name:
         return _as_agent_error("claim_requires_name")
 
-    # ---- step 1: caller-scope gate (mirror as_agent Layer A) ----
+    # ---- step 1: caller-scope gate (mirror as_agent Layer A EXACTLY) ----
+    # WARN-B: claim DELEGATES the bind to _handle_as_agent, whose tenant-scope
+    # role gate is owner-ONLY (role != "owner" → tenant_admin_role_insufficient).
+    # The claim gate MUST be identical so it never false-permits a role that
+    # as_agent then bounces, and so the two predicates can't drift open later.
+    # Widening tenant-claim authority (e.g. to editor) is a SINGLE-POINT change
+    # in _handle_as_agent; do not relax it here independently.
     caller_scope = auth.scope or ""
     if caller_scope == "customer":
         return _as_agent_error("customer_token_forbidden")
     if caller_scope == "tenant-agent":
         return _as_agent_error("tenant_agent_token_cannot_escalate")
     if caller_scope == "tenant":
-        if (auth.role or "").lower() not in _TENANT_SCOPE_ROLES:
+        if (auth.role or "").lower() != "owner":
             return _as_agent_error(
                 "tenant_admin_role_insufficient", role=auth.role or "viewer",
             )
