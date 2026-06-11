@@ -8,7 +8,8 @@ Verification order
 ------------------
 1. Env-var system tokens (``SOS_SYSTEM_TOKEN``, ``MIRROR_TOKEN``, …) checked
    first — no file I/O needed.
-2. tokens.json lookup via sha-256 hash, raw-token equality, or bcrypt.
+2. tokens.json lookup via sha-256 token_hash or bcrypt hash (hash-only store
+   since 2026-06-11 S-FLEET-003 — raw-token equality removed).
 3. In-process cache (30-second TTL) prevents redundant file reads within a
    single request/event loop iteration.
 
@@ -17,6 +18,7 @@ DO NOT add service-specific logic here.  Keep it generic.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -174,7 +176,7 @@ def _check_env_tokens(raw_token: str) -> AuthContext | None:
     """Return an AuthContext if *raw_token* matches any configured env-var token."""
     for env_var, is_admin, scopes in _ENV_TOKENS:
         env_val = os.environ.get(env_var, "")
-        if env_val and env_val == raw_token:
+        if env_val and hmac.compare_digest(env_val, raw_token):
             return AuthContext(
                 agent=None,
                 project=None,
@@ -223,17 +225,14 @@ def _check_tokens_json(raw_token: str) -> AuthContext | None:
         if not entry.get("active", True):
             continue
 
-        # 1. Raw-token equality (legacy / unmigrated entries).
-        stored_raw = entry.get("token") or ""
-        if stored_raw and stored_raw == raw_token:
-            return _entry_to_ctx(entry, sha_hash)
-
-        # 2. SHA-256 token_hash (post-SEC-001 standard).
+        # 1. SHA-256 token_hash (post-SEC-001 standard). Raw-token equality
+        # removed 2026-06-11 (S-FLEET-003): the store is hash-only; a raw
+        # credential must never authenticate by stored-plaintext comparison.
         token_hash = entry.get("token_hash") or ""
-        if token_hash and token_hash == sha_hash:
+        if token_hash and hmac.compare_digest(token_hash, sha_hash):
             return _entry_to_ctx(entry, sha_hash)
 
-        # 3. Bcrypt hash (older rotation scheme).
+        # 2. Bcrypt hash (older rotation scheme).
         bcrypt_hash = entry.get("hash") or ""
         if bcrypt_hash and _HAS_BCRYPT and bcrypt_hash.startswith(("$2a$", "$2b$", "$2y$")):
             try:

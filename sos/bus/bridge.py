@@ -63,9 +63,6 @@ def _resolve_token(raw_token: str) -> dict | None:
         stored_hash = t.get("token_hash") or t.get("hash", "")
         if stored_hash and hmac.compare_digest(stored_hash, raw_hash):
             return t
-        plaintext = t.get("token", "")
-        if plaintext and hmac.compare_digest(plaintext, raw_token):
-            return t
     return None
 
 

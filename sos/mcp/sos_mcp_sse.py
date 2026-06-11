@@ -6695,11 +6695,7 @@ def _token_record_for_auth(auth: MCPAuthContext) -> dict[str, Any] | None:
         if not record.get("active", True):
             continue
         stored_hash = str(record.get("token_hash") or "").removeprefix("sha256:")
-        raw_token = str(record.get("token") or "")
-        raw_hash = hashlib.sha256(raw_token.encode()).hexdigest() if raw_token else ""
         if stored_hash and hmac.compare_digest(stored_hash, auth.token):
-            return record
-        if raw_hash and hmac.compare_digest(raw_hash, auth.token):
             return record
     return None
 
