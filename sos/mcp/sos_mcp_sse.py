@@ -241,6 +241,11 @@ MIRROR_TOKEN: str = os.environ.get("MIRROR_TOKEN", "")
 # F-17: admin endpoints (e.g. /admin/outbox/status) require admin-typed token.
 MIRROR_ADMIN_TOKEN: str = os.environ.get("MIRROR_ADMIN_TOKEN", "")
 PORT: int = int(os.environ.get("SOS_MCP_PORT", "6070"))
+# BLOCK-1 (§2.5) perimeter hardening: bind host is env-configurable so the engine
+# can be bound to loopback (127.0.0.1) in front of nginx. Defaults to 0.0.0.0 to
+# preserve prior behavior — set SOS_MCP_BIND_HOST=127.0.0.1 in the unit to enable
+# the loopback bind (nginx proxies to 127.0.0.1:6070, so this is transparent).
+BIND_HOST: str = os.environ.get("SOS_MCP_BIND_HOST", "0.0.0.0")
 
 MIRROR_HEADERS = {
     "Authorization": f"Bearer {MIRROR_TOKEN}",
@@ -591,6 +596,18 @@ def _tenant_slug_for_auth(auth: MCPAuthContext) -> str | None:
     if auth.is_system:
         return None
     return auth.tenant_slug or auth.tenant_id or auth.active_project
+
+
+def _fmt_engram_ts(value: object) -> str:
+    """Coerce an engram timestamp to an ISO-string, then return the first 10 chars.
+
+    Mirror's direct-DB path returns native ``datetime.datetime`` objects;
+    the HTTP-fallback path returns JSON strings.  Both arrive here safely.
+    """
+    if hasattr(value, "isoformat"):
+        # datetime.datetime / datetime.date / any isoformat()-able object
+        return value.isoformat()[:10]  # type: ignore[union-attr]
+    return str(value)[:10]
 
 
 def _mirror_series_for_agent(agent: str) -> str:
@@ -4728,7 +4745,7 @@ async def handle_tool(
                 # Text lives in raw_data JSONB or falls back to context_id.
                 raw = e.get("raw_data") or {}
                 text = raw.get("text", "") or str(e.get("context_id", "?"))
-                ts = str(e.get("ts", "?"))[:10]
+                ts = _fmt_engram_ts(e.get("ts", "?"))
                 lines.append(f"{i}. [{ts}] {str(text)[:200]}")
             return _text("\n".join(lines))
 
@@ -4772,7 +4789,7 @@ async def handle_tool(
             lines = []
             for i, e in enumerate(results, 1):
                 mem_text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
-                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(mem_text)[:200]}")
+                lines.append(f"{i}. [{_fmt_engram_ts(e.get('timestamp', '?'))}] {str(mem_text)[:200]}")
             return _text("\n".join(lines))
 
         # --- search_code ---
@@ -4825,7 +4842,7 @@ async def handle_tool(
             lines = []
             for i, e in enumerate(engrams, 1):
                 text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
-                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(text)[:200]}")
+                lines.append(f"{i}. [{_fmt_engram_ts(e.get('timestamp', '?'))}] {str(text)[:200]}")
             return _text("\n".join(lines))
 
         # --- search (ChatGPT connector contract: query -> [{id,title,url}]) ---
@@ -8127,7 +8144,7 @@ if __name__ == "__main__":
     log.info("Starting SOS MCP SSE server on port %d", PORT)
     uvicorn.run(
         "sos.mcp.sos_mcp_sse:app",
-        host="0.0.0.0",
+        host=BIND_HOST,
         port=PORT,
         log_level="info",
         access_log=False,
