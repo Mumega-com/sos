@@ -706,6 +706,8 @@ class BrainService:
         self.state.tasks_in_flight.discard(task_id)
         self.state.unassign_task(agent_name, str(task_id))  # S062 Track A
         self.state.record_agent_success(agent_name)          # S062 Track A: decay failure penalty
+        # KR3 (W1): wire witness ΔC into C(t) — observe-only, fail-safe
+        self.state.apply_witness_delta_c(agent_name, vote=+1)
         self.state.clear_task_retry(str(task_id))
         project = str(
             msg.get("project")
@@ -733,6 +735,8 @@ class BrainService:
         self.state.tasks_in_flight.discard(task_id)
         self.state.unassign_task(agent_name, task_id)      # S062 Track A
         self.state.record_agent_failure(agent_name)         # S062 Track A: apply penalty
+        # KR3 (W1): wire witness ΔC into C(t) — observe-only, fail-safe
+        self.state.apply_witness_delta_c(agent_name, vote=-1)
         project = str(
             msg.get("project")
             or msg.get("project_id")

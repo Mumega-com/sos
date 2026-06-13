@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import heapq
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
+
+logger = logging.getLogger("sos.brain.state")
 
 
 @dataclass
@@ -80,6 +83,21 @@ class BrainState:
     task_retry_counts: dict[str, int] = field(default_factory=dict)
     """How many times a task has been re-queued after failure or dead_agent_skip."""
 
+    coherence_by_agent: dict[str, float] = field(default_factory=dict)
+    """Per-agent C(t) coherence measure in [0.0, 1.0].
+
+    KR3 (W1): wired to witness ΔC from CoherencePhysics.compute_collapse_energy
+    so C(t) moves off the dead-1.0 prior when real completion signals arrive.
+
+    OBSERVE-ONLY: this field is a measurement; it does NOT gate dispatch.
+    Missing key → caller should treat as 1.0 (the uninformed prior, preserved
+    from pre-KR3 state so no regression on agents we have no signal for).
+
+    EMA smoothing factor (alpha=0.2): new C = old_C + alpha * delta_c,
+    clamped to [0.0, 1.0].  A small alpha (0.2) means each event moves the
+    needle modestly and the history carries forward — fail-safe by design.
+    """
+
     _MAX_ROUTING_DECISIONS: int = field(default=50, init=False, repr=False)
     _queue_counter: int = field(default=0, init=False, repr=False)
 
@@ -87,6 +105,8 @@ class BrainState:
     ESCALATION_THRESHOLD: int = field(default=3, init=False, repr=False)
     # Failure penalty applied per failure to agent effective load in selection.
     FAILURE_PENALTY_PER_MISS: int = field(default=3, init=False, repr=False)
+    # EMA smoothing factor for witness ΔC updates — small value = stable, slow-moving C(t).
+    COHERENCE_EMA_ALPHA: float = field(default=0.2, init=False, repr=False)
 
     def record_event(self, event_type: str, at: str) -> None:
         """Increment counters and update timestamp."""
@@ -129,6 +149,47 @@ class BrainState:
         if agent_name and agent_name in self.failure_counts_by_agent:
             self.failure_counts_by_agent[agent_name] = max(
                 0, self.failure_counts_by_agent[agent_name] - 1
+            )
+
+    def apply_witness_delta_c(self, agent_name: str, vote: int, latency_ms: float = 500.0) -> None:
+        """KR3 (W1): wire the CoherencePhysics witness ΔC into C(t) for agent_name.
+
+        Uses CoherencePhysics.compute_collapse_energy to compute delta_c, then
+        EMA-merges it into coherence_by_agent.
+
+        Guardrails (River, 2026-06-13):
+        - OBSERVE-ONLY: this method never gates dispatch.
+        - FAIL-SAFE: any exception is swallowed; C(t) carries its previous value.
+        - ADDITIVE: delta_c joins the existing C; it does NOT replace or zero it.
+        - vote=+1 for completion (success), vote=-1 for failure.
+        - Uninformed prior is 1.0 (matches pre-KR3 ScoringContext.agent_coherence default).
+        """
+        if not agent_name:
+            return
+        try:
+            from sos.kernel.physics import CoherencePhysics  # local import — avoids circular deps
+
+            current_c = self.coherence_by_agent.get(agent_name, 1.0)
+            result = CoherencePhysics.compute_collapse_energy(
+                vote=vote,
+                latency_ms=latency_ms,
+                agent_coherence=current_c,
+            )
+            delta_c: float = result["delta_c"]
+            new_c = current_c + self.COHERENCE_EMA_ALPHA * delta_c
+            # Clamp to valid probability range
+            new_c = max(0.0, min(1.0, new_c))
+            self.coherence_by_agent[agent_name] = new_c
+            logger.debug(
+                "[coherence] agent=%s vote=%+d delta_c=%.4f old_c=%.4f new_c=%.4f",
+                agent_name, vote, delta_c, current_c, new_c,
+            )
+        except Exception:
+            # Fail-safe: swallow all exceptions so measurement never breaks the brain cycle.
+            logger.warning(
+                "[coherence] apply_witness_delta_c failed for agent=%s; carrying previous value",
+                agent_name,
+                exc_info=True,
             )
 
     def increment_task_retry(self, task_id: str) -> int:
