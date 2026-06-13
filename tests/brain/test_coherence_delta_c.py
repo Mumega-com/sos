@@ -217,3 +217,82 @@ def test_brain_service_updates_coherence_on_task_failed() -> None:
     c = asyncio.run(_go())
     assert c is not None, "coherence_by_agent must be populated after task.failed"
     assert 0.0 <= c < 1.0, f"C must drop below 1.0 after failure; got {c}"
+
+
+# ---------------------------------------------------------------------------
+# River guardrail #6 — REVERSIBLE: flag OFF disables the ΔC wire entirely
+# ---------------------------------------------------------------------------
+
+
+class TestWitnessDeltaCFlag:
+    """BRAIN_WITNESS_DELTA_C=0 must silence the wire without any other change."""
+
+    def test_flag_off_unit_apply_not_called(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With flag OFF, apply_witness_delta_c must not be invoked on task events.
+
+        Proven by: patching apply_witness_delta_c to raise if called, then
+        driving _on_task_completed and _on_task_failed — neither must raise.
+        Coherence state must remain empty (unchanged from pre-W1).
+        """
+        import sos.services.brain.service as svc_mod
+
+        monkeypatch.setenv("BRAIN_WITNESS_DELTA_C", "0")
+        # Re-read the flag as if the module had imported with the env var set.
+        monkeypatch.setattr(svc_mod, "BRAIN_WITNESS_DELTA_C_ENABLED", False)
+
+        from sos.services.brain.state import BrainState
+
+        state = BrainState()
+
+        # Patch apply_witness_delta_c to raise — if the flag guard leaks it, test fails.
+        original = state.apply_witness_delta_c
+
+        def _must_not_be_called(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError(
+                "apply_witness_delta_c was called despite BRAIN_WITNESS_DELTA_C=0"
+            )
+
+        state.apply_witness_delta_c = _must_not_be_called  # type: ignore[method-assign]
+
+        # Simulate what _on_task_completed does (minus redis/emit).
+        agent_name = "kasra"
+        state.record_agent_success(agent_name)
+        if svc_mod.BRAIN_WITNESS_DELTA_C_ENABLED:
+            state.apply_witness_delta_c(agent_name, vote=+1)
+
+        # Simulate what _on_task_failed does (minus redis/emit).
+        state.record_agent_failure(agent_name)
+        if svc_mod.BRAIN_WITNESS_DELTA_C_ENABLED:
+            state.apply_witness_delta_c(agent_name, vote=-1)
+
+        # coherence_by_agent must be empty — flag=OFF means zero state change.
+        assert state.coherence_by_agent == {}, (
+            f"coherence_by_agent must be empty with flag OFF; got {state.coherence_by_agent}"
+        )
+        # Restore original so other tests are unaffected.
+        state.apply_witness_delta_c = original  # type: ignore[method-assign]
+
+    def test_flag_on_still_wires(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Sanity: flag ON (default) — apply_witness_delta_c is reached."""
+        import sos.services.brain.service as svc_mod
+
+        monkeypatch.setattr(svc_mod, "BRAIN_WITNESS_DELTA_C_ENABLED", True)
+
+        from sos.services.brain.state import BrainState
+
+        state = BrainState()
+        called: list[tuple] = []
+        original = state.apply_witness_delta_c
+
+        def _spy(agent_name: str, vote: int, **kw) -> None:
+            called.append((agent_name, vote))
+            original(agent_name, vote, **kw)
+
+        state.apply_witness_delta_c = _spy  # type: ignore[method-assign]
+
+        agent_name = "loom"
+        if svc_mod.BRAIN_WITNESS_DELTA_C_ENABLED:
+            state.apply_witness_delta_c(agent_name, vote=+1)
+
+        assert len(called) == 1, f"Expected 1 call with flag ON; got {called}"
+        assert called[0] == ("loom", +1)

@@ -49,7 +49,12 @@ from sos.services.brain.source_reader import (
     extract_project_from_stream,
     is_active,
 )
-from sos.services.brain.state import BrainState, RoutingDecision, RoutingOutcome
+from sos.services.brain.state import (
+    BRAIN_WITNESS_DELTA_C_ENABLED,
+    BrainState,
+    RoutingDecision,
+    RoutingOutcome,
+)
 
 if TYPE_CHECKING:
     from sos.services.bus.redis_bus import RedisBusService
@@ -707,7 +712,9 @@ class BrainService:
         self.state.unassign_task(agent_name, str(task_id))  # S062 Track A
         self.state.record_agent_success(agent_name)          # S062 Track A: decay failure penalty
         # KR3 (W1): wire witness ΔC into C(t) — observe-only, fail-safe
-        self.state.apply_witness_delta_c(agent_name, vote=+1)
+        # Gated by BRAIN_WITNESS_DELTA_C flag (River guardrail #6 — REVERSIBLE).
+        if BRAIN_WITNESS_DELTA_C_ENABLED:
+            self.state.apply_witness_delta_c(agent_name, vote=+1)
         self.state.clear_task_retry(str(task_id))
         project = str(
             msg.get("project")
@@ -736,7 +743,9 @@ class BrainService:
         self.state.unassign_task(agent_name, task_id)      # S062 Track A
         self.state.record_agent_failure(agent_name)         # S062 Track A: apply penalty
         # KR3 (W1): wire witness ΔC into C(t) — observe-only, fail-safe
-        self.state.apply_witness_delta_c(agent_name, vote=-1)
+        # Gated by BRAIN_WITNESS_DELTA_C flag (River guardrail #6 — REVERSIBLE).
+        if BRAIN_WITNESS_DELTA_C_ENABLED:
+            self.state.apply_witness_delta_c(agent_name, vote=-1)
         project = str(
             msg.get("project")
             or msg.get("project_id")

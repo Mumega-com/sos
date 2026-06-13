@@ -3,8 +3,22 @@ from __future__ import annotations
 
 import heapq
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Feature flag — River guardrail #6 (REVERSIBLE)
+# ---------------------------------------------------------------------------
+# BRAIN_WITNESS_DELTA_C controls whether the W1 ΔC→C(t) wire is active.
+# Default ON (any value other than "0" / "off" / "false" enables it).
+# Set BRAIN_WITNESS_DELTA_C=0 (or "off"/"false") to cut the wire entirely:
+#   - _on_task_completed / _on_task_failed skip apply_witness_delta_c.
+#   - coherence_by_agent carries its prior value unchanged.
+#   - All pre-W1 behaviour is restored with zero other code changes.
+# Read once at import time so the flag is stable for the process lifetime.
+_RAW_FLAG = os.environ.get("BRAIN_WITNESS_DELTA_C", "1").strip().lower()
+BRAIN_WITNESS_DELTA_C_ENABLED: bool = _RAW_FLAG not in ("0", "off", "false", "no")
 
 logger = logging.getLogger("sos.brain.state")
 
