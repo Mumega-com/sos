@@ -38,7 +38,9 @@ def _make_dashboard_app() -> FastAPI:
 # ---------------------------------------------------------------------------
 
 _AGENTS_STREAM = "sos:stream:global:squad:agents"
-_TASKS_STREAM = "sos:stream:global:squad:tasks"
+# G64b gate: stream suffix must match payload "project" and be in active_projects.json.
+# "mumega" is always in the active set (real + safe-default). Stream key suffix == project.
+_TASKS_STREAM = "sos:stream:global:squad:mumega"
 _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
 
 
@@ -73,10 +75,12 @@ def _make_task_created_fields(
     title: str = "publish wordpress post",
     trace_id: str | None = None,
 ) -> dict[str, str]:
+    # G64b gate requires "project" in payload matching the stream suffix.
     payload: dict[str, object] = {
         "task_id": task_id,
         "title": title,
         "priority": priority,
+        "project": "mumega",
     }
     if labels is not None:
         payload["labels"] = labels

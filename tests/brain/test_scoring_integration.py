@@ -6,6 +6,14 @@ Exercises the Sprint 2 wiring end-to-end against an in-memory fakeredis:
 
 All five bus-consumer invariants stay intact (idempotency, checkpoints,
 fail-open, SCAN discovery, replay tolerance).
+
+G64b note: tasks must carry "project" in payload matching the stream suffix and
+the active_projects.json registry. These tests use project="mumega" on the
+sos:stream:global:squad:mumega stream, which is always in the active set.
+
+Dispatch note: these tests exercise scoring/enqueue/emit only, not dispatch.
+The registry client is stubbed empty so no agent is matched and tasks stay on
+the queue, matching the Sprint 2 scope these tests were written for.
 """
 from __future__ import annotations
 
@@ -17,10 +25,24 @@ import fakeredis.aioredis
 import pytest
 
 from sos.contracts.messages import TaskScoredMessage, parse_message
+from sos.services.brain import service as brain_service
 from sos.services.brain.service import BrainService
 
 _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
-_TASKS_STREAM = "sos:stream:global:squad:tasks"
+# G64b gate: stream suffix must match payload "project" and be in active_projects.json.
+# "mumega" is always in the active set (real + safe-default). Stream key suffix == project.
+_TASKS_STREAM = "sos:stream:global:squad:mumega"
+
+
+def _patch_registry_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the registry to return no agents — keeps tasks on the queue.
+
+    These tests are Sprint 2 (scoring/enqueue/emit). Dispatch is Sprint 3.
+    An empty registry means select_agent returns None → tasks stay enqueued.
+    """
+    async def _no_agents():
+        return []
+    monkeypatch.setattr(brain_service._registry_client, "list_agents", _no_agents)
 
 
 def _make_task_created_fields(
@@ -31,7 +53,8 @@ def _make_task_created_fields(
     title: str = "do the thing",
 ) -> dict[str, str]:
     """Build redis XADD fields for a minimal v1 task.created envelope."""
-    payload: dict[str, object] = {"task_id": task_id, "title": title}
+    # G64b gate requires "project" in payload matching the stream suffix.
+    payload: dict[str, object] = {"task_id": task_id, "title": title, "project": "mumega"}
     if priority is not None:
         payload["priority"] = priority
     envelope: dict[str, str] = {
@@ -56,8 +79,11 @@ async def _make_service() -> tuple[BrainService, fakeredis.aioredis.FakeRedis]:
 
 
 @pytest.mark.asyncio
-async def test_task_created_enqueues_and_emits_scored() -> None:
+async def test_task_created_enqueues_and_emits_scored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc, fake = await _make_service()
+    _patch_registry_empty(monkeypatch)
     await fake.xadd(
         _TASKS_STREAM,
         _make_task_created_fields("task-high-1", priority="high"),
@@ -65,7 +91,7 @@ async def test_task_created_enqueues_and_emits_scored() -> None:
 
     await svc._tick()
 
-    # State: one item on the priority queue
+    # State: one item on the priority queue (no agent matched → stays enqueued)
     assert svc.state.queue_size() == 1
 
     # Emission: one entry on the brain stream with type=task.scored
@@ -83,8 +109,11 @@ async def test_task_created_enqueues_and_emits_scored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_priority_defaults_to_medium() -> None:
+async def test_missing_priority_defaults_to_medium(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc, fake = await _make_service()
+    _patch_registry_empty(monkeypatch)
     await fake.xadd(
         _TASKS_STREAM,
         _make_task_created_fields("task-no-priority", priority=None),
@@ -100,8 +129,11 @@ async def test_missing_priority_defaults_to_medium() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scored_event_payload_roundtrips_through_parse_message() -> None:
+async def test_scored_event_payload_roundtrips_through_parse_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc, fake = await _make_service()
+    _patch_registry_empty(monkeypatch)
     await fake.xadd(
         _TASKS_STREAM,
         _make_task_created_fields("task-roundtrip", priority="critical"),
@@ -124,8 +156,11 @@ async def test_scored_event_payload_roundtrips_through_parse_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_duplicate_message_id_does_not_double_enqueue() -> None:
+async def test_duplicate_message_id_does_not_double_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     svc, fake = await _make_service()
+    _patch_registry_empty(monkeypatch)
     shared_id = str(uuid.uuid4())
     fields = _make_task_created_fields(
         "task-dup", message_id=shared_id, priority="medium"

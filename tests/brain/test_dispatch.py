@@ -34,7 +34,9 @@ def _patch_registry(monkeypatch: pytest.MonkeyPatch, agents: list) -> None:
     monkeypatch.setattr(brain_service._registry_client, "list_agents", _list_agents)
 
 _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
-_TASKS_STREAM = "sos:stream:global:squad:tasks"
+# G64b gate: stream suffix must match payload "project" and be in active_projects.json.
+# "mumega" is always in the active set (real + safe-default). Stream key suffix == project.
+_TASKS_STREAM = "sos:stream:global:squad:mumega"
 _AGENTS_STREAM = "sos:stream:global:agent:events"
 
 
@@ -55,10 +57,12 @@ def _make_task_created_fields(
     title: str = "do the thing",
 ) -> dict[str, str]:
     """Build redis XADD fields for a minimal v1 task.created envelope."""
+    # G64b gate requires "project" in payload matching the stream suffix.
     payload: dict[str, object] = {
         "task_id": task_id,
         "title": title,
         "priority": priority,
+        "project": "mumega",
     }
     if labels is not None:
         payload["labels"] = labels
