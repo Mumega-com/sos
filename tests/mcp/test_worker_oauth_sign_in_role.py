@@ -125,11 +125,27 @@ def test_viewer_role_not_elevated_to_owner():
 
 
 def test_owner_membership_gets_owner_role():
-    """An identity with owner membership must get 'owner' (legitimate path)."""
-    auth = _worker_oauth_auth()
+    """P2 fix — display-name-slug ≠ email-local-part: owner sign_in must succeed.
+
+    Scenario: user has email "alice@example.com" (email-local-part "alice") but
+    their IdP display name is "Alice Smith" → _slug_from_display_name produces
+    "alice-smith" → that is auth.tenant_id AND the provisioned membership
+    project_id (after the P2 fix).  Both sides MUST use "alice-smith".
+
+    Before the fix: membership was seeded as project_id="alice" (email-local-part),
+    but sign_in checks project == auth.tenant_id == "alice-smith" → DENY.
+    After the fix: membership seeded as project_id="alice-smith" → sign_in passes.
+    """
+    # The VPS receives tenant_id = display-name slug (from provision endpoint).
+    # The email local-part is intentionally different to exercise the divergence.
+    auth = _worker_oauth_auth(
+        tenant_id="alice-smith",  # display-name slug, NOT email-local-part "alice"
+        email="alice@example.com",
+    )
+    # resolve-owner returns the membership with the CORRECTED project_id.
     resolve_resp = _resolve_owner_response(
         sub_matched=True,
-        memberships=[{"project_id": "acme", "role": "owner"}],
+        memberships=[{"project_id": "alice-smith", "role": "owner"}],
     )
     with patch(
         "sos.mcp.sos_mcp_sse._resolve_owner_via_idp",
@@ -138,11 +154,16 @@ def test_owner_membership_gets_owner_role():
         "sos.mcp.sos_mcp_sse._push_tools_list_changed",
         new=AsyncMock(),
     ):
-        result = _run(_handle_sign_in(auth, {"project": "acme"}, session_id=None))
+        # sign_in requests "alice-smith" (the display-name slug, matching tenant_id).
+        result = _run(_handle_sign_in(auth, {"project": "alice-smith"}, session_id=None))
 
     body = json.loads(result["content"][0]["text"])
-    assert body["ok"] is True
+    assert body["ok"] is True, (
+        f"P2 fix broken: owner sign_in denied when display-name-slug ('alice-smith') "
+        f"differs from email-local-part ('alice'). Got: {result['content'][0]['text']}"
+    )
     assert body["role"] == "owner"
+    assert body["active_project"] == "alice-smith"
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +219,42 @@ def test_worker_oauth_missing_agent_identity_id_is_explicit_deny():
     assert "denied" in text.lower()
     # Crucial: stub-token lookup must NOT have been called
     mock_lookup.assert_not_called()
+    assert auth.active_project is None
+
+
+# ---------------------------------------------------------------------------
+# P2 regression guard: email-local-part ≠ tenant_id → must deny (wrong project_id)
+# ---------------------------------------------------------------------------
+
+def test_p2_email_slug_membership_denied_when_tenant_id_differs():
+    """Guard against P2 regression: if the membership is stored under the email
+    local-part ('alice') but the user signs in to the tenant_id slug ('alice-smith'),
+    it must be DENIED — the membership.project_id must exactly equal auth.tenant_id.
+
+    This is the BROKEN-BEFORE-FIX scenario: resolve-owner returns project_id='alice'
+    (email-local-part), but sign_in requests project='alice-smith' (tenant_id).
+    No matching membership → deny.
+    """
+    auth = _worker_oauth_auth(
+        tenant_id="alice-smith",
+        email="alice@example.com",
+    )
+    # Membership seeded under old broken email-local-part key — simulates pre-fix state.
+    resolve_resp = _resolve_owner_response(
+        sub_matched=True,
+        memberships=[{"project_id": "alice", "role": "owner"}],  # wrong key
+    )
+    with patch(
+        "sos.mcp.sos_mcp_sse._resolve_owner_via_idp",
+        new=AsyncMock(return_value=resolve_resp),
+    ):
+        result = _run(_handle_sign_in(auth, {"project": "alice-smith"}, session_id=None))
+
+    text = result["content"][0]["text"]
+    assert "denied" in text.lower(), (
+        "Expected denial when membership project_id ('alice') doesn't match "
+        "requested project ('alice-smith')"
+    )
     assert auth.active_project is None
 
 
