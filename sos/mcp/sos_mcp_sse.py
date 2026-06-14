@@ -357,6 +357,13 @@ class MCPAuthContext:
     install_id: str | None = None
     node_id: str | None = None
     local_source_id: str | None = None
+    # R2 fix — IdP-verified principal fields forwarded by mcp-dispatcher as
+    # X-Idp-Provider / X-Idp-Sub (MEDIUM-tier tokens only; absent on pre-MEDIUM
+    # tokens → headers omitted by Worker → both stay None here).
+    # Used by _handle_sign_in worker_oauth branch to call resolve-owner and derive
+    # auth.role from real membership — never hardcoded owner.
+    idp_provider: str | None = None
+    idp_sub: str | None = None
 
     @property
     def is_customer(self) -> bool:
@@ -3328,6 +3335,53 @@ def _memberships_from_lookup(info: dict[str, Any] | None) -> list[dict[str, Any]
     return raw if isinstance(raw, list) else []
 
 
+async def _resolve_owner_via_idp(
+    *,
+    idp_provider: str | None,
+    idp_sub: str | None,
+    email: str | None,
+    email_verified: bool,
+) -> dict[str, Any] | None:
+    """R2 fix — resolve a principal's real identity + memberships via the
+    IdP-verified (provider, sub, email, email_verified) tuple.
+
+    Calls inkwell-api POST /api/agents/identities/resolve-owner (INTERNAL_API_SECRET
+    gated). Returns the response dict, or None on any failure.
+
+    The caller MUST treat sub_matched=false (or a None return) as DENY — no
+    elevation, no role grant.
+    """
+    if not INTERNAL_API_SECRET:
+        log.warning("resolve-owner disabled — INTERNAL_API_SECRET unset")
+        return None
+    if not idp_provider or not idp_sub:
+        # Pre-MEDIUM tokens: provider/sub absent → cannot re-resolve → deny.
+        log.warning(
+            "resolve-owner: missing idp_provider or idp_sub — cannot re-resolve principal"
+        )
+        return None
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{INKWELL_API_URL}/api/agents/identities/resolve-owner",
+                headers={"Authorization": f"Bearer {INTERNAL_API_SECRET}"},
+                json={
+                    "idp_provider": idp_provider,
+                    "sub": idp_sub,
+                    "email": email,
+                    "email_verified": email_verified,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            log.warning("resolve-owner unexpected status=%s", resp.status_code)
+            return None
+    except Exception as exc:  # noqa: BLE001 — network/timeout — fail closed
+        log.warning("resolve-owner error: %s", exc)
+        return None
+
+
 async def _push_tools_list_changed(session_id: str | None) -> None:
     """Notify the client that the available tool list has changed.
 
@@ -3348,6 +3402,23 @@ async def _push_tools_list_changed(session_id: str | None) -> None:
 
 
 async def _handle_my_profile(auth: MCPAuthContext) -> dict[str, Any]:
+    # Security flag B: worker_oauth tokens share a stub token hash derived from
+    # SOS_INTERNAL_TOKEN. Passing auth.token to _inkwell_lookup_connection would
+    # collide ALL worker_oauth sessions onto whichever identity bound that stub
+    # first. When the dispatcher has already resolved an identity (agent_identity_id
+    # is set via X-Agent-Identity-Id header), use it directly — no lookup needed.
+    if auth.source == "worker_oauth" and auth.agent_identity_id:
+        auth.identity_id = auth.agent_identity_id
+        return _text(json.dumps({
+            "identity_id": auth.agent_identity_id,
+            "name": None,
+            "email": auth.email,
+            "qnft_url": None,
+            "google_id": None,
+            "github_id": None,
+            "active_project": auth.active_project,
+            "default_project": auth.tenant_id,
+        }, indent=2))
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text(
@@ -3561,6 +3632,17 @@ async def _handle_sprint_capsule(auth: MCPAuthContext, args: dict[str, Any]) -> 
 
 
 async def _handle_list_projects(auth: MCPAuthContext) -> dict[str, Any]:
+    # Security flag B: worker_oauth stub token must never reach _inkwell_lookup_connection.
+    # The dispatcher already resolved the identity; memberships are not available here on
+    # the worker_oauth path (no connection row to JOIN against). Caller should use sign_in
+    # via the OAuth flow instead — the identity_id is pre-set on the auth context.
+    if auth.source == "worker_oauth" and auth.agent_identity_id:
+        auth.identity_id = auth.agent_identity_id
+        return _text(
+            "Project list is not available on the OAuth path. "
+            "Your project is pre-selected based on your tenant. "
+            f"Active project: {auth.tenant_id or 'none'}"
+        )
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text("No BYOA identity bound to this token.")
@@ -3583,6 +3665,80 @@ async def _handle_sign_in(
     project = str(args.get("project") or "").strip()
     if not project:
         return _text("sign_in requires a project slug. Use list_projects to see options.")
+    # R2 BLOCK fix — worker_oauth path.
+    #
+    # Previous code: hardcoded `auth.role = "owner"` — ANY member/viewer elevated.
+    # Fixed: call /api/agents/identities/resolve-owner with the IdP-verified
+    # (provider, sub, email, email_verified) from auth context. Derive role from the
+    # returned membership for the requested project. Default "viewer", never "owner"
+    # unless the resolve-owner response explicitly returns that role for this identity.
+    #
+    # Explicit DENY cases (fail-closed, never fall through to stub-token lookup):
+    #   1. worker_oauth + agent_identity_id missing — pre-G2 token without identity header.
+    #   2. worker_oauth + resolve-owner sub_matched=false — unverified principal.
+    #   3. worker_oauth + no membership for the requested project.
+    if auth.source == "worker_oauth":
+        # P3-LOW: agent_identity_id absent on this path → EXPLICIT DENY.
+        # (Pre-G2 tokens without identity context must NOT fall through to the
+        # stub-token lookup, which would then grant admin/viewer on the wrong
+        # identity row via _inkwell_lookup_connection.)
+        if not auth.agent_identity_id:
+            return _text(
+                "sign_in denied: OAuth session is missing identity context "
+                "(X-Agent-Identity-Id not forwarded by dispatcher). "
+                "Re-authenticate via the OAuth flow."
+            )
+
+        # Allow sign-in only to the tenant's own project scope.
+        allowed_project = auth.tenant_id or ""
+        if project != allowed_project:
+            return _text(
+                f"On the OAuth path, you may only sign in to your own project '{allowed_project}'. "
+                f"Requested: '{project}'"
+            )
+
+        # Resolve the principal server-side from the IdP-verified (provider, sub).
+        # This is required even when agent_identity_id is set — the dispatcher
+        # comment (mcp-api-handler.ts:107-108) is explicit: "VPS NEVER trusts
+        # X-Agent-Identity-Id alone for scope elevation."
+        resolved = await _resolve_owner_via_idp(
+            idp_provider=auth.idp_provider,
+            idp_sub=auth.idp_sub,
+            email=auth.email,
+            email_verified=auth.email_verified,
+        )
+
+        if not resolved or not resolved.get("sub_matched"):
+            return _text(
+                "sign_in denied: IdP principal could not be verified server-side "
+                "(sub_matched=false). Re-authenticate to refresh your session."
+            )
+
+        # Derive role from the returned memberships for this project.
+        # Default "viewer" — never hardcode "owner".
+        memberships: list[dict[str, str]] = resolved.get("memberships") or []
+        role_for_project = next(
+            (m.get("role") for m in memberships if m.get("project_id") == project),
+            None,
+        )
+        if role_for_project is None:
+            return _text(
+                f"sign_in denied: no membership for project '{project}' "
+                "on your verified identity."
+            )
+
+        auth.identity_id = auth.agent_identity_id
+        auth.active_project = project
+        auth.role = role_for_project or "viewer"
+        if session_id:
+            _session_signed_in.add(session_id)
+            await _push_tools_list_changed(session_id)
+        return _text(json.dumps({
+            "ok": True,
+            "active_project": project,
+            "role": auth.role,
+        }, indent=2))
+
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text("No BYOA identity bound to this token.")
@@ -6021,6 +6177,13 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
         email_verified_header = request.headers.get("X-Email-Verified", "").lower()
         email_verified = email_verified_header == "true"
         agent_identity_id_header = request.headers.get("X-Agent-Identity-Id") or None
+        # R2 fix — read IdP principal headers forwarded by the Worker dispatcher
+        # (MEDIUM-tier tokens only). The Worker scrubs any caller-supplied copies
+        # of these headers before re-asserting values from the signed token props,
+        # so these arrive trustworthy. Used by _handle_sign_in to call
+        # resolve-owner and derive the real membership role.
+        idp_provider_header = request.headers.get("X-Idp-Provider") or None
+        idp_sub_header = request.headers.get("X-Idp-Sub") or None
         return MCPAuthContext(
             token=hashlib.sha256(candidate.encode()).hexdigest()[:16],  # never store raw
             tenant_id=tenant_id,
@@ -6033,6 +6196,8 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
             email=email_header,
             email_verified=email_verified,
             agent_identity_id=agent_identity_id_header,
+            idp_provider=idp_provider_header,
+            idp_sub=idp_sub_header,
         )
 
     context = _resolve_token_context(candidate)
