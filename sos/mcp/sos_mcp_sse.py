@@ -3348,6 +3348,23 @@ async def _push_tools_list_changed(session_id: str | None) -> None:
 
 
 async def _handle_my_profile(auth: MCPAuthContext) -> dict[str, Any]:
+    # Security flag B: worker_oauth tokens share a stub token hash derived from
+    # SOS_INTERNAL_TOKEN. Passing auth.token to _inkwell_lookup_connection would
+    # collide ALL worker_oauth sessions onto whichever identity bound that stub
+    # first. When the dispatcher has already resolved an identity (agent_identity_id
+    # is set via X-Agent-Identity-Id header), use it directly — no lookup needed.
+    if auth.source == "worker_oauth" and auth.agent_identity_id:
+        auth.identity_id = auth.agent_identity_id
+        return _text(json.dumps({
+            "identity_id": auth.agent_identity_id,
+            "name": None,
+            "email": auth.email,
+            "qnft_url": None,
+            "google_id": None,
+            "github_id": None,
+            "active_project": auth.active_project,
+            "default_project": auth.tenant_id,
+        }, indent=2))
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text(
@@ -3561,6 +3578,17 @@ async def _handle_sprint_capsule(auth: MCPAuthContext, args: dict[str, Any]) -> 
 
 
 async def _handle_list_projects(auth: MCPAuthContext) -> dict[str, Any]:
+    # Security flag B: worker_oauth stub token must never reach _inkwell_lookup_connection.
+    # The dispatcher already resolved the identity; memberships are not available here on
+    # the worker_oauth path (no connection row to JOIN against). Caller should use sign_in
+    # via the OAuth flow instead — the identity_id is pre-set on the auth context.
+    if auth.source == "worker_oauth" and auth.agent_identity_id:
+        auth.identity_id = auth.agent_identity_id
+        return _text(
+            "Project list is not available on the OAuth path. "
+            "Your project is pre-selected based on your tenant. "
+            f"Active project: {auth.tenant_id or 'none'}"
+        )
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text("No BYOA identity bound to this token.")
@@ -3583,6 +3611,30 @@ async def _handle_sign_in(
     project = str(args.get("project") or "").strip()
     if not project:
         return _text("sign_in requires a project slug. Use list_projects to see options.")
+    # Security flag B: worker_oauth stub token must never reach _inkwell_lookup_connection.
+    # The dispatcher already resolved the identity via X-Agent-Identity-Id header.
+    # Membership check is skipped on this path — tenant isolation is enforced by the CF
+    # Worker dispatcher which already scoped the token to a single tenant_id. The caller
+    # can only sign_in to their own tenant_id (or a project within it).
+    if auth.source == "worker_oauth" and auth.agent_identity_id:
+        auth.identity_id = auth.agent_identity_id
+        # Allow sign-in only to the tenant's own project scope.
+        allowed_project = auth.tenant_id or ""
+        if project != allowed_project:
+            return _text(
+                f"On the OAuth path, you may only sign in to your own project '{allowed_project}'. "
+                f"Requested: '{project}'"
+            )
+        auth.active_project = project
+        auth.role = "owner"
+        if session_id:
+            _session_signed_in.add(session_id)
+            await _push_tools_list_changed(session_id)
+        return _text(json.dumps({
+            "ok": True,
+            "active_project": project,
+            "role": auth.role,
+        }, indent=2))
     info = await _inkwell_lookup_connection(auth.token)
     if not info or not info.get("identity"):
         return _text("No BYOA identity bound to this token.")
