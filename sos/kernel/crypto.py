@@ -16,7 +16,7 @@ import hashlib
 import json
 from typing import Any
 
-from nacl.exceptions import BadSignatureError
+from nacl.exceptions import BadSignatureError, CryptoError
 from nacl.signing import SigningKey, VerifyKey
 
 
@@ -47,7 +47,7 @@ def verify(public_key_b64: str, message: bytes, signature_b64: str) -> bool:
         vk = VerifyKey(_b64d(public_key_b64))
         vk.verify(message, _b64d(signature_b64))
         return True
-    except (BadSignatureError, ValueError, TypeError):
+    except (BadSignatureError, CryptoError, ValueError, TypeError):
         return False
 
 

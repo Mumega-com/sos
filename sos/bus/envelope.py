@@ -38,10 +38,64 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 CANONICAL_VERSION = "1.0"
+# A signed envelope bumps the version so a 1.0↔1.1 swap invalidates the signature
+# (version is inside the signed field set). Verification is OPT-IN and accept+flag:
+# unsigned 1.0 envelopes remain valid (migration), receivers gate on the returned
+# `signature` status rather than this module rejecting. Real per-agent keys arrive
+# with #187 (Hadi-gated identity mint); #185 ships only the verify mechanism.
+SIGNED_VERSION = "1.1"
+
+# The fields covered by the signature. `payload` is already a canonical JSON string
+# here, so the body is bound too. `project` (the TENANT-SCOPE slug) MUST be signed —
+# else a captured signed message can be re-scoped to another tenant with the sig
+# intact (cross-tenant injection, the S180 class). `sig` itself is necessarily
+# excluded. Absent optional fields (no project) are simply omitted from the bytes.
+_SIGNED_FIELDS = ("id", "type", "source", "target", "payload", "timestamp", "version", "project")
+
+
+def signed_message_bytes(env: dict[str, str]) -> bytes:
+    """Deterministic bytes a signature is computed/verified over.
+
+    Sorted-key, whitespace-free JSON of the signed field subset, so the SENDER
+    (build) and any RECEIVER (parse) derive the identical message from the same
+    Redis-stringified fields. Stable across processes — no clock, no ordering deps.
+    """
+    subset = {k: env[k] for k in _SIGNED_FIELDS if k in env}
+    return json.dumps(subset, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _verify_signature(
+    fields: dict[str, str],
+    resolver: Callable[[str], str | None] | None,
+) -> str:
+    """Classify an envelope's signature. Pure status — NEVER raises, never gates.
+
+    Status: unsigned / unverified / no_key / valid / invalid / error. A resolver or
+    crypto failure degrades to ``"error"`` (parse stays tolerant — a flaky key
+    registry must not crash a receiver's message loop), never propagates.
+    """
+    sig = fields.get("sig")
+    if not sig:
+        return "unsigned"
+    if resolver is None:
+        return "unverified"
+    try:
+        # Resolve the key by the TOP-LEVEL source — that is the signed identity (the
+        # payload.source mirror is convenience and is NOT what binds the signature).
+        pub = resolver(fields.get("source", ""))
+        if not pub:
+            return "no_key"
+        from sos.kernel import crypto  # lazy — unsigned/unverified paths stay zero-dep
+
+        return "valid" if crypto.verify(pub, signed_message_bytes(fields), sig) else "invalid"
+    except Exception:
+        # Resolver raised (registry down/timeout) or crypto blew up on a malformed
+        # key/sig — fail closed to a non-trusted status, do not kill the loop.
+        return "error"
 
 
 def build(
@@ -53,6 +107,7 @@ def build(
     project: str | None = None,
     extras: dict[str, Any] | None = None,
     message_id: str | None = None,
+    signing_key: str | None = None,
 ) -> dict[str, str]:
     """Build a canonical envelope ready for ``redis.xadd(stream, envelope)``.
 
@@ -64,6 +119,11 @@ def build(
         project:  tenant scope slug. Omit for global scope.
         extras:   extra payload keys (``remember``, ``content_type``, ``trace_id``, ...).
         message_id: override the generated uuid4. Omit to auto-generate.
+        signing_key: OPTIONAL Ed25519 private key (url-safe b64, from
+            ``sos.kernel.crypto.generate_keypair``). When given, the envelope is
+            signed: version → ``SIGNED_VERSION`` and a ``sig`` field is added over
+            ``signed_message_bytes``. Omit it and the envelope is byte-identical to
+            the legacy unsigned shape (no new dependency is imported).
 
     Returns:
         Dict of str → str suitable for passing directly to ``redis.xadd``.
@@ -90,14 +150,23 @@ def build(
         "target": target,
         "payload": json.dumps(payload_obj),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": CANONICAL_VERSION,
+        "version": SIGNED_VERSION if signing_key else CANONICAL_VERSION,
     }
+    # project must be set BEFORE signing — it is a signed field (tenant scope).
     if project:
         envelope["project"] = project
+    if signing_key:
+        # Lazy import — the unsigned path keeps envelope.py dependency-free.
+        from sos.kernel import crypto
+
+        envelope["sig"] = crypto.sign(signing_key, signed_message_bytes(envelope))
     return envelope
 
 
-def parse(fields: dict[str, str]) -> dict[str, Any]:
+def parse(
+    fields: dict[str, str],
+    verify_key_resolver: Callable[[str], str | None] | None = None,
+) -> dict[str, Any]:
     """Parse a redis-stream fields dict into a flat, receiver-friendly shape.
 
     TOLERANT of three failure modes so drift degrades, not drops:
@@ -106,8 +175,23 @@ def parse(fields: dict[str, str]) -> dict[str, Any]:
       3. ``payload`` is missing / empty       → empty payload.
       4. ``payload`` is JSON non-dict         → coerced to ``{"text": str(x)}``.
 
+    Signature (accept+flag — NEVER rejects here; the receiver decides):
+      ``verify_key_resolver`` maps a top-level ``source`` ("agent:<name>") to that
+      sender's Ed25519 PUBLIC key (url-safe b64) or None. The returned ``signature``
+      field is one of:
+        - ``"unsigned"``   — no ``sig`` on the envelope (legacy 1.0 / un-keyed sender).
+        - ``"unverified"`` — signed, but no resolver was supplied to check it.
+        - ``"no_key"``     — signed, but the resolver has no public key for the sender.
+        - ``"valid"`` / ``"invalid"`` — checked against the sender's key.
+    A receiver enforces policy on this status; this module does not gate traffic.
+    Downgrade note for an ENFORCING receiver: a ``version`` >= ``SIGNED_VERSION``
+    with ``signature == "unsigned"`` means the ``sig`` was stripped — treat it as a
+    policy failure, NOT a legacy sender. ``"error"`` and ``"no_key"`` are likewise
+    non-trusted.
+
     Returns a dict with keys:
-      type, source, target, text, timestamp (float|None), id, project, version, extras
+      type, source, target, text, timestamp (float|None), id, project, version,
+      signature, extras
     """
     raw_payload = fields.get("payload", "")
     payload_obj: dict[str, Any]
@@ -124,7 +208,9 @@ def parse(fields: dict[str, str]) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             payload_obj = {"text": raw_payload}
 
-    source = payload_obj.get("source") or fields.get("source", "")
+    field_source = fields.get("source", "")
+    payload_source = payload_obj.get("source")
+    source = payload_source or field_source
     raw_ts = payload_obj.get("timestamp")
     try:
         ts_float: float | None = float(raw_ts) if raw_ts is not None else None
@@ -133,6 +219,17 @@ def parse(fields: dict[str, str]) -> dict[str, Any]:
 
     reserved = {"text", "source", "timestamp"}
     extras = {k: v for k, v in payload_obj.items() if k not in reserved}
+
+    signature = _verify_signature(fields, verify_key_resolver)
+    if signature == "valid":
+        # The signature binds the TOP-LEVEL source. A signed envelope whose payload
+        # claims a DIFFERENT source is an identity-spoof (valid sig for sender A,
+        # payload says sender B) → reject. Otherwise the authenticated identity is
+        # the signed source — never surface the payload mirror as authenticated.
+        if payload_source is not None and payload_source != field_source:
+            signature = "invalid"
+        else:
+            source = field_source
 
     return {
         "type": fields.get("type", ""),
@@ -143,8 +240,15 @@ def parse(fields: dict[str, str]) -> dict[str, Any]:
         "id": fields.get("id") or fields.get("message_id"),
         "project": fields.get("project"),
         "version": fields.get("version"),
+        "signature": signature,
         "extras": extras,
     }
 
 
-__all__ = ["build", "parse", "CANONICAL_VERSION"]
+__all__ = [
+    "build",
+    "parse",
+    "CANONICAL_VERSION",
+    "SIGNED_VERSION",
+    "signed_message_bytes",
+]
