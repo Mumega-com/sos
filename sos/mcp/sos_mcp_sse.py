@@ -2520,6 +2520,30 @@ def _text(t: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": t}]}
 
 
+def _format_ts(value: Any, default: str = "?") -> str:
+    """Safely format an engram timestamp for display.
+
+    Engram rows returned from the direct Mirror DB path carry native
+    ``datetime`` objects (psycopg / postgrest). Slicing them with
+    ``[:10]`` raises ``TypeError: 'datetime.datetime' object is not
+    subscriptable`` (issue #190). The HTTP fallback path serializes
+    timestamps to JSON strings, which slice fine. This helper handles
+    both shapes — plus ``date``, ``int``, ``float``, and ``None`` —
+    and returns the YYYY-MM-DD prefix.
+    """
+    if value is None:
+        return default
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            text = iso()
+        except Exception:
+            text = str(value)
+    else:
+        text = str(value)
+    return text[:10] if len(text) >= 10 else text
+
+
 def _json_result(value: dict[str, Any]) -> dict[str, Any]:
     """Return JSON as both MCP text content and structuredContent."""
     return {
@@ -4928,7 +4952,8 @@ async def handle_tool(
             lines = []
             for i, e in enumerate(results, 1):
                 mem_text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
-                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(mem_text)[:200]}")
+                ts = _format_ts(e.get("timestamp"))
+                lines.append(f"{i}. [{ts}] {str(mem_text)[:200]}")
             return _text("\n".join(lines))
 
         # --- search_code ---
@@ -4981,7 +5006,8 @@ async def handle_tool(
             lines = []
             for i, e in enumerate(engrams, 1):
                 text = (e.get("raw_data", {}) or {}).get("text", e.get("context_id", "?"))
-                lines.append(f"{i}. [{e.get('timestamp', '?')[:10]}] {str(text)[:200]}")
+                ts = _format_ts(e.get("timestamp"))
+                lines.append(f"{i}. [{ts}] {str(text)[:200]}")
             return _text("\n".join(lines))
 
         # --- search (ChatGPT connector contract: query -> [{id,title,url}]) ---
