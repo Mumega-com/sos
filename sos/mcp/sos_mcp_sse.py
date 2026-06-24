@@ -236,6 +236,8 @@ def _load_secrets() -> None:
 _load_secrets()
 
 REDIS_PASSWORD: str = os.environ.get("REDIS_PASSWORD", "")
+REDIS_HOST: str = os.environ.get("REDIS_HOST", "127.0.0.1")
+REDIS_PORT: int = int(os.environ.get("REDIS_PORT", "6379"))
 MIRROR_URL: str = os.environ.get("MIRROR_URL", "http://localhost:8844")
 MIRROR_TOKEN: str = os.environ.get("MIRROR_TOKEN", "")
 # F-17: admin endpoints (e.g. /admin/outbox/status) require admin-typed token.
@@ -272,8 +274,8 @@ STASIS_BLOCKED_TOOLS: frozenset[str] = frozenset({
 # Creating a new client per call was fine on localhost but pressure point at scale.
 import redis as _redis_sync_mod
 _sync_redis = _redis_sync_mod.Redis(
-    host="localhost",
-    port=6379,
+    host=REDIS_HOST,
+    port=REDIS_PORT,
     password=REDIS_PASSWORD,
     decode_responses=True,
     socket_keepalive=True,
@@ -296,9 +298,9 @@ def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
         url = (
-            f"redis://:{REDIS_PASSWORD}@localhost:6379/0"
+            f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
             if REDIS_PASSWORD
-            else "redis://localhost:6379/0"
+            else f"redis://{REDIS_HOST}:{REDIS_PORT}/0"
         )
         _redis = aioredis.from_url(url, decode_responses=True)
     return _redis
@@ -620,7 +622,14 @@ _SERVICE_AUTHORITY_CONTRACTS: tuple[dict[str, Any], ...] = (
         "accepted_by": ["SOS_SAAS_ADMIN_KEY", "SOS_SAAS_TOKEN", "MUMEGA_MASTER_KEY"],
         "failure_mode": "warn + retryable audit gap, never request-path crash",
         "preflight": "synthetic internal audit write returns 200",
-        "required": True,
+        # required=True only when at least one SaaS credential is configured.
+        # On a bare local install (no SOS_SAAS_* / MUMEGA_MASTER_KEY) this edge
+        # does not exist yet, so absence is expected — report "degraded", not "critical".
+        # Fixes #197: flow_status=critical on clean local install.
+        "required": any(
+            os.environ.get(k)
+            for k in ("SOS_SAAS_ADMIN_KEY", "SOS_SAAS_TOKEN", "MUMEGA_MASTER_KEY")
+        ),
     },
     {
         "edge": "mcp_to_mirror",
@@ -7807,7 +7816,7 @@ async def get_config(request: Request) -> JSONResponse:
         "mcp_sse": {"port": PORT, "url": f"http://localhost:{PORT}"},
         "squad": {"port": 8060, "url": SQUAD_SERVICE_URL},
         "mirror": {"port": 8844, "url": MIRROR_URL, "status": "disabled"},
-        "redis": {"port": 6379},
+        "redis": {"host": REDIS_HOST, "port": REDIS_PORT},
         "openclaw": {"port": 18789},
     }
 
