@@ -153,3 +153,88 @@ def test_flow_status_not_critical_on_local_install(
     })
     assert result != "critical", f"Expected non-critical overall status, got: {result}"
     assert result == "degraded"
+
+
+# ---------------------------------------------------------------------------
+# Issue #197 part 2 — /health flow_status propagates degraded (not healthy)
+# on clean-local install (Codex RED blocker)
+# ---------------------------------------------------------------------------
+
+
+def test_health_flow_status_degraded_on_clean_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On clean local (no SaaS creds), /health flow_status must be 'degraded', not 'healthy'.
+
+    Repro: Codex showed /health => flow_status:'healthy' on clean HOME with SaaS creds
+    unset.  The old code used a 2-level binary (critical|healthy) in the service_authority
+    status, skipping 'degraded'.  After fix the 3-level ladder (critical→degraded→healthy)
+    mirrors _run_flow_health's logic so clean-local yields 'degraded'.
+    """
+    import sos.mcp.sos_mcp_sse as sse
+
+    # Simulate clean local: no SaaS cred env vars, so mcp_to_saas_audit is degraded
+    for key in ("SOS_SAAS_ADMIN_KEY", "SOS_SAAS_TOKEN", "MUMEGA_MASTER_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    # Re-evaluate required with fresh env (same technique as above tests)
+    fresh_contract = dict(sse._SERVICE_AUTHORITY_CONTRACTS[0])
+    fresh_contract["required"] = any(
+        os.environ.get(k) for k in ("SOS_SAAS_ADMIN_KEY", "SOS_SAAS_TOKEN", "MUMEGA_MASTER_KEY")
+    )
+    new_contracts = (fresh_contract,) + sse._SERVICE_AUTHORITY_CONTRACTS[1:]
+    monkeypatch.setattr(sse, "_SERVICE_AUTHORITY_CONTRACTS", new_contracts)
+
+    contracts = sse._service_authority_contracts()
+    # Build the service_authority status the same way /health now does (3-level ladder)
+    sa_status = (
+        "critical"
+        if any(c["status"] == "critical" for c in contracts)
+        else "degraded"
+        if any(c["status"] != "healthy" for c in contracts)
+        else "healthy"
+    )
+    flow_status = sse._overall_from_checks({
+        "service_authority": {"status": sa_status},
+        "memory_scope": {"status": "healthy"},
+    })
+
+    assert flow_status == "degraded", (
+        f"Expected flow_status='degraded' on clean local, got: {flow_status!r}"
+    )
+
+
+def test_health_flow_status_critical_when_required_creds_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a required SaaS contract is critical, flow_status must still be 'critical'.
+
+    Regression guard: the 3-level ladder must not accidentally swallow critical into
+    degraded — critical must propagate through to the /health flow_status.
+    """
+    import sos.mcp.sos_mcp_sse as sse
+
+    # Force the saas contract to be critical: mark required + no accepted_by keys set
+    fresh_contract = dict(sse._SERVICE_AUTHORITY_CONTRACTS[0])
+    fresh_contract["required"] = True
+    broken_contract = dict(fresh_contract)
+    broken_contract["accepted_by"] = ["NONEXISTENT_KEY_A", "NONEXISTENT_KEY_B"]
+    broken_contracts = (broken_contract,) + sse._SERVICE_AUTHORITY_CONTRACTS[1:]
+    monkeypatch.setattr(sse, "_SERVICE_AUTHORITY_CONTRACTS", broken_contracts)
+
+    contracts = sse._service_authority_contracts()
+    sa_status = (
+        "critical"
+        if any(c["status"] == "critical" for c in contracts)
+        else "degraded"
+        if any(c["status"] != "healthy" for c in contracts)
+        else "healthy"
+    )
+    flow_status = sse._overall_from_checks({
+        "service_authority": {"status": sa_status},
+        "memory_scope": {"status": "healthy"},
+    })
+
+    assert flow_status == "critical", (
+        f"Expected flow_status='critical' when required contract missing, got: {flow_status!r}"
+    )

@@ -6337,9 +6337,13 @@ async def health() -> JSONResponse:
             "sessions": len(_sessions),
             "flow_status": _overall_from_checks({
                 "service_authority": {
-                    "status": "critical"
-                    if any(c["status"] == "critical" for c in _service_authority_contracts())
-                    else "healthy"
+                    "status": (
+                        "critical"
+                        if any(c["status"] == "critical" for c in _service_authority_contracts())
+                        else "degraded"
+                        if any(c["status"] != "healthy" for c in _service_authority_contracts())
+                        else "healthy"
+                    )
                 },
                 "memory_scope": {"status": "healthy"},
             }),
