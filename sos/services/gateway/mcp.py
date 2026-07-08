@@ -325,7 +325,7 @@ def main():
     import uvicorn
 
     port = int(os.environ.get("SOS_MCP_PORT", "6063"))
-    host = os.environ.get("SOS_MCP_HOST", "0.0.0.0")
+    host = os.environ.get("SOS_MCP_HOST", "127.0.0.1")
 
     log.info(f"Starting SOS MCP Gateway on {host}:{port}")
     log.info(f"MCP SDK available: {HAS_MCP}")

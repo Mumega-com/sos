@@ -22,7 +22,7 @@ log = get_logger("gateway_app")
 def main():
     """Run the gateway service."""
     port = int(os.environ.get("SOS_BRIDGE_PORT", "6062"))
-    host = os.environ.get("SOS_BRIDGE_HOST", "0.0.0.0")
+    host = os.environ.get("SOS_BRIDGE_HOST", "127.0.0.1")
 
     log.info(f"Starting SOS Gateway Bridge on {host}:{port}")
 

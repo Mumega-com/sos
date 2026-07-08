@@ -8305,7 +8305,7 @@ if __name__ == "__main__":
     log.info("Starting SOS MCP SSE server on port %d", PORT)
     uvicorn.run(
         "sos.mcp.sos_mcp_sse:app",
-        host="0.0.0.0",
+        host=os.environ.get("SOS_MCP_SSE_HOST", "127.0.0.1"),
         port=PORT,
         log_level="info",
         access_log=False,

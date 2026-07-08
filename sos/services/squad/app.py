@@ -2863,4 +2863,5 @@ async def ghl_sync_contact(
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("SOS_SQUAD_PORT", "8060"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    host = os.environ.get("SOS_SQUAD_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)

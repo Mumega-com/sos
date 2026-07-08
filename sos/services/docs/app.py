@@ -586,4 +586,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("SOS_DOCS_PORT", "8085"))
-    uvicorn.run("sos.services.docs.app:app", host="0.0.0.0", port=port, reload=False)
+    host = os.getenv("SOS_DOCS_HOST", "127.0.0.1")
+    uvicorn.run("sos.services.docs.app:app", host=host, port=port, reload=False)
