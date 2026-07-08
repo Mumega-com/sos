@@ -67,7 +67,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     _lock_fd = _acquire_instance_lock()  # noqa: F841 — kept alive intentionally
 
-    host = os.getenv("SOS_ENGINE_HOST", "0.0.0.0")
+    host = os.getenv("SOS_ENGINE_HOST", "127.0.0.1")
     port = int(os.getenv("SOS_ENGINE_PORT", "6060"))
 
     # The SO_REUSEADDR pre-bind test that was here (G80) gave FALSE "port free"
