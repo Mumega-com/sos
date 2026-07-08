@@ -6174,7 +6174,7 @@ def _require_auth(request: Request, token: str | None = None) -> MCPAuthContext:
     # "VPS uses tenant headers not the OAuth JWT" and this is the VPS side of that contract.
     if (
         _SOS_INTERNAL_TOKEN
-        and candidate == _SOS_INTERNAL_TOKEN
+        and hmac.compare_digest(candidate, _SOS_INTERNAL_TOKEN)
         and request.headers.get("X-Tenant-Id")
     ):
         tenant_id = request.headers.get("X-Tenant-Id", "")
