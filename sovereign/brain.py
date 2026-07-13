@@ -83,6 +83,16 @@ from kernel.config import (
     MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL,
     BRAIN_TENANT_SCOPE, BRAIN_SCOPE_TYPE, BRAIN_TOKEN_BUDGET,
 )
+# ── MemoryPort — memory I/O routes through this adapter (#267 K1) ──────────
+# All four /store and /search call sites in this file are ported:
+#   - hippocampus_recall()       — goals + objection searches -> _memory_port.search_sync()
+#   - remember()                 — cycle engram write          -> _memory_port.remember_sync()
+#   - motor_execute/post_content — content engram write        -> _memory_port.remember_sync()
+#
+# Invariant: no raw requests.post(MIRROR_URL/store or /search) in this file.
+# /tasks calls are a separate task-board concern (a different port) and are
+# explicitly out of scope for this K1 slice — left untouched.
+from kernel.memory_adapter import memory as _memory_port
 
 # ── Cycle token counter ───────────────────────────────────────────────────────
 # Reset at the start of each cycle. Accumulates tokens across all LLM calls
@@ -701,13 +711,13 @@ def motor_execute(action: dict) -> dict:
             if content == "__CONTENT_MODE_OFF__":
                 return {"success": True, "result": "Content posting skipped (BRAIN_CONTENT_MODE=off)"}
             if content:
-                # Store in Supabase via a simple approach — create a Mirror engram
-                requests.post(f"{MIRROR_URL}/store", json={
-                    "agent": "brain",
-                    "text": content,
-                    "context_id": f"brain_content_{int(time.time())}",
-                    "core_concepts": ["content", "brain_generated"],
-                }, headers=MIRROR_HEADERS, timeout=10)
+                # Store the content engram via MemoryPort (MirrorMemoryAdapter) —
+                # no raw requests.post(MIRROR_URL/store).
+                _memory_port.remember_sync(
+                    content,
+                    context_id=f"brain_content_{int(time.time())}",
+                    core_concepts=["content", "brain_generated"],
+                )
                 return {"success": True, "result": f"Content generated ({len(content)} chars)"}
             return {"success": False, "result": "Content generation failed"}
 
@@ -882,42 +892,32 @@ def hippocampus_recall() -> str:
 
     state_parts = []
 
-    # Get goals from Mirror
+    # Get goals from Mirror via MemoryPort
     try:
-        r = requests.post(f"{MIRROR_URL}/search", json={
-            "query": "GOAL active",
-            "top_k": 10,
-            "agent_filter": "os",
-        }, headers=MIRROR_HEADERS, timeout=10)
-        results = r.json().get("results", [])
+        goal_hits = _memory_port.search_sync("GOAL active", top_k=10, agent_filter="os")
         goals = []
-        for result in results:
-            raw = result.get("raw_data", {})
+        for hit in goal_hits:
+            raw = hit.metadata if isinstance(hit.metadata, dict) else {}
             if raw.get("goal"):
                 g = raw["goal"]
                 goals.append(f"[{g.get('priority','?')}] {g.get('title','')} — progress: {g.get('progress',0):.0%}")
         if goals:
             state_parts.append("ACTIVE GOALS:\n" + "\n".join(goals))
-    except:
+    except Exception:
         pass
 
-    # Get objections
+    # Get objections via MemoryPort
     try:
-        r = requests.post(f"{MIRROR_URL}/search", json={
-            "query": "OBJECTION active",
-            "top_k": 10,
-            "agent_filter": "os",
-        }, headers=MIRROR_HEADERS, timeout=10)
-        results = r.json().get("results", [])
+        obj_hits = _memory_port.search_sync("OBJECTION active", top_k=10, agent_filter="os")
         objections = []
-        for result in results:
-            raw = result.get("raw_data", {})
+        for hit in obj_hits:
+            raw = hit.metadata if isinstance(hit.metadata, dict) else {}
             if raw.get("objection"):
                 o = raw["objection"]
                 objections.append(f"[{o.get('type','?')} {o.get('intensity',0):.1f}] {o.get('description','')[:80]}")
         if objections:
             state_parts.append("ACTIVE OBJECTIONS:\n" + "\n".join(objections))
-    except:
+    except Exception:
         pass
 
     # Get pending tasks
@@ -1055,16 +1055,20 @@ def report_to_discord(action: dict, result: dict):
 
 
 def remember(action: dict, result: dict):
-    """Store brain cycle in Mirror for learning."""
+    """Store brain cycle in Mirror for learning.
+
+    Routes through _memory_port (MemoryPort / MirrorMemoryAdapter) instead
+    of raw requests.post(MIRROR_URL/store). Behavior-identical: same
+    payload fields, same fail-open contract.
+    """
     try:
-        requests.post(f"{MIRROR_URL}/store", json={
-            "agent": "brain",
-            "context_id": f"brain_cycle_{int(time.time())}",
-            "text": f"Brain action: {action.get('action','')} → {result.get('result','')}",
-            "core_concepts": ["brain", "cycle", action.get("method", ""), action.get("agent", "")],
-            "raw_data": {"action": action, "result": result},
-        }, headers=MIRROR_HEADERS, timeout=10)
-    except:
+        _memory_port.remember_sync(
+            f"Brain action: {action.get('action','')} → {result.get('result','')}",
+            context_id=f"brain_cycle_{int(time.time())}",
+            core_concepts=["brain", "cycle", action.get("method", ""), action.get("agent", "")],
+            raw_data={"action": action, "result": result},
+        )
+    except Exception:
         pass
 
 
