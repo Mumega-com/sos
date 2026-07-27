@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import anyio
 import bcrypt
@@ -636,20 +636,30 @@ def create_api_key(
     return token, created_at
 
 
-def _revoke_via_service(tenant_id: str, squad_url: str, system_token: str) -> bool:
+def _revoke_via_service(
+    tenant_id: str, squad_url: str, system_token: str
+) -> dict[str, Any] | None:
     """POST /auth/revoke on the LIVE running service so its in-process cache
     is actually cleared — the CLI's own cache is a separate, always-empty
     process and clearing it (what the old code did) clears nothing real.
 
-    Returns True only on a genuine 200 from the service. False on any
-    failure (no token configured, connection refused, timeout, non-200) —
-    the caller must never report a cleared cache on False (BLOCK-2 fix,
-    sos-205-b5307dd7 re-gate: the old CLI printed cache_cleared=true
-    unconditionally, which was a false receipt — it asserted a property
-    about the SERVING process while only ever touching its own).
+    Returns the service's parsed response body on a genuine 200, else None
+    (no token configured, connection refused, timeout, non-200, unparseable
+    body). The caller must never report a cleared cache on None — nor on a
+    200 whose ``cache_flushed`` is not exactly True (BLOCK-C, sos-205-f1a3aee4
+    gate-5).
+
+    BLOCK-C: this returned a bare ``status_code == 200`` bool, which became a
+    false receipt the moment P2-G changed the throttled branch from a 429 to a
+    200 with ``cache_flushed: false``. A throttled revoke read as full success
+    and the CLI printed ``cache_cleared=service`` while the credential kept
+    authenticating from cache for the rest of the positive TTL. The status code
+    stopped carrying the property the caller asserts, so the body must be
+    returned and inspected — same class as BLOCK-2 above (a receipt may only
+    claim state its emitter can observe).
     """
     if not system_token:
-        return False
+        return None
     try:
         resp = requests.post(
             f"{squad_url.rstrip('/')}/auth/revoke",
@@ -658,8 +668,14 @@ def _revoke_via_service(tenant_id: str, squad_url: str, system_token: str) -> bo
             timeout=5,
         )
     except requests.RequestException:
-        return False
-    return resp.status_code == 200
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def _cli() -> int:
@@ -708,8 +724,22 @@ def _cli() -> int:
         # fall back to "we deleted the DB rows but can't prove the cache is
         # clear" when the service is unreachable.
         squad_url = os.getenv("SQUAD_URL", "http://localhost:8060")
-        if _revoke_via_service(args.tenant, squad_url, SYSTEM_TOKEN):
+        # BLOCK-C fix (sos-205-f1a3aee4 gate-5): a 200 is NOT proof the cache
+        # was flushed — P2-G's throttled branch answers 200 with
+        # cache_flushed=false. Assert on the field that carries the property,
+        # never the status code, and print the service's own retry_after so
+        # the operator knows exactly when a real flush becomes possible.
+        service_resp = _revoke_via_service(args.tenant, squad_url, SYSTEM_TOKEN)
+        if service_resp is not None and service_resp.get("cache_flushed") is True:
             print("cache_cleared=service")
+        elif service_resp is not None:
+            retry_after = service_resp.get("retry_after")
+            suffix = f"; retry after {retry_after}s" if retry_after is not None else ""
+            print(
+                "cache_cleared=THROTTLED-NOT-FLUSHED — DB rows deleted, but the "
+                "running service declined the flush, so entries already cached "
+                f"there may authenticate for up to 30s (positive TTL){suffix}"
+            )
         else:
             print(
                 "cache_cleared=LOCAL-PROCESS-ONLY — running service still holds "

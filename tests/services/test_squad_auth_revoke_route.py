@@ -115,32 +115,54 @@ def test_auth_revoke_route_deletes_rows_and_clears_service_process_cache(
 
 
 class _Resp:
-    def __init__(self, status_code: int):
+    def __init__(self, status_code: int, body: object | None = None):
         self.status_code = status_code
+        self._body = {} if body is None else body
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
 
 
-def test_revoke_via_service_true_on_200(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _Resp(200))
-    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is True
+def test_revoke_via_service_returns_body_on_200(monkeypatch: pytest.MonkeyPatch):
+    body = {"tenant_id": "acme", "revoked_rows": 1, "cache_flushed": True}
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _Resp(200, body))
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") == body
 
 
-def test_revoke_via_service_false_on_non_200(monkeypatch: pytest.MonkeyPatch):
+def test_revoke_via_service_none_on_non_200(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _Resp(403))
-    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is False
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is None
 
 
-def test_revoke_via_service_false_on_connection_error(monkeypatch: pytest.MonkeyPatch):
+def test_revoke_via_service_none_on_connection_error(monkeypatch: pytest.MonkeyPatch):
     def _boom(*a, **k):
         raise auth.requests.exceptions.ConnectionError("refused")
 
     monkeypatch.setattr(auth.requests, "post", _boom)
-    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is False
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is None
 
 
-def test_revoke_via_service_false_without_system_token():
+def test_revoke_via_service_none_without_system_token():
     # No token configured -> must refuse to even attempt the call, not send
     # an unauthenticated revoke request.
-    assert auth._revoke_via_service("acme", "http://localhost:8060", "") is False
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "") is None
+
+
+def test_revoke_via_service_none_on_unparseable_body(monkeypatch: pytest.MonkeyPatch):
+    # BLOCK-C: a 200 whose body can't be read carries no cache_flushed
+    # property, so the probe must not hand the caller something it can
+    # mistake for proof.
+    monkeypatch.setattr(
+        auth.requests, "post", lambda *a, **k: _Resp(200, ValueError("not json"))
+    )
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is None
+
+
+def test_revoke_via_service_none_on_non_dict_body(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth.requests, "post", lambda *a, **k: _Resp(200, ["nope"]))
+    assert auth._revoke_via_service("acme", "http://localhost:8060", "sys-tok") is None
 
 
 # ── CLI receipt honesty ───────────────────────────────────────────────────
@@ -150,7 +172,11 @@ def test_cli_revoke_prints_service_receipt_when_reachable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
-    monkeypatch.setattr(auth, "_revoke_via_service", lambda tenant, url, tok: True)
+    monkeypatch.setattr(
+        auth,
+        "_revoke_via_service",
+        lambda tenant, url, tok: {"revoked_rows": 1, "cache_flushed": True},
+    )
     monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
 
     rc = auth._cli()
@@ -164,13 +190,108 @@ def test_cli_revoke_prints_honest_local_receipt_when_service_unreachable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
-    monkeypatch.setattr(auth, "_revoke_via_service", lambda tenant, url, tok: False)
+    monkeypatch.setattr(auth, "_revoke_via_service", lambda tenant, url, tok: None)
     monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
 
     rc = auth._cli()
     assert rc == 0
     out = capsys.readouterr().out
     assert "cache_cleared=LOCAL-PROCESS-ONLY" in out
+
+
+# ── BLOCK-C (sos-205-f1a3aee4 gate-5): a 200 is not proof of a flush ──────
+# P2-G changed the throttled branch from 429 to 200 {"cache_flushed": false}.
+# The CLI probe still asserted on the status code, so a throttled revoke read
+# as full success and printed cache_cleared=service while the credential kept
+# authenticating from the service's cache for the rest of the positive TTL.
+
+
+def test_cli_revoke_does_not_claim_cleared_when_flush_throttled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
+    monkeypatch.setattr(
+        auth,
+        "_revoke_via_service",
+        lambda tenant, url, tok: {
+            "revoked_rows": 1,
+            "cache_flushed": False,
+            "retry_after": 3.2,
+        },
+    )
+    monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
+
+    rc = auth._cli()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cache_cleared=service" not in out  # the BLOCK-C false receipt
+    assert "cache_cleared=THROTTLED-NOT-FLUSHED" in out
+    assert "3.2" in out  # the operator is told when a real flush is possible
+
+
+def test_cli_revoke_does_not_claim_cleared_when_field_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    # An older/unknown server that answers 200 without the field states
+    # nothing about the cache — fail closed on the receipt.
+    monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
+    monkeypatch.setattr(
+        auth, "_revoke_via_service", lambda tenant, url, tok: {"revoked_rows": 1}
+    )
+    monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
+
+    rc = auth._cli()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cache_cleared=service" not in out
+    assert "THROTTLED-NOT-FLUSHED" in out
+
+
+def test_cli_revoke_rejects_truthy_non_true_cache_flushed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    # `is True`, not truthiness: a string "false" is truthy in Python and
+    # must not be read as a flush.
+    monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
+    monkeypatch.setattr(
+        auth,
+        "_revoke_via_service",
+        lambda tenant, url, tok: {"revoked_rows": 1, "cache_flushed": "false"},
+    )
+    monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
+
+    rc = auth._cli()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cache_cleared=service" not in out
+
+
+def test_cli_revoke_end_to_end_throttled_receipt_matches_real_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """The probe reads a REAL throttled response from the real route, not a
+    hand-written dict — the receipt must stay honest against the actual
+    server contract, which is what drifted in BLOCK-C.
+    """
+    client, headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
+
+    first = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert first.status_code == 200 and first.json()["cache_flushed"] is True
+
+    second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert second.status_code == 200 and second.json()["cache_flushed"] is False
+
+    monkeypatch.setattr(auth, "revoke_api_key", lambda tenant, db=None: 1)
+    monkeypatch.setattr(
+        auth.requests, "post", lambda *a, **k: _Resp(200, second.json())
+    )
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "sys-tok", raising=False)
+    monkeypatch.setattr(sys, "argv", ["auth.py", "revoke", "--tenant", "acme"])
+
+    assert auth._cli() == 0
+    out = capsys.readouterr().out
+    assert "cache_cleared=service" not in out
+    assert "THROTTLED-NOT-FLUSHED" in out
 
 
 # ── P2-C/P2-G: revoke cache-flush throttle (sos-205-47f5f8c2 gate-3,
