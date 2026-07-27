@@ -1302,14 +1302,14 @@ async def _daily_kpi_snapshot() -> None:
 async def _kpi_cron_loop() -> None:
     """Background task: sleep until 00:05 UTC, run snapshot, repeat daily."""
     import math
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
         # Next 00:05 UTC
         target = now.replace(hour=0, minute=5, second=0, microsecond=0)
         if target <= now:
-            target = target.replace(day=target.day + 1)
+            target = target + timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         await _daily_kpi_snapshot()
@@ -1317,7 +1317,7 @@ async def _kpi_cron_loop() -> None:
 
 async def _league_weekly_snapshot_loop() -> None:
     """Background task: every Monday at 01:00 UTC, snapshot league scores."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
@@ -1325,10 +1325,10 @@ async def _league_weekly_snapshot_loop() -> None:
         days_until_monday = (7 - now.weekday()) % 7  # 0 if today is Monday
         target = now.replace(hour=1, minute=0, second=0, microsecond=0)
         if days_until_monday > 0:
-            target = target.replace(day=target.day + days_until_monday)
+            target = target + timedelta(days=days_until_monday)
         elif target <= now:
             # It's Monday but we've already passed 01:00 — skip to next Monday
-            target = target.replace(day=target.day + 7)
+            target = target + timedelta(days=7)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         try:
@@ -1341,14 +1341,14 @@ async def _league_weekly_snapshot_loop() -> None:
 
 async def _league_daily_season_loop() -> None:
     """Background task: every day at 00:01 UTC, ensure an active season exists."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
         # Next 00:01 UTC
         target = now.replace(hour=0, minute=1, second=0, microsecond=0)
         if target <= now:
-            target = target.replace(day=target.day + 1)
+            target = target + timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         try:

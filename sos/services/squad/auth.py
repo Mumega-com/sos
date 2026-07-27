@@ -6,6 +6,7 @@ import hashlib
 import os
 import secrets
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -67,6 +68,25 @@ def _verify_token(token: str, stored_hash: str) -> bool:
     return hmac.compare_digest(legacy_hash, stored_hash)
 
 
+def _identity_from_snapshot(snapshot: dict) -> Identity:
+    """Rebuild an Identity from a cached {tenant_id, identity_type} snapshot.
+
+    Same construction as _identity_from_row — kept in one place so the cache
+    cannot drift from the row path.
+    """
+    tenant_id = snapshot["tenant_id"]
+    identity_type = snapshot["identity_type"]
+    if identity_type == "agent":
+        identity = AgentIdentity(name=tenant_id, model="api-key")
+    elif identity_type == "service":
+        identity = Identity(id=f"service:{tenant_id}", type=IdentityType.SERVICE, name=tenant_id)
+    else:
+        identity = UserIdentity(name=tenant_id)
+    identity.metadata["tenant_id"] = tenant_id
+    identity.metadata["identity_type"] = identity_type
+    return identity
+
+
 def _identity_from_row(row: sqlite3.Row) -> Identity:
     tenant_id = row["tenant_id"]
     identity_type = row["identity_type"]
@@ -95,9 +115,63 @@ def _capability_for(identity: Identity, tenant_id: str | None, action: Capabilit
     )
 
 
+# Token-verification cache — 2026-07-27 incident fix.
+#
+# _lookup_token bcrypt-checks the presented token against EVERY api_keys row
+# (17 bcrypt rows ≈ 5s of CPU) synchronously on the event loop. Callers that
+# retry on timeout (loop.py skill registration, hermes check-in) turned one
+# slow verify into a congestion collapse: the service pegged a core and
+# stopped answering while healthy clients piled on more verifies.
+#
+# Cache keyed by sha256(token) so raw tokens never sit in memory beyond the
+# request. Positive hits carry the matched row snapshot (300s TTL — a revoked
+# key can outlive revocation by at most that window on this internal surface).
+# Negative hits are cached 60s so one bad-token client costs one full scan
+# per minute, not one per request. Bounded: oldest entries evicted past 256.
+_TOKEN_CACHE: dict[str, tuple[float, dict | None]] = {}
+_TOKEN_CACHE_POSITIVE_TTL_S = 300.0
+_TOKEN_CACHE_NEGATIVE_TTL_S = 60.0
+_TOKEN_CACHE_MAX = 256
+
+
+def _token_cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _token_cache_get(key: str) -> tuple[bool, dict | None]:
+    """Returns (hit, row_snapshot_or_None). Expired entries count as miss."""
+    entry = _TOKEN_CACHE.get(key)
+    if entry is None:
+        return False, None
+    expires_at, snapshot = entry
+    if time.monotonic() >= expires_at:
+        _TOKEN_CACHE.pop(key, None)
+        return False, None
+    return True, snapshot
+
+
+def _token_cache_put(key: str, snapshot: dict | None) -> None:
+    ttl = _TOKEN_CACHE_POSITIVE_TTL_S if snapshot is not None else _TOKEN_CACHE_NEGATIVE_TTL_S
+    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
+        oldest = min(_TOKEN_CACHE, key=lambda k: _TOKEN_CACHE[k][0])
+        _TOKEN_CACHE.pop(oldest, None)
+    _TOKEN_CACHE[key] = (time.monotonic() + ttl, snapshot)
+
+
 def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
     if token == SYSTEM_TOKEN:
         return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
+    cache_key = _token_cache_key(token)
+    hit, snapshot = _token_cache_get(cache_key)
+    if hit:
+        if snapshot is None:
+            return None
+        return AuthContext(
+            token=token,
+            identity=_identity_from_snapshot(snapshot),
+            tenant_id=snapshot["tenant_id"],
+            is_system=False,
+        )
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT token_hash, tenant_id, identity_type, created_at FROM api_keys"
@@ -117,11 +191,17 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
                 (hash_token(token), legacy_hash),
             )
     if not matched:
+        _token_cache_put(cache_key, None)
         return None
+    snapshot = {
+        "tenant_id": matched["tenant_id"],
+        "identity_type": matched["identity_type"],
+    }
+    _token_cache_put(cache_key, snapshot)
     return AuthContext(
         token=token,
-        identity=_identity_from_row(matched),
-        tenant_id=matched["tenant_id"],
+        identity=_identity_from_snapshot(snapshot),
+        tenant_id=snapshot["tenant_id"],
         is_system=False,
     )
 
@@ -245,6 +325,9 @@ def create_api_key(tenant_id: str, identity_type: str = "user", db: SquadDB | No
             """,
             (token_hash, tenant_id, identity_type, created_at),
         )
+    # A brand-new token may sit in the negative cache from a pre-mint probe;
+    # clear so it authenticates immediately.
+    _TOKEN_CACHE.pop(_token_cache_key(token), None)
     return token, created_at
 
 

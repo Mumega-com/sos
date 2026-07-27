@@ -82,6 +82,7 @@ _STALE_TASK_MARKERS = (
 from kernel.config import (
     MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL,
     BRAIN_TENANT_SCOPE, BRAIN_SCOPE_TYPE, BRAIN_TOKEN_BUDGET,
+    MUPOT_MCP_URL, MUPOT_BRAIN_TOKEN,
 )
 # ── MemoryPort — memory I/O routes through this adapter (#267 K1) ──────────
 # All four /store and /search call sites in this file are ported:
@@ -368,7 +369,7 @@ Respond with EXACTLY this JSON format:
 {{
   "action": "one-line description of what to do",
   "goal_id": "which goal this advances (or 'maintenance')",
-  "agent": "which agent should do it (kasra/athena/sol/dandan/system)",
+  "agent": "which agent should do it (kasra/system)",
   "method": "how to do it (create_task/post_content/send_outreach/fix_code/research)",
   "details": "specific instructions for the executing agent",
   "expected_progress": 0.1,
@@ -549,23 +550,29 @@ def _task_governor_allows() -> bool:
     return True
 
 
-# Agent name → tmux session name (empty string = system/no session needed)
+# Agent name → tmux session name (empty string = system/no session needed).
+# Active roster per Hadi directive 2026-07-27: kasra + system only. Paused
+# agents (athena/river/sol/dandan) are intentionally absent — dispatching to
+# them produced the "no tmux session" self-investigation loop.
 _AGENT_SESSION: dict[str, str] = {
     "kasra": "kasra",
-    "athena": "athena",
-    "river": "river",
-    "sol": "sol",
-    "dandan": "dandan",
     "system": "",
 }
 
 
 def _agent_available(agent: str) -> bool:
-    """Return True if the agent has a running tmux session (or needs none)."""
+    """Return True if the agent is on the active roster and reachable.
+
+    Default-deny: an agent not in _AGENT_SESSION is NOT dispatchable,
+    regardless of what the model proposes. A failed tmux probe also counts
+    as unavailable — assuming available on error re-opens the ghost loop.
+    """
     import subprocess
-    session = _AGENT_SESSION.get(agent, "")
+    if agent not in _AGENT_SESSION:
+        return False
+    session = _AGENT_SESSION[agent]
     if not session:
-        return True  # system / unknown agents — no session requirement
+        return True  # system — no session requirement
     try:
         result = subprocess.run(
             ["tmux", "has-session", "-t", session],
@@ -573,7 +580,57 @@ def _agent_available(agent: str) -> bool:
         )
         return result.returncode == 0
     except Exception:
-        return True  # assume available if we can't check
+        return False
+
+
+def _mupot_dispatch_task(squad_id: str, title: str, description: str, priority: str, labels: list) -> dict:
+    """
+    Create a task on mupot's REAL, live board (agent-bound token, the
+    'sovereign' identity minted 2026-07-22) instead of the legacy SQUAD_URL
+    board that mupot's own operator loop never reads. Deliberately supplies
+    NO assignee -- mupot's own routeUnassignedWork (src/tasks/effort-route.ts)
+    picks the builder from the live, current roster (kasra/cursor/codex/agy/
+    kayhermes), not brain's own free-text guess against a stale hardcoded
+    hint (the #490 root cause). Returns the same {"success","result","task_id"}
+    shape the legacy SQUAD_URL callers already expect, so callers don't change.
+    """
+    if not MUPOT_MCP_URL or not MUPOT_BRAIN_TOKEN:
+        logger.warning("mupot dispatch skipped: MUPOT_MCP_URL/MUPOT_BRAIN_TOKEN not configured")
+        return {"success": False, "result": "mupot not configured", "task_id": None}
+    done_when = f"Task '{title[:80]}' is completed, with a receipt reflecting success or failure."
+    try:
+        r = requests.post(
+            MUPOT_MCP_URL,
+            headers={"Authorization": f"Bearer {MUPOT_BRAIN_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "task_create",
+                    "arguments": {
+                        "squad_id": squad_id,
+                        "title": title,
+                        "body": f"{description}\n\n[brain-generated, priority={priority}, labels={','.join(labels)}]",
+                        "done_when": done_when,
+                    },
+                },
+            },
+            timeout=10,
+        )
+        data = r.json()
+        content = data.get("result", {}).get("content", [{}])
+        text = content[0].get("text", "{}") if content else "{}"
+        payload = json.loads(text)
+        if not payload.get("ok"):
+            logger.error(f"mupot task_create failed: {payload}")
+            return {"success": False, "result": f"mupot task_create failed: {payload}", "task_id": None}
+        task = payload.get("result", {}).get("task", {})
+        task_id = task.get("id", "?")
+        return {"success": True, "result": f"mupot task created: {task_id} (squad={squad_id})", "task_id": task_id}
+    except Exception as e:
+        logger.error(f"mupot dispatch exception: {e}")
+        return {"success": False, "result": f"mupot dispatch failed: {e}", "task_id": None}
 
 
 def motor_execute(action: dict) -> dict:
@@ -593,10 +650,19 @@ def motor_execute(action: dict) -> dict:
         return {"success": True, "result": f"Skipped stale brain directive: {blocked_reason}"}
 
     if method not in _SUPPORTED_BRAIN_METHODS:
-        return {"success": False, "result": f"Unsupported brain method: {method}"}
+        # skipped=True + non-error phrasing: a hallucinated method name is a
+        # decision-layer miss, not a system fault. Error-shaped text here fed
+        # "investigate unsupported method" proposals in following cycles.
+        return {"success": True, "skipped": True, "result": f"Method '{method}' is not in the supported set; action intentionally not executed. Pick only from the documented methods — do not investigate."}
 
     # Agent availability check — skip if the target agent has no running session
     if not _agent_available(agent):
+        if agent not in _AGENT_SESSION:
+            logger.info(f"Agent '{agent}' not on active roster — skipping task: {action_title[:60]}")
+            # Deliberate, not an error: paused agents are expected to be absent.
+            # Phrasing avoids "error"/"no tmux session" so the next brain cycle
+            # does not propose investigating its own roster policy.
+            return {"success": True, "result": f"Agent '{agent}' is paused by roster policy; task intentionally not dispatched. This is expected — do not investigate."}
         logger.info(f"Agent '{agent}' has no active session — skipping task: {action_title[:60]}")
         return {"success": True, "result": f"Agent '{agent}' unavailable (no tmux session). Task skipped."}
 
@@ -671,6 +737,8 @@ def motor_execute(action: dict) -> dict:
                 return block
 
             if squad_id:
+                if normalize_project(project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, title, details, "high", labels)
                 # Route through Squad Service — project isolation
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -732,6 +800,8 @@ def motor_execute(action: dict) -> dict:
             if (block := _capability_block(outreach_assignee, outreach_project)) is not None:
                 return block
             if squad_id:
+                if normalize_project(outreach_project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, f"Outreach: {action.get('action', '')}", details, "medium", outreach_labels)
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
                 r = requests.post(f"{SQUAD_URL}/tasks", json={
@@ -764,6 +834,8 @@ def motor_execute(action: dict) -> dict:
             if (block := _capability_block(code_assignee, project)) is not None:
                 return block
             if squad_id:
+                if normalize_project(project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, f"Fix: {action.get('action', '')}", details, "high", code_labels)
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
                 r = requests.post(f"{SQUAD_URL}/tasks", json={
@@ -789,6 +861,11 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": "Code task created for Kasra"}
 
         elif method == "research":
+            if normalize_project(project) == "mumega":
+                # Hardcoding "river" here was the exact #490 root-cause pattern
+                # (a stale roster assumption, not a live check) -- defer to
+                # mupot's own effort-router instead of gating a hardcoded name.
+                return _mupot_dispatch_task("squad-core", f"Research: {action.get('action', '')}", details, "medium", ["research", "brain-generated"])
             # Create research task for River (shared/colony agent — gate for uniformity)
             if (block := _capability_block("river", project)) is not None:
                 return block
@@ -1040,6 +1117,15 @@ def report_to_discord(action: dict, result: dict):
         f"Status: {status_word}"
         f"{reason_line}"
     )
+
+    # Escalation-only emission (Hadi directive 2026-07-27): kasra is the
+    # repair escalation path, not the brain's activity feed. Routine cycles
+    # (executed housekeeping, dedup/roster/mode-off skips) stay in the journal;
+    # only failures — the repairable class — page out. The kasra bus inbox is
+    # bridged to Hadi's Telegram, so every message here is a phone ping.
+    logger.info(f"brain-cycle {status_word}: {summary[:120]}")
+    if status_word != "failed":
+        return
 
     try:
         from kernel.bus import send as bus_send
