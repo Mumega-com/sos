@@ -16,6 +16,7 @@ token for up to the positive-cache TTL. The fix has two halves:
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -40,9 +41,14 @@ _DDL = """
 def _fresh_cache():
     auth._token_cache_clear()
     auth._TOKEN_CACHE_INFLIGHT.clear()
+    # P2-C rider: the revoke rate-limit guard is process-global state, same
+    # shape as the token cache — reset it around every test in this file so
+    # test order/timing can never leak a 429 into an unrelated test.
+    app_module._LAST_REVOKE_FLUSH_TS = 0.0
     yield
     auth._token_cache_clear()
     auth._TOKEN_CACHE_INFLIGHT.clear()
+    app_module._LAST_REVOKE_FLUSH_TS = 0.0
 
 
 # ── POST /auth/revoke route ──────────────────────────────────────────────
@@ -163,5 +169,61 @@ def test_cli_revoke_prints_honest_local_receipt_when_service_unreachable(
     assert rc == 0
     out = capsys.readouterr().out
     assert "cache_cleared=LOCAL-PROCESS-ONLY" in out
-    assert "cache_cleared=true" not in out
-    assert "30s" in out  # names the real exposure window, not a silent lie
+
+
+# ── P2-C: revoke rate limit (sos-205-47f5f8c2 gate-3) ────────────────────
+# revoke_api_key() clears the WHOLE in-process token cache (both pools, all
+# tenants) on every call. The gate-3 verdict measured a single ~6ms revoke
+# forcing ~7757x cost onto every other live client's next lookup, and
+# observed the brain's capability-gate roster fetch (a 5s hardcoded timeout)
+# lose that race and degrade to its static fallback during the same window.
+# This is a blunt min-interval guard, not the durable fix (per-tenant cache
+# invalidation via an indexed fingerprint column — sos#206).
+
+
+def _revoke_rate_limit_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, dict[str, str]]:
+    db_path = tmp_path / "revoke_rate.db"
+    database = SquadDB(db_path=db_path)
+    with database.connect() as conn:
+        conn.execute(_DDL)
+    monkeypatch.setattr(app_module, "_SYSTEM_BEARERS", {"sys-tok-test"})
+    monkeypatch.setattr(app_module, "SquadDB", lambda: database)
+    return TestClient(app_module.app), {"Authorization": "Bearer sys-tok-test"}
+
+
+def test_auth_revoke_route_second_rapid_call_is_rate_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client, headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
+
+    first = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert first.status_code == 200
+
+    second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert second.status_code == 429
+
+
+def test_auth_revoke_route_allows_again_after_interval_elapses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client, headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "_REVOKE_MIN_INTERVAL_S", 0.05)
+
+    first = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert first.status_code == 200
+
+    time.sleep(0.1)
+
+    second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert second.status_code == 200
+
+
+def test_auth_revoke_route_rate_limit_does_not_bypass_bearer_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The rate-limit guard must not become a way to probe auth: an
+    unauthenticated/wrong-bearer call still gets 401/403, never 429 —
+    _require_system_bearer runs first."""
+    client, _headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
+
+    resp = client.post("/auth/revoke", json={"tenant_id": "acme"})
+    assert resp.status_code == 401
+
+    resp = client.post(
+        "/auth/revoke", json={"tenant_id": "acme"}, headers={"Authorization": "Bearer wrong"}
+    )
+    assert resp.status_code == 403

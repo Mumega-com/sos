@@ -15,6 +15,7 @@ cross-thread lock smoke test for BLOCK-1's thread offload.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import sqlite3
 import threading
 import time
@@ -22,7 +23,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from sos.services.squad import app as app_module
 from sos.services.squad import auth
 from sos.services.squad.service import SquadDB
 
@@ -380,3 +383,125 @@ def test_cache_key_scoped_by_db(tmp_path: Path):
     assert db_b.connect_count >= 1, "cache must not be shared across distinct SquadDB instances"
 
     assert auth._token_cache_key("tok-only-in-a", db_a) != auth._token_cache_key("tok-only-in-a", db_b)
+
+
+# ── P0-A: fail-closed SYSTEM_TOKEN (sos-205-47f5f8c2 gate-3) ────────────────
+# `token == SYSTEM_TOKEN` with SYSTEM_TOKEN defaulting to "" (unset env)
+# matched an empty presented token — i.e. NO Authorization header at all —
+# and granted system:sos, unrestricted-cross-tenant access. Fixed to
+# `SYSTEM_TOKEN and hmac.compare_digest(token, SYSTEM_TOKEN)`: the branch
+# cannot fire at all while no token is configured.
+
+
+def test_empty_system_token_does_not_match_empty_presented_token(db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "")
+    assert auth._lookup_token("", db) is None
+
+
+def test_empty_system_token_does_not_match_anything(db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "")
+    assert auth._lookup_token("some-random-token", db) is None
+    assert auth._lookup_token("", db) is None
+
+
+_ROLE_DDL = """
+    CREATE TABLE roles (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        tenant_id   TEXT NOT NULL DEFAULT 'default',
+        name        TEXT NOT NULL,
+        description TEXT,
+        created_at  TEXT NOT NULL,
+        rank        INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(project_id, name, tenant_id)
+    );
+    CREATE TABLE role_permissions (
+        role_id    TEXT NOT NULL,
+        permission TEXT NOT NULL,
+        PRIMARY KEY (role_id, permission)
+    );
+    CREATE TABLE role_assignments (
+        role_id       TEXT NOT NULL,
+        assignee_id   TEXT NOT NULL,
+        assignee_type TEXT NOT NULL DEFAULT 'agent',
+        assigned_at   TEXT NOT NULL,
+        assigned_by   TEXT NOT NULL,
+        PRIMARY KEY (role_id, assignee_id)
+    );
+"""
+
+
+@pytest.fixture()
+def http_client(db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch):
+    """A TestClient wired at the throwaway `db` fixture, for the
+    `_parse_bearer` route surface (the 34 routes P0-A actually affects)."""
+    with db.connect() as conn:
+        conn.executescript(_ROLE_DDL)
+    monkeypatch.setattr(app_module, "SquadDB", lambda: db)
+    monkeypatch.setattr(app_module._role_svc, "db", db)
+    return TestClient(app_module.app)
+
+
+def test_p0a_empty_env_no_header_is_401(http_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "")
+    resp = http_client.get("/me/roles")
+    assert resp.status_code == 401
+
+
+def test_p0a_empty_env_empty_bearer_is_401(http_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "")
+    resp = http_client.get("/me/roles", headers={"Authorization": "Bearer "})
+    assert resp.status_code == 401
+
+
+def test_p0a_set_env_correct_token_passes(http_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "the-real-system-token")
+    resp = http_client.get("/me/roles", headers={"Authorization": "Bearer the-real-system-token"})
+    assert resp.status_code == 200
+
+
+def test_p0a_set_env_wrong_token_is_401(http_client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "the-real-system-token")
+    resp = http_client.get("/me/roles", headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401
+
+
+# ── LOW-1: bounded follower wait (sos-205-47f5f8c2 gate-3) ──────────────────
+
+
+def test_follower_timeout_evicts_and_raises(db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch):
+    """A follower waiting on a stalled leader must not hang forever. Timeout
+    shortened for test speed; asserts both the raise AND that the inflight
+    entry is evicted so the NEXT caller isn't stuck behind the same dead
+    wait either."""
+    monkeypatch.setattr(auth, "_TOKEN_CACHE_INFLIGHT_TIMEOUT_S", 0.2)
+    _insert_key(db, "tok-stall", tenant_id="t1")
+
+    release_leader = threading.Event()
+    real_scan = auth._scan_and_cache
+
+    def _stalling_scan(token: str, database: SquadDB, cache_key: str):
+        release_leader.wait(timeout=5)
+        return real_scan(token, database, cache_key)
+
+    monkeypatch.setattr(auth, "_scan_and_cache", _stalling_scan)
+
+    leader_started = threading.Event()
+
+    def _leader() -> None:
+        leader_started.set()
+        auth._lookup_token("tok-stall", db)
+
+    leader_thread = threading.Thread(target=_leader)
+    leader_thread.start()
+    leader_started.wait(timeout=2)
+    time.sleep(0.05)  # let the leader register its Future before we follow
+
+    with pytest.raises(concurrent.futures.TimeoutError):
+        auth._lookup_token("tok-stall", db)
+
+    key = auth._token_cache_key("tok-stall", db)
+    assert key not in auth._TOKEN_CACHE_INFLIGHT, "timed-out follower must evict, not leave the key wedged"
+
+    release_leader.set()
+    leader_thread.join(timeout=5)

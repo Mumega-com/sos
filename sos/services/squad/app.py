@@ -339,6 +339,24 @@ def _require_system_bearer(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="system_bearer_required")
 
 
+# P2-C rider (sos-205-47f5f8c2 gate-3): revoke_api_key() clears the ENTIRE
+# in-process token cache (both pools, every tenant) on every call — there is
+# no per-tenant invalidation because raw tokens are never stored (see
+# revoke_api_key's docstring in auth.py). Measured: a single ~6ms revoke call
+# forces every OTHER live client's next lookup back to a full bcrypt table
+# scan (~7757x cost amplification observed), and one observed side effect was
+# the brain's colony capability-gate roster fetch (5s hardcoded timeout)
+# racing that cold scan and losing, degrading to its static fallback list.
+# System-bearer gated already, so this is a privileged-caller DoS knob, not
+# an open one — but a min-interval guard costs nothing and bounds it. This is
+# a blunt, honest mitigation, NOT the durable fix: the durable fix is
+# per-tenant cache invalidation via an indexed token-fingerprint column
+# (tracked: Mumega-com/sos#206), which would let a revoke drop exactly the
+# revoked tenant's entries instead of the whole cache.
+_REVOKE_MIN_INTERVAL_S = 5.0
+_LAST_REVOKE_FLUSH_TS = 0.0
+
+
 class AuthVerifyRequest(BaseModel):
     token: str
 
@@ -390,6 +408,12 @@ async def auth_revoke(
     (with an honest, non-``true`` receipt) when it can't reach it.
     """
     _require_system_bearer(authorization)
+    global _LAST_REVOKE_FLUSH_TS
+    now = time.monotonic()
+    if now - _LAST_REVOKE_FLUSH_TS < _REVOKE_MIN_INTERVAL_S:
+        # P2-C rider — see the constants' docstring above.
+        raise HTTPException(status_code=429, detail="revoke_rate_limited")
+    _LAST_REVOKE_FLUSH_TS = now
     deleted = _revoke_api_key(payload.tenant_id, SquadDB())
     return {"tenant_id": payload.tenant_id, "revoked_rows": deleted, "cache_cleared": True}
 
@@ -2208,9 +2232,20 @@ async def add_role_permission(
     body: _PermissionBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    # P0-B fix (sos-205-47f5f8c2 gate-3): this route used to discard the
+    # AuthContext entirely (`await lookup_token(...) or _raise_401()`) after
+    # proving the caller held SOME valid api key — any tenant's key could
+    # then mutate ANY other tenant's role permissions. Bind `auth` and scope
+    # by `auth.tenant_scope`, same pattern as the sibling create_project_role
+    # / list_project_roles routes above (None for system = cross-tenant by
+    # design; a tenant's own scope otherwise). A foreign-tenant role_id now
+    # 404s exactly like a nonexistent one — the route was never meant to
+    # disclose which is which to a caller who doesn't own it.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
     try:
-        return _role_svc.add_permission(role_id, body.permission)
+        return _role_svc.add_permission(role_id, body.permission, tenant_id=auth.tenant_scope)
     except RoleNotFoundError:
         raise HTTPException(status_code=404, detail="role_not_found")
 
@@ -2221,8 +2256,14 @@ async def remove_role_permission(
     permission: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    _role_svc.remove_permission(role_id, permission)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        _role_svc.remove_permission(role_id, permission, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"deleted": True}
 
 
@@ -2255,8 +2296,14 @@ async def revoke_role_assignment(
     assignee_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    _role_svc.revoke_assignment(role_id, assignee_id)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        _role_svc.revoke_assignment(role_id, assignee_id, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"revoked": True}
 
 
@@ -2265,8 +2312,14 @@ async def list_role_assignments(
     role_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    assignments = _role_svc.list_assignments(role_id)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        assignments = _role_svc.list_assignments(role_id, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"assignments": assignments}
 
 
@@ -2303,8 +2356,15 @@ async def get_agent_roles(
     agent_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    roles = _role_svc.get_agent_roles(agent_id)
+    # P0-B fix — see add_role_permission above for the full rationale. This
+    # route enumerates ALL roles held by agent_id across every project; an
+    # unscoped call let any tenant's key discover which roles ANY agent
+    # holds in ANY tenant. Scoping filters the join to the caller's own
+    # tenant (system unrestricted, per auth.tenant_scope).
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    roles = _role_svc.get_agent_roles(agent_id, tenant_id=auth.tenant_scope)
     return {"agent_id": agent_id, "roles": roles}
 
 

@@ -28,6 +28,7 @@ import sys
 import json
 import time
 import logging
+import unicodedata
 import requests
 from collections import deque
 from datetime import datetime, timezone
@@ -160,6 +161,54 @@ _AGENT_HOME_CACHE: dict[str, str] = {}
 _AGENT_HOME_CACHE_TS: float = 0.0
 _AGENT_HOME_TTL = 300.0  # seconds
 
+# Zero-width / invisible characters `.strip()` does not remove: zero-width
+# space, zero-width non-joiner, zero-width joiner, BOM/zero-width no-break
+# space. Part of the P2-D fix below.
+_ZERO_WIDTH_CHARS = ("​", "‌", "‍", "﻿")
+
+
+def _normalize_agent_subject(agent: object) -> str | None:
+    """Normalize an untrusted `agent` value into a roster lookup key, or
+    None if it isn't one.
+
+    P2-D fix (sos-205-47f5f8c2 gate-3): `agent` originates from the LLM
+    decision JSON (`action.get("agent", ...)`) and used to reach the
+    capability gate through a bare `str(agent).strip().lower()`. That
+    defended against nothing: a zero-width space, a Turkish dotless-i
+    homoglyph, a trailing dot/slash, an embedded space, or a non-str value
+    (None / 0 / a list / a dict) each turned a KNOWN tenant-bound agent name
+    into a roster MISS — and `_agent_home_tenant` treats a miss as "no home
+    tenant = ungated colony agent". Two non-str cases (list, dict) are worse
+    than a silent miss: `_agent_available`'s `agent not in _AGENT_SESSION`
+    check on an unhashable value (list/dict) raises TypeError uncaught,
+    crashing the whole brain cycle before this gate is even reached.
+
+    NFKC + stripped zero-width chars + case-fold closes the mutation class
+    for values that ARE meant to match a roster entry. It does NOT resolve
+    genuine Unicode confusables (e.g. dotless-i is a distinct codepoint, not
+    NFKC-equivalent to 'i') — those still normalize to a string that simply
+    doesn't match anything in the roster, which is the SAME safe outcome an
+    honestly-unknown agent name already gets today (unknown → colony/shared,
+    per `_agent_home_tenant`'s documented contract). This function only
+    upgrades "reachable but silently wrong" to "handled the same way as any
+    other unrecognized string" and rejects non-str/empty input outright
+    instead of coercing it with `str(...)`.
+
+    IMPORTANT: this normalization does NOT make the capability gate the
+    enforcing layer. `_agent_available` (`_AGENT_SESSION`, an exact-match
+    whitelist, default-deny) is what actually decides dispatchability — see
+    motor_execute, which checks it before any gate call. Treating a gate as
+    the enforcer instead of the roster was the exact vacuous-gate mistake
+    already made once on this code path (sos-205-a7c2fc44).
+    """
+    if not isinstance(agent, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", agent)
+    for ch in _ZERO_WIDTH_CHARS:
+        normalized = normalized.replace(ch, "")
+    normalized = normalized.strip().lower()
+    return normalized or None
+
 
 def _agent_home_tenant(agent: str) -> str | None:
     """Resolve an agent's home tenant (its AgentDef.project) via the squad
@@ -194,7 +243,12 @@ def _agent_home_tenant(agent: str) -> str | None:
                 logger.error(f"[capability-gate] agent resolver cold-start failed — failing safe to static tenant-bound set: {exc}")
             else:
                 logger.warning(f"[capability-gate] agent resolver refresh failed — using stale roster: {exc}")
-    key = str(agent).strip().lower()
+    # P2-D fix: normalize (see _normalize_agent_subject). A non-str/empty
+    # subject has no home tenant to report — the caller-side default-deny
+    # roster check is what actually gates dispatch of such a value; this
+    # function's contract is "resolve a home tenant or None", not "decide
+    # dispatchability".
+    key = _normalize_agent_subject(agent) or ""
     if _AGENT_HOME_CACHE:
         home = _AGENT_HOME_CACHE.get(key, "")
     else:
@@ -641,8 +695,29 @@ def motor_execute(action: dict) -> dict:
     """
     method = action.get("method", "")
     details = action.get("details", "")
-    agent = action.get("agent", "system")
     action_title = action.get("action", "")
+
+    # P2-D fix (sos-205-47f5f8c2 gate-3): `agent` is untrusted LLM-decision
+    # JSON and flows into every `_capability_block`/`_agent_home_tenant` call
+    # below, plus the `_agent_available` roster check. Normalize it HERE,
+    # once, before anything downstream sees it — see
+    # `_normalize_agent_subject` for the full mutation-class rationale. A
+    # non-str/empty subject (None, 0, a list, a dict — none of these are a
+    # legitimate "agent" field) is rejected outright rather than silently
+    # coerced via `str(agent)`: unhashable values (list/dict) used to reach
+    # `_agent_available`'s `agent not in _AGENT_SESSION` dict check and raise
+    # an uncaught TypeError there, crashing the whole cycle. Skipping here
+    # returns the same calm, non-error shape every other "nothing to do this
+    # cycle" branch in this function uses.
+    raw_agent = action.get("agent", "system")
+    agent = _normalize_agent_subject(raw_agent)
+    if agent is None:
+        logger.info(f"Brain proposed a non-string/empty agent subject ({raw_agent!r}) — skipping: {action_title[:60]}")
+        return {
+            "success": True,
+            "skipped": True,
+            "result": "Decision-layer proposed an invalid agent subject; task intentionally not dispatched. This is expected when the model's JSON is malformed — do not investigate.",
+        }
 
     blocked_reason = _blocked_stale_cleanup_reason(action)
     if blocked_reason is not None:

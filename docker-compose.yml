@@ -197,6 +197,10 @@ services:
       - .env
     environment:
       - SOS_REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      # P0-A fix (sos-205-47f5f8c2 gate-3): fails the compose run rather than
+      # silently booting with system-tier auth disabled (fail-closed) or,
+      # pre-fix, fail-OPEN to an unauthenticated system:sos identity.
+      - SOS_SYSTEM_TOKEN=${SOS_SYSTEM_TOKEN:?set explicitly}
     depends_on:
       redis:
         condition: service_healthy

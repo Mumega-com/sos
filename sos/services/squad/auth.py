@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import hmac
 import hashlib
+import logging
 import os
 import secrets
 import sqlite3
@@ -23,7 +24,22 @@ from sos.kernel.identity import SYSTEM_IDENTITY, AgentIdentity, Identity, Identi
 from sos.services.squad.service import DEFAULT_TENANT_ID, SquadDB, now_iso
 
 
+logger = logging.getLogger("sos.services.squad.auth")
+
 SYSTEM_TOKEN = os.getenv("SOS_SYSTEM_TOKEN", "")
+if not SYSTEM_TOKEN:
+    # P0-A fix (sos-205-47f5f8c2 gate-3): loud, not silent. The compose
+    # deploy path now hard-fails on a missing SOS_SYSTEM_TOKEN
+    # (docker-compose.yml `squad:` service, `${SOS_SYSTEM_TOKEN:?set
+    # explicitly}`); this covers every other entry point (bare uvicorn,
+    # tests that don't need the system tier, local dev) where that guard
+    # doesn't run. System-tier auth is simply unreachable while this is
+    # unset — see the fail-closed guard in _lookup_token below — this is
+    # informational, not an additional gate.
+    logger.warning(
+        "SOS_SYSTEM_TOKEN is unset — system-tier auth is DISABLED (fail-closed, "
+        "not fail-open). Set it before deploying; see .env.example."
+    )
 security = HTTPBearer(auto_error=False)
 
 OPERATION_MAP: dict[tuple[str, str], CapabilityAction] = {
@@ -182,6 +198,15 @@ _TOKEN_CACHE_MAX = _TOKEN_CACHE_POSITIVE_MAX + _TOKEN_CACHE_NEGATIVE_MAX
 # of scanning again. Evicted as soon as the leader resolves it.
 _TOKEN_CACHE_INFLIGHT: dict[str, "concurrent.futures.Future[dict | None]"] = {}
 
+# LOW-1 (sos-205-47f5f8c2 gate-3): a follower's `future.result()` used to
+# have no timeout — it waited exactly as long as the leader did, unbounded.
+# Measured: a leader artificially stuck for 8s left a follower blocked past
+# 2s and it only returned at 4.7s (i.e. genuinely followed the leader, not a
+# fixed delay). Not worse than pre-single-flight behaviour (everyone
+# scanned) and it still fails closed, but nothing bounded it. 30s is well
+# above the worst-case observed full-table scan (~10s at 21 rows).
+_TOKEN_CACHE_INFLIGHT_TIMEOUT_S = 30.0
+
 
 def _token_cache_key(token: str, db: SquadDB) -> str:
     # Domain-separated (WARN-3): must never collide with the legacy stored
@@ -296,7 +321,20 @@ def _scan_and_cache(token: str, db: SquadDB, cache_key: str) -> dict | None:
 
 
 def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
-    if token == SYSTEM_TOKEN:
+    # P0-A fix (sos-205-47f5f8c2 gate-3): SYSTEM_TOKEN defaults to "" when
+    # SOS_SYSTEM_TOKEN is unset, and `token == SYSTEM_TOKEN` with an empty
+    # SYSTEM_TOKEN matched an empty presented token — i.e. NO Authorization
+    # header at all (`_parse_bearer(None) -> ""`) authenticated as
+    # system:sos with is_system=True on all 34 `_parse_bearer` routes.
+    # `.env.example` and docker-compose.yml never set this var, so the
+    # documented deploy path was the vulnerable one (only a host-local
+    # `~/.env.secrets` dotenv accident masked it here). Fail closed: the
+    # system-token branch cannot fire at all when no token is configured,
+    # and the compare is constant-time (LOW-3 — the repo already uses
+    # hmac.compare_digest in 8+ other places, incl. sos/kernel/auth.py:179's
+    # identical `env_val and hmac.compare_digest(...)` shape; this line was
+    # the one place that still used `==`).
+    if SYSTEM_TOKEN and hmac.compare_digest(token, SYSTEM_TOKEN):
         return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
     cache_key = _token_cache_key(token, db)
     hit, snapshot = _token_cache_get(cache_key)
@@ -320,7 +358,20 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
         # A scan for this exact cache_key is already running — wait for it
         # instead of running a second one. Propagates the leader's exception
         # (e.g. a DB error) to every follower too.
-        snapshot = future.result()
+        try:
+            snapshot = future.result(timeout=_TOKEN_CACHE_INFLIGHT_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            # LOW-1 fix: give up waiting on a leader that has stalled past
+            # the worst-case scan time, and evict so this key doesn't stay
+            # wedged for the NEXT caller too — a fresh lookup becomes a new
+            # leader. Does not disturb the original leader; it still resolves
+            # `future` when/if it finishes, just to nobody waiting on it any
+            # more. Re-raised, not swallowed: this fails closed (the caller
+            # sees an error, never a synthesized auth result).
+            with _TOKEN_CACHE_LOCK:
+                if _TOKEN_CACHE_INFLIGHT.get(cache_key) is future:
+                    _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+            raise
         return _context_from_snapshot(token, snapshot)
 
     try:

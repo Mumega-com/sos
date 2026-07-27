@@ -332,3 +332,96 @@ def test_motor_execute_blocks_research_non_mumega_cross_tenant(monkeypatch):
     assert res["success"] is False
     assert "Capability scope violation" in res["result"]
     assert posts == []
+
+
+# ── P2-D: agent-subject normalization (sos-205-47f5f8c2 gate-3) ────────────
+# `_agent_home_tenant` used to key its roster lookup with a bare
+# `str(agent).strip().lower()`. A zero-width space, a trailing dot/slash, an
+# embedded space, or a non-str value (None/list/dict) each turned a
+# roster-miss into "no home tenant = ungated colony agent". The fix
+# normalizes (NFKC + zero-width strip + casefold) once, at the top of
+# motor_execute, and rejects non-str/empty subjects outright instead of
+# coercing them with str(...). The roster default-deny in _agent_available
+# remains the enforcing layer for actual dispatchability — these tests
+# exercise it with it bypassed (_patch_dispatch), matching how gate-3 proved
+# the underlying mutation class, and separately confirm motor_execute's own
+# entry-point guard for the non-str cases.
+
+
+def test_normalize_agent_subject_strips_zero_width_and_casefolds():
+    assert brain._normalize_agent_subject("Digid") == "digid"
+    assert brain._normalize_agent_subject(" digid ") == "digid"
+    assert brain._normalize_agent_subject("digid​") == "digid"  # zero-width space
+    assert brain._normalize_agent_subject("digid﻿") == "digid"  # BOM / ZWNBSP
+
+
+def test_normalize_agent_subject_rejects_non_str_and_empty():
+    assert brain._normalize_agent_subject(None) is None
+    assert brain._normalize_agent_subject(0) is None
+    assert brain._normalize_agent_subject(["digid"]) is None
+    assert brain._normalize_agent_subject({"a": "digid"}) is None
+    assert brain._normalize_agent_subject("") is None
+    assert brain._normalize_agent_subject("   ") is None
+
+
+def test_normalize_agent_subject_homoglyph_does_not_crash_and_does_not_match():
+    # NFKC does not fold the Turkish dotless-i to 'i' (distinct codepoint,
+    # not a canonical equivalence) — this is documented, not a bypass: the
+    # normalized string simply doesn't match the roster, same as any other
+    # honestly-unknown agent name, and _agent_available's exact-match
+    # whitelist is what actually decides dispatchability.
+    assert brain._normalize_agent_subject("dıgıd") == "dıgıd"
+
+
+def test_motor_execute_rejects_non_str_agent_with_calm_skip(monkeypatch):
+    # Unhashable values (list/dict) used to reach `agent not in
+    # _AGENT_SESSION` (a dict membership test) and raise an uncaught
+    # TypeError there, crashing the whole brain cycle. Must now be a calm,
+    # non-error skip instead.
+    for bad_agent in (None, ["digid"], {"a": "digid"}, 0):
+        res = brain.motor_execute(_action("create_task", bad_agent))
+        assert res["success"] is True
+        assert res.get("skipped") is True
+        assert "invalid agent subject" in res["result"]
+
+
+def test_motor_execute_gate_now_catches_case_and_zero_width_mutations(monkeypatch):
+    # These normalize to the exact roster key ("digid") under NFKC + strip +
+    # casefold — pre-fix they missed the roster and slipped through
+    # ungated; post-fix the gate catches them like the canonical name.
+    roster = {"agents": _ROSTER["agents"] + [
+        {"name": "digid", "project": "digid", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    posts = _patch_dispatch(monkeypatch)
+    _patch_roster(monkeypatch, payload=roster)
+
+    for mutated in ("digid​", "DIGID", " digid ", "digid﻿"):
+        posts.clear()
+        res = brain.motor_execute(_action("create_task", mutated, goal="goal_mumega"))
+        assert res["success"] is False, f"{mutated!r} should be caught by the gate post-normalization"
+        assert "Capability scope violation" in res["result"]
+        assert posts == []
+
+
+def test_motor_execute_gate_evasion_strings_refuse_cleanly_not_crash(monkeypatch):
+    # These do NOT normalize to a roster hit (punctuation/embedded-space/NUL
+    # mutations aren't Unicode-equivalence, and normalization deliberately
+    # doesn't try to collapse them — see _normalize_agent_subject's
+    # docstring). They fall back to "unknown agent" — the SAME safe,
+    # documented outcome any honestly-unrecognized name gets
+    # (test_gate_allows_unknown_agent). The property under test is "does not
+    # crash and does not silently act as a DIFFERENT, tenant-bound identity"
+    # — not "gets denied", which is not this fix's job with
+    # _agent_available bypassed.
+    roster = {"agents": _ROSTER["agents"] + [
+        {"name": "digid", "project": "digid", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    posts = _patch_dispatch(monkeypatch)
+    _patch_roster(monkeypatch, payload=roster)
+
+    for mutated in ("digid.", "digid/", "digid\x00", "di gid"):
+        posts.clear()
+        res = brain.motor_execute(_action("create_task", mutated, goal="goal_mumega"))
+        assert isinstance(res, dict)
+        assert "success" in res
+        assert "Capability scope violation" not in res.get("result", "")
