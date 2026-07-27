@@ -246,3 +246,61 @@ def test_motor_execute_blocks_cross_tenant_outreach(monkeypatch):
     assert res["success"] is False
     assert "Capability scope violation" in res["result"]
     assert posts == []
+
+
+# ── BLOCK-4 regression (sos-205-a7c2fc44 adversarial gate) ────────────────────
+# research's mumega branch used to early-return via _mupot_dispatch_task
+# BEFORE _capability_block ran, skipping the colony gate entirely for
+# method="research" + project="mumega" — the only branch that did.
+
+def test_motor_execute_blocks_research_mumega_when_gate_subject_tenant_bound(monkeypatch):
+    # Make "river" (research's fixed gate subject) tenant-bound to a project
+    # other than mumega, then dispatch a mumega research directive. Before
+    # the fix this reached _mupot_dispatch_task before the gate ever ran;
+    # after the fix it must be blocked and _mupot_dispatch_task must never
+    # be called.
+    roster = {"agents": _ROSTER["agents"] + [
+        {"name": "river", "project": "therealmofpatterns", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    _patch_dispatch(monkeypatch)
+    _patch_roster(monkeypatch, payload=roster)
+    called = {"mupot": False}
+
+    def _spy_dispatch(*a, **k):
+        called["mupot"] = True
+        return {"success": True, "result": "should never run"}
+
+    monkeypatch.setattr(brain, "_mupot_dispatch_task", _spy_dispatch)
+    res = brain.motor_execute(_action("research", "kasra", goal="goal_mumega", details="look into X"))
+    assert res["success"] is False
+    assert "Capability scope violation" in res["result"]
+    assert called["mupot"] is False  # gate must run BEFORE dispatch, not after
+
+
+def test_motor_execute_research_mumega_dispatches_when_gate_allows(monkeypatch):
+    # river is shared/colony (not in the roster → no home tenant) → gate
+    # passes → mumega research still routes to mupot via the guarded
+    # "squad-core" target, exactly like before the fix.
+    _patch_dispatch(monkeypatch)
+    _patch_roster(monkeypatch)
+    called = {}
+
+    def _fake_dispatch(squad_id, title, description, priority, labels):
+        called["squad_id"] = squad_id
+        return {"success": True, "result": f"dispatched to {squad_id}"}
+
+    monkeypatch.setattr(brain, "_mupot_dispatch_task", _fake_dispatch)
+    res = brain.motor_execute(_action("research", "kasra", goal="goal_mumega", details="look into Y"))
+    assert res["success"] is True
+    assert called["squad_id"] == "squad-core"
+
+
+def test_motor_execute_research_non_mumega_still_gates_and_dispatches_mirror(monkeypatch):
+    # Non-mumega research path is unchanged by the fix: gate on "river", then
+    # Mirror dispatch, no mupot call.
+    posts = _patch_dispatch(monkeypatch)
+    monkeypatch.setattr(brain, "_mupot_dispatch_task", lambda *a, **k: pytest.fail("mupot must not be called for non-mumega research"))
+    res = brain.motor_execute(_action("research", "kasra", goal="goal_gaf", details="look into Z"))
+    assert res["success"] is True
+    assert len(posts) == 1
+    assert posts[0][0] == f"{brain.MIRROR_URL}/tasks"

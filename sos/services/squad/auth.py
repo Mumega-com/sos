@@ -6,10 +6,12 @@ import hashlib
 import os
 import secrets
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
 
+import anyio
 import bcrypt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -115,47 +117,116 @@ def _capability_for(identity: Identity, tenant_id: str | None, action: Capabilit
     )
 
 
-# Token-verification cache — 2026-07-27 incident fix.
+# Token-verification cache — 2026-07-27 incident fix, hardened 2026-07-27
+# against sos-205-a7c2fc44 adversarial gate findings (BLOCK-1/2/3, WARN-2/3).
 #
 # _lookup_token bcrypt-checks the presented token against EVERY api_keys row
-# (17 bcrypt rows ≈ 5s of CPU) synchronously on the event loop. Callers that
-# retry on timeout (loop.py skill registration, hermes check-in) turned one
-# slow verify into a congestion collapse: the service pegged a core and
-# stopped answering while healthy clients piled on more verifies.
+# (17 bcrypt rows ≈ 5s of CPU) synchronously. Callers that retry on timeout
+# (loop.py skill registration, hermes check-in) turned one slow verify into a
+# congestion collapse: the service pegged a core and stopped answering while
+# healthy clients piled on more verifies. The cache fixes the ACCIDENTAL case
+# (same bad token replayed). It does NOT fix the adversarial case (unique-token
+# spray, one full scan each) — require_capability now offloads the scan to a
+# worker thread (BLOCK-1) so a spray blocks a thread-pool slot, not the event
+# loop; the durable fix is still an indexed token-fingerprint column written at
+# mint time (follow-up: "squad auth: indexed token fingerprint column at mint
+# time", tracked on Mumega-com/sos).
 #
-# Cache keyed by sha256(token) so raw tokens never sit in memory beyond the
-# request. Positive hits carry the matched row snapshot (300s TTL — a revoked
-# key can outlive revocation by at most that window on this internal surface).
-# Negative hits are cached 60s so one bad-token client costs one full scan
-# per minute, not one per request. Bounded: oldest entries evicted past 256.
-_TOKEN_CACHE: dict[str, tuple[float, dict | None]] = {}
-_TOKEN_CACHE_POSITIVE_TTL_S = 300.0
+# Cache keyed by a domain-separated hash of the token (WARN-3 — the previous
+# bare sha256(token) was byte-identical to the legacy stored-credential format,
+# so a cache key doubled as a credential against any row still on that legacy
+# hash) so raw tokens never sit in memory beyond the request.
+#
+# Positive and negative hits live in SEPARATE bounded pools (BLOCK-3 — a single
+# shared pool let an attacker spray unique bad tokens to evict live positive
+# entries, since eviction picked oldest-by-expiry and every positive lives
+# longer than a negative). A spray can now only evict other negatives.
+#
+# Positive TTL dropped 300s -> 30s (BLOCK-2). 300s on a surface with NO
+# revocation mechanism was an unbounded trade-off, not a bounded one: a
+# revoked-but-cached token could keep registering/executing skills for the
+# full window. 30s still amortizes the ~1.2s bcrypt cost at real request
+# rates while killing most of the stale-validity blast radius; the remaining
+# window is closed on-demand by revoke_api_key(), which clears the cache
+# outright. Negative TTL stays 60s (one bad-token client still costs one scan
+# per minute, not one per request).
+#
+# _TOKEN_CACHE_LOCK guards ALL reads/writes to both pools. This was
+# incidentally safe before because _lookup_token was fully synchronous and
+# uvicorn ran a single worker — no interleaved dict mutation was possible.
+# Offloading the scan to a thread pool (BLOCK-1) makes the cache genuinely
+# shared mutable state across threads, so the lock is now load-bearing, not
+# defensive.
+_TOKEN_CACHE_POSITIVE: dict[str, tuple[float, dict]] = {}
+_TOKEN_CACHE_NEGATIVE: dict[str, tuple[float, None]] = {}
+_TOKEN_CACHE_LOCK = threading.Lock()
+_TOKEN_CACHE_POSITIVE_TTL_S = 30.0
 _TOKEN_CACHE_NEGATIVE_TTL_S = 60.0
-_TOKEN_CACHE_MAX = 256
+_TOKEN_CACHE_POSITIVE_MAX = 64
+_TOKEN_CACHE_NEGATIVE_MAX = 192
+
+# Backward-compat alias for external/test code that still refers to the old
+# single-cap constant name; both pools are individually bounded above.
+_TOKEN_CACHE_MAX = _TOKEN_CACHE_POSITIVE_MAX + _TOKEN_CACHE_NEGATIVE_MAX
 
 
 def _token_cache_key(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # Domain-separated (WARN-3): must never collide with the legacy stored
+    # hash format (bare sha256(token)) used by _verify_token's legacy path.
+    return hashlib.sha256(b"squad-authcache-v1:" + token.encode("utf-8")).hexdigest()
 
 
 def _token_cache_get(key: str) -> tuple[bool, dict | None]:
     """Returns (hit, row_snapshot_or_None). Expired entries count as miss."""
-    entry = _TOKEN_CACHE.get(key)
-    if entry is None:
+    with _TOKEN_CACHE_LOCK:
+        for pool in (_TOKEN_CACHE_POSITIVE, _TOKEN_CACHE_NEGATIVE):
+            entry = pool.get(key)
+            if entry is None:
+                continue
+            expires_at, snapshot = entry
+            if time.monotonic() >= expires_at:
+                pool.pop(key, None)
+                return False, None
+            return True, snapshot
         return False, None
-    expires_at, snapshot = entry
-    if time.monotonic() >= expires_at:
-        _TOKEN_CACHE.pop(key, None)
-        return False, None
-    return True, snapshot
 
 
 def _token_cache_put(key: str, snapshot: dict | None) -> None:
-    ttl = _TOKEN_CACHE_POSITIVE_TTL_S if snapshot is not None else _TOKEN_CACHE_NEGATIVE_TTL_S
-    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
-        oldest = min(_TOKEN_CACHE, key=lambda k: _TOKEN_CACHE[k][0])
-        _TOKEN_CACHE.pop(oldest, None)
-    _TOKEN_CACHE[key] = (time.monotonic() + ttl, snapshot)
+    is_positive = snapshot is not None
+    ttl = _TOKEN_CACHE_POSITIVE_TTL_S if is_positive else _TOKEN_CACHE_NEGATIVE_TTL_S
+    pool = _TOKEN_CACHE_POSITIVE if is_positive else _TOKEN_CACHE_NEGATIVE
+    other_pool = _TOKEN_CACHE_NEGATIVE if is_positive else _TOKEN_CACHE_POSITIVE
+    cap = _TOKEN_CACHE_POSITIVE_MAX if is_positive else _TOKEN_CACHE_NEGATIVE_MAX
+    with _TOKEN_CACHE_LOCK:
+        # A key can only ever be positive or negative at once — drop it from
+        # the other pool first (e.g. a token that was negative-cached and has
+        # just verified).
+        other_pool.pop(key, None)
+        if len(pool) >= cap:
+            oldest = min(pool, key=lambda k: pool[k][0])
+            pool.pop(oldest, None)
+        pool[key] = (time.monotonic() + ttl, snapshot)
+
+
+def _token_cache_forget(key: str) -> None:
+    """Drop a single key from both pools, wherever it lives."""
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE_POSITIVE.pop(key, None)
+        _TOKEN_CACHE_NEGATIVE.pop(key, None)
+
+
+def _token_cache_clear() -> None:
+    """Drop the ENTIRE cache — both pools.
+
+    Used by revoke_api_key() and rotation. Raw tokens are never stored (only
+    the domain-separated hash), so revocation cannot target the specific
+    cache entry for a revoked token — a whole-cache clear is the only sound
+    option at this scale (<=256 entries total, cheap to rebuild on the next
+    lookup).
+    """
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE_POSITIVE.clear()
+        _TOKEN_CACHE_NEGATIVE.clear()
 
 
 def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
@@ -204,6 +275,31 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
         tenant_id=snapshot["tenant_id"],
         is_system=False,
     )
+
+
+def revoke_api_key(tenant_id: str, db: SquadDB | None = None) -> int:
+    """Revoke every api_key row for ``tenant_id`` and invalidate the cache.
+
+    BLOCK-2 fix (sos-205-a7c2fc44 adversarial gate): the service had no
+    revocation path at all — a deleted row could still authenticate for up to
+    300s because nothing ever cleared the in-process positive cache. This is
+    the missing invalidation hook. It clears the ENTIRE _TOKEN_CACHE (both
+    pools), not a per-entry lookup: raw tokens are never stored, only a
+    one-way hash, so there is no way to identify which cache entries belong
+    to the revoked tenant. A whole-cache clear is correct and cheap at this
+    scale (<=256 entries; the next request just repopulates its own entry).
+
+    Returns the number of rows deleted.
+    """
+    database = db or SquadDB()
+    with database.connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM api_keys WHERE tenant_id = ?",
+            (tenant_id,),
+        )
+        deleted = cursor.rowcount if cursor.rowcount is not None else 0
+    _token_cache_clear()
+    return deleted
 
 
 async def _emit_squad_policy(
@@ -262,7 +358,13 @@ def require_capability(resource: str, operation: str, db: SquadDB | None = None)
                 reason="missing_authorization",
             )
             raise HTTPException(status_code=401, detail="missing_authorization")
-        auth = _lookup_token(token, database)
+        # BLOCK-1 fix (sos-205-a7c2fc44 adversarial gate): _lookup_token's
+        # full-table bcrypt scan (~5s+ with a handful of rows) ran directly on
+        # the event loop, so unique-token spray pegged the whole service, not
+        # just this request. Offload to a worker thread; the cache itself
+        # (_TOKEN_CACHE_LOCK) is what keeps this safe now that it runs
+        # cross-thread instead of on a single synchronous event loop.
+        auth = await anyio.to_thread.run_sync(_lookup_token, token, database)
         if not auth:
             await _emit_squad_policy(
                 agent="anonymous",
@@ -312,22 +414,60 @@ def require_capability(resource: str, operation: str, db: SquadDB | None = None)
     return dependency
 
 
-def create_api_key(tenant_id: str, identity_type: str = "user", db: SquadDB | None = None) -> tuple[str, str]:
+def create_api_key(
+    tenant_id: str,
+    identity_type: str = "user",
+    db: SquadDB | None = None,
+    rotate: bool = False,
+) -> tuple[str, str]:
+    """Mint a new api_key row for ``tenant_id``.
+
+    WARN-2 fix (sos-205-a7c2fc44 adversarial gate): this used to be
+    ``INSERT OR REPLACE`` keyed on ``token_hash`` — but bcrypt salts are
+    random, so a freshly minted token_hash is never equal to an existing row
+    and ``OR REPLACE`` was dead code. Every historical key stayed live
+    forever (no revocation path existed either — see revoke_api_key / BLOCK-2)
+    and the table grew monotonically, which is also the actual root cause of
+    BLOCK-1's scan cost growing without bound.
+
+    Default mint is now a plain, additive INSERT — existing rows for this
+    tenant/identity_type are left alone (unchanged default behaviour from the
+    caller's perspective; the only change is that duplicate token_hash
+    collisions can no longer silently clobber each other, which they never
+    did anyway). Pass ``rotate=True`` to explicitly retire this tenant's
+    existing keys of the same identity_type before minting the replacement —
+    real revocation, not an accidental hash-collision no-op.
+
+    The durable fix for unbounded table growth is the indexed
+    token-fingerprint column (follow-up: "squad auth: indexed token
+    fingerprint column at mint time", tracked on Mumega-com/sos); rotation
+    only bounds growth for callers that opt in.
+    """
     database = db or SquadDB()
     token = f"sk-squad-{tenant_id}-{secrets.token_hex(16)}"
     token_hash = hash_token(token)
     created_at = now_iso()
     with database.connect() as conn:
+        if rotate:
+            conn.execute(
+                "DELETE FROM api_keys WHERE tenant_id = ? AND identity_type = ?",
+                (tenant_id, identity_type),
+            )
         conn.execute(
             """
-            INSERT OR REPLACE INTO api_keys (token_hash, tenant_id, identity_type, created_at)
+            INSERT INTO api_keys (token_hash, tenant_id, identity_type, created_at)
             VALUES (?, ?, ?, ?)
             """,
             (token_hash, tenant_id, identity_type, created_at),
         )
+    if rotate:
+        # Old keys for this tenant/identity_type just died; their cache
+        # entries (if any) can't be targeted individually (see
+        # _token_cache_clear docstring), so drop the whole cache.
+        _token_cache_clear()
     # A brand-new token may sit in the negative cache from a pre-mint probe;
     # clear so it authenticates immediately.
-    _TOKEN_CACHE.pop(_token_cache_key(token), None)
+    _token_cache_forget(_token_cache_key(token))
     return token, created_at
 
 
@@ -338,15 +478,34 @@ def _cli() -> int:
     generate = sub.add_parser("generate", help="Generate a tenant API key")
     generate.add_argument("--tenant", required=True, help="Tenant identifier")
     generate.add_argument("--identity-type", default="user", choices=["user", "agent", "service"])
+    generate.add_argument(
+        "--rotate",
+        action="store_true",
+        help="Retire this tenant's existing keys of the same identity-type before minting",
+    )
+
+    # BLOCK-2 fix (sos-205-a7c2fc44 adversarial gate): the service had no
+    # revoke path at all — this is it.
+    revoke = sub.add_parser("revoke", help="Revoke all API keys for a tenant")
+    revoke.add_argument("--tenant", required=True, help="Tenant identifier")
 
     args = parser.parse_args()
     if args.command == "generate":
-        token, created_at = create_api_key(args.tenant, args.identity_type)
+        token, created_at = create_api_key(
+            args.tenant, args.identity_type, rotate=args.rotate
+        )
         print(f"api_key={token}")
         print(f"tenant_id={args.tenant}")
         print(f"identity_type={args.identity_type}")
         print("permissions=tenant-scoped kernel capabilities")
         print(f"created_at={created_at}")
+        print(f"rotated={args.rotate}")
+        return 0
+    if args.command == "revoke":
+        deleted = revoke_api_key(args.tenant)
+        print(f"tenant_id={args.tenant}")
+        print(f"revoked_rows={deleted}")
+        print("cache_cleared=true")
         return 0
     return 1
 

@@ -26,6 +26,17 @@ MIRROR_TOKEN = os.getenv("MIRROR_TOKEN") or os.getenv("MIRROR_ADMIN_TOKEN", "")
 
 SQUAD_URL = os.getenv("SQUAD_URL", "http://localhost:8060")
 
+# mupot's live MCP endpoint + agent-bound "sovereign" identity token, used by
+# brain.py's _mupot_dispatch_task (added a7c2fc44 / sos PR #205). Both were
+# referenced via `from kernel.config import MUPOT_MCP_URL, MUPOT_BRAIN_TOKEN`
+# without ever being defined here, which made `import brain` raise
+# ImportError unconditionally — found while testing the BLOCK-4 fix on
+# PR #205 (2026-07-27). Empty-string defaults are intentional:
+# _mupot_dispatch_task already warns + no-ops when either is unset, so an
+# unconfigured environment degrades the same way it was designed to.
+MUPOT_MCP_URL = os.getenv("MUPOT_MCP_URL", "")
+MUPOT_BRAIN_TOKEN = os.getenv("MUPOT_BRAIN_TOKEN", "")
+
 SOS_ENGINE_URL = os.getenv("SOS_ENGINE_URL", "http://localhost:6060")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
