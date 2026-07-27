@@ -36,8 +36,13 @@ from sos.contracts.squad import (
     TrustTier,
 )
 from fastapi import Header
-from sos.services.squad.auth import AuthContext, create_api_key as _create_api_key, require_capability
-from sos.services.squad.auth import _lookup_token as _squad_lookup_token
+from sos.services.squad.auth import (
+    AuthContext,
+    create_api_key as _create_api_key,
+    lookup_token,
+    require_capability,
+    revoke_api_key as _revoke_api_key,
+)
 from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
 from sos.services.squad.tasks import ClaimTokenMismatchError, InsufficientFundsError, NotAllDoneError
@@ -350,7 +355,7 @@ async def auth_verify(
     shape is uniform for clients; SOSClientError is not raised for 401.
     """
     _require_system_bearer(authorization)
-    ctx = _squad_lookup_token(payload.token, SquadDB())
+    ctx = await lookup_token(payload.token, SquadDB())
     if ctx is None:
         return {"ok": False}
     return {
@@ -360,6 +365,33 @@ async def auth_verify(
         "identity_type": ctx.identity.metadata.get("identity_type"),
         "identity_id": ctx.identity.id,
     }
+
+
+class AuthRevokeRequest(BaseModel):
+    tenant_id: str
+
+
+@app.post("/auth/revoke")
+async def auth_revoke(
+    payload: AuthRevokeRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Revoke every api_key row for a tenant AND clear THIS process's token
+    cache. System-bearer gated.
+
+    BLOCK-2 fix (sos-205-b5307dd7 re-gate): ``sos.services.squad.auth``'s CLI
+    ``revoke`` subcommand runs in a separate OS process from the uvicorn
+    worker(s) actually serving requests, so it can delete the DB rows but has
+    no way to reach the serving process's in-memory token cache — a revoked
+    token kept authenticating here for up to the positive-cache TTL (30s).
+    This route runs the deletion + cache clear IN this serving process, so
+    it is the only path that can make revocation actually immediate. The CLI
+    now calls this route first and only falls back to a local-only DB delete
+    (with an honest, non-``true`` receipt) when it can't reach it.
+    """
+    _require_system_bearer(authorization)
+    deleted = _revoke_api_key(payload.tenant_id, SquadDB())
+    return {"tenant_id": payload.tenant_id, "revoked_rows": deleted, "cache_cleared": True}
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -2145,7 +2177,7 @@ async def create_project_role(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Create a named role for a project. Owner-level auth."""
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     try:
@@ -2163,7 +2195,7 @@ async def list_project_roles(
     project_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     roles = _role_svc.list_roles(project_id, tenant_id=auth.tenant_scope or "default")
@@ -2176,7 +2208,7 @@ async def add_role_permission(
     body: _PermissionBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
     try:
         return _role_svc.add_permission(role_id, body.permission)
     except RoleNotFoundError:
@@ -2189,7 +2221,7 @@ async def remove_role_permission(
     permission: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
     _role_svc.remove_permission(role_id, permission)
     return {"deleted": True}
 
@@ -2200,7 +2232,7 @@ async def assign_role(
     body: _AssignBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     caller_id = auth.identity.id if auth.identity else "system"
@@ -2223,7 +2255,7 @@ async def revoke_role_assignment(
     assignee_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
     _role_svc.revoke_assignment(role_id, assignee_id)
     return {"revoked": True}
 
@@ -2233,7 +2265,7 @@ async def list_role_assignments(
     role_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
     assignments = _role_svc.list_assignments(role_id)
     return {"assignments": assignments}
 
@@ -2271,7 +2303,7 @@ async def get_agent_roles(
     agent_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    await lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
     roles = _role_svc.get_agent_roles(agent_id)
     return {"agent_id": agent_id, "roles": roles}
 
@@ -2280,7 +2312,7 @@ async def get_agent_roles(
 async def get_my_roles(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     roles = _role_svc.get_token_roles(auth.tenant_id or "")
@@ -2365,7 +2397,7 @@ async def create_contact(
     body: _ContactCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2387,7 +2419,7 @@ async def list_contacts(
     tier: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contacts = _contacts_svc.list(
@@ -2402,7 +2434,7 @@ async def get_contact_by_email(
     email: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contact = _contacts_svc.get_by_email(_workspace(auth), email)
@@ -2416,7 +2448,7 @@ async def get_contact(
     contact_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2431,7 +2463,7 @@ async def update_contact(
     body: _ContactUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2449,7 +2481,7 @@ async def touch_contact(
     body: _TouchBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2463,7 +2495,7 @@ async def delete_contact(
     contact_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2509,7 +2541,7 @@ async def create_partner(
     body: _PartnerCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2529,7 +2561,7 @@ async def list_partners(
     status: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     partners = _partners_svc.list(_workspace(auth), type=type, active_only=active_only, status=status)
@@ -2541,7 +2573,7 @@ async def get_partner(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2556,7 +2588,7 @@ async def update_partner(
     body: _PartnerUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2573,7 +2605,7 @@ async def get_partner_contacts(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contacts = _partners_svc.get_contacts(partner_id, _workspace(auth))
@@ -2585,7 +2617,7 @@ async def get_partner_opportunities(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     opps = _partners_svc.get_opportunities(partner_id, _workspace(auth))
@@ -2631,7 +2663,7 @@ async def create_opportunity(
     body: _OppCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2652,7 +2684,7 @@ async def list_opportunities(
     archived: bool = False,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     opps = _opps_svc.list(
@@ -2666,7 +2698,7 @@ async def list_opportunities(
 async def pipeline_summary(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     return {"pipeline": _opps_svc.pipeline_summary(_workspace(auth))}
@@ -2677,7 +2709,7 @@ async def get_opportunity(
     opp_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2692,7 +2724,7 @@ async def transition_opportunity_stage(
     body: _StageTransition,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2707,7 +2739,7 @@ async def update_opportunity(
     body: _OppUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2746,7 +2778,7 @@ async def create_referral(
     body: _ReferralCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2769,7 +2801,7 @@ async def list_referrals(
     target_type: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     refs = _refs_svc.list(
@@ -2785,7 +2817,7 @@ async def referral_network(
     hops: int = Query(default=2, ge=1, le=5),
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     return _refs_svc.network(entity_id, _workspace(auth), hops=hops)
@@ -2797,7 +2829,7 @@ async def update_referral(
     body: _ReferralUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2814,7 +2846,7 @@ async def delete_referral(
     ref_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     _refs_svc.delete(ref_id, _workspace(auth), _actor(auth))
@@ -2830,7 +2862,7 @@ async def ghl_sync_contact(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Upsert contact from GHL lead payload. Keyed by email."""
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     email = payload.get("email") or payload.get("contact", {}).get("email")

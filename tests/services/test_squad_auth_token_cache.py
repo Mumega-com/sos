@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -59,8 +60,10 @@ def db(tmp_path: Path) -> CountingSquadDB:
 @pytest.fixture(autouse=True)
 def _fresh_cache():
     auth._token_cache_clear()
+    auth._TOKEN_CACHE_INFLIGHT.clear()
     yield
     auth._token_cache_clear()
+    auth._TOKEN_CACHE_INFLIGHT.clear()
 
 
 def _insert_key(db: SquadDB, token: str, tenant_id: str = "t1", identity_type: str = "agent") -> None:
@@ -103,7 +106,7 @@ def test_expired_entry_is_a_miss(db: CountingSquadDB, monkeypatch: pytest.Monkey
     assert auth._lookup_token("tok-alpha", db) is not None
     before = db.connect_count
 
-    key = auth._token_cache_key("tok-alpha")
+    key = auth._token_cache_key("tok-alpha", db)
     expires_at, snapshot = auth._TOKEN_CACHE_POSITIVE[key]
     auth._TOKEN_CACHE_POSITIVE[key] = (expires_at - auth._TOKEN_CACHE_POSITIVE_TTL_S - 1, snapshot)
 
@@ -274,3 +277,106 @@ def test_concurrent_lookups_do_not_corrupt_cache(db: CountingSquadDB):
     # Lock must exist and actually be a lock (mutation-check: a
     # threading.Lock instance, not e.g. a no-op placeholder).
     assert isinstance(auth._TOKEN_CACHE_LOCK, type(threading.Lock()))
+
+
+# ── BLOCK-1b: single-flight (sos-205-b5307dd7 re-gate) ──────────────────────
+# The re-gate verdict measured 8 concurrent replays of ONE cold token costing
+# 8 full-table scans (vs 1 when replayed sequentially) — the cache-miss check
+# and the scan were not atomic w.r.t. each other, so every concurrent caller
+# raced to scan before any of them had cached a result.
+
+
+def test_single_flight_one_scan_for_concurrent_replays_of_same_token(
+    db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch
+):
+    """Mutation-style: fails if _TOKEN_CACHE_INFLIGHT / its lookup in
+    _lookup_token is removed. The scan is artificially slowed so all 8
+    ThreadPoolExecutor workers are reliably in-flight before the leader
+    finishes — otherwise this could pass by accident on a fast machine even
+    without the fix (a follower scheduled after the leader already cached
+    the result would just get a legitimate, unrelated cache hit)."""
+    _insert_key(db, "tok-hot", tenant_id="t1")
+
+    real_scan = auth._scan_and_cache
+
+    def _slow_scan(token: str, database: SquadDB, cache_key: str):
+        time.sleep(0.2)
+        return real_scan(token, database, cache_key)
+
+    monkeypatch.setattr(auth, "_scan_and_cache", _slow_scan)
+    db.connect_count = 0
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _i: auth._lookup_token("tok-hot", db), range(8)))
+
+    assert db.connect_count == 1, (
+        f"expected exactly 1 DB scan for 8 concurrent replays of one cold "
+        f"token, got {db.connect_count}"
+    )
+    for ctx in results:
+        assert ctx is not None and ctx.tenant_id == "t1"
+
+
+def test_single_flight_propagates_scan_exception_to_followers(
+    db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch
+):
+    """A DB error during the leader's scan must reach every follower waiting
+    on the same Future, not hang them or silently return None."""
+
+    def _boom(token: str, database: SquadDB, cache_key: str):
+        time.sleep(0.1)
+        raise RuntimeError("simulated scan failure")
+
+    monkeypatch.setattr(auth, "_scan_and_cache", _boom)
+
+    def _lookup(_i: int):
+        try:
+            auth._lookup_token("tok-error", db)
+            return "no-error"
+        except RuntimeError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(_lookup, range(4)))
+
+    assert results == ["simulated scan failure"] * 4
+    # The in-flight entry must be evicted on failure too, or every future
+    # lookup of this token would hang forever waiting on a dead Future.
+    assert auth._token_cache_key("tok-error", db) not in auth._TOKEN_CACHE_INFLIGHT
+
+
+# ── WARN-1: cache keyed by db (sos-205-b5307dd7 re-gate) ────────────────────
+
+
+def test_cache_key_scoped_by_db(tmp_path: Path):
+    """The cache used to be keyed on the token alone, so a token that only
+    exists in DB A would authenticate against DB B via a shared cache entry
+    without DB B ever being queried. _lookup_token(token, db) and
+    revoke_api_key(tenant, db=...) both advertise a per-db contract; the
+    cache must honor it."""
+    db_a = CountingSquadDB(tmp_path / "a.db")
+    db_b = CountingSquadDB(tmp_path / "b.db")
+    ddl = """
+        CREATE TABLE api_keys (
+            token_hash TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            identity_type TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """
+    for database in (db_a, db_b):
+        with database.connect() as conn:
+            conn.execute(ddl)
+        database.connect_count = 0
+
+    _insert_key(db_a, "tok-only-in-a", tenant_id="tenant-a")
+
+    assert auth._lookup_token("tok-only-in-a", db_a) is not None
+
+    # Same token presented against DB B: must be a genuine miss (DB B gets
+    # queried), never a hit served from DB A's cache entry.
+    db_b.connect_count = 0
+    assert auth._lookup_token("tok-only-in-a", db_b) is None
+    assert db_b.connect_count >= 1, "cache must not be shared across distinct SquadDB instances"
+
+    assert auth._token_cache_key("tok-only-in-a", db_a) != auth._token_cache_key("tok-only-in-a", db_b)

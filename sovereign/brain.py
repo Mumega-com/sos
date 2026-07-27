@@ -868,24 +868,29 @@ def motor_execute(action: dict) -> dict:
             # branch among create_task/send_outreach/fix_code/research that
             # did. Gate first, unconditionally, before branching on the
             # dispatch target, matching every other branch.
-            if (block := _capability_block("river", project)) is not None:
+            #
+            # Re-gate fix (sos-205-b5307dd7): the gate subject used to be the
+            # hardcoded literal "river". _agent_home_tenant('river') is
+            # always None (river is a shared/colony agent, not in the
+            # tenant-bound roster), so _capability_block("river", project)
+            # could NEVER return DENY at any position in this function — it
+            # was structurally in the right place but gating a subject that
+            # can't fail, i.e. decorative. Gate the real `agent` variable
+            # instead: the entity this dispatch believes is acting (already
+            # resolved through the PROJECT_LEADS reroute above, same as
+            # every other branch's assignee).
+            if (block := _capability_block(agent, project)) is not None:
                 return block
             if normalize_project(project) == "mumega":
-                # Hardcoding "river" as the gate subject (not the dispatch
-                # target) was the exact #490 root-cause pattern (a stale
-                # roster assumption, not a live check) -- defer to mupot's
-                # own effort-router for WHO does the work. "squad-core" is
-                # research's fixed mumega squad target: LABEL_SQUAD_MAP has
+                # Hardcoding a name as the DISPATCH target (not the gate
+                # subject, fixed above) was the exact #490 root-cause pattern
+                # (a stale roster assumption, not a live check) -- defer to
+                # mupot's own effort-router for WHO does the work. "squad-core"
+                # is research's fixed mumega squad target: LABEL_SQUAD_MAP has
                 # no "research" entry, so the generic `squad_id` resolved
                 # above is always None for this method and is deliberately
-                # not reused here. Still refuse rather than silently dispatch
-                # if that target is ever unset — mirrors the `if squad_id:`
-                # guard the other three branches use around their own mupot
-                # dispatch (BLOCK-4's second finding: this branch dispatched
-                # unconditionally, with no such guard at all).
+                # not reused here.
                 research_squad_id = "squad-core"
-                if not research_squad_id:
-                    return {"success": False, "result": "research: no mumega squad target resolved; refusing dispatch"}
                 return _mupot_dispatch_task(research_squad_id, f"Research: {action.get('action', '')}", details, "medium", ["research", "brain-generated"])
             # Create research task for River (shared/colony agent — gate for uniformity)
             r = requests.post(f"{MIRROR_URL}/tasks", json={

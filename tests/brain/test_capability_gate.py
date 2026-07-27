@@ -252,15 +252,22 @@ def test_motor_execute_blocks_cross_tenant_outreach(monkeypatch):
 # research's mumega branch used to early-return via _mupot_dispatch_task
 # BEFORE _capability_block ran, skipping the colony gate entirely for
 # method="research" + project="mumega" — the only branch that did.
+#
+# Re-gate update (sos-205-b5307dd7): the gate subject used to be the
+# hardcoded literal "river", which has no home tenant in ANY roster
+# (_agent_home_tenant('river') is always None) — so a test that made "river"
+# tenant-bound and then dispatched with agent="kasra" was only exercising
+# the OLD hardcoded subject, not the real one. The fix gates the real
+# `agent` value from the action, so these tests now drive the gate through
+# that same real subject — including a genuinely tenant-bound agent (digid)
+# to prove the gate can still deny.
 
 def test_motor_execute_blocks_research_mumega_when_gate_subject_tenant_bound(monkeypatch):
-    # Make "river" (research's fixed gate subject) tenant-bound to a project
-    # other than mumega, then dispatch a mumega research directive. Before
-    # the fix this reached _mupot_dispatch_task before the gate ever ran;
-    # after the fix it must be blocked and _mupot_dispatch_task must never
-    # be called.
+    # digid is tenant-bound to project "digid" (non-None home tenant).
+    # Dispatch a mumega research directive AS digid: this must be blocked,
+    # and _mupot_dispatch_task must never be called.
     roster = {"agents": _ROSTER["agents"] + [
-        {"name": "river", "project": "therealmofpatterns", "role": "SPECIALIST", "type": "OPENCLAW"},
+        {"name": "digid", "project": "digid", "role": "SPECIALIST", "type": "OPENCLAW"},
     ]}
     _patch_dispatch(monkeypatch)
     _patch_roster(monkeypatch, payload=roster)
@@ -271,16 +278,16 @@ def test_motor_execute_blocks_research_mumega_when_gate_subject_tenant_bound(mon
         return {"success": True, "result": "should never run"}
 
     monkeypatch.setattr(brain, "_mupot_dispatch_task", _spy_dispatch)
-    res = brain.motor_execute(_action("research", "kasra", goal="goal_mumega", details="look into X"))
+    res = brain.motor_execute(_action("research", "digid", goal="goal_mumega", details="look into X"))
     assert res["success"] is False
     assert "Capability scope violation" in res["result"]
     assert called["mupot"] is False  # gate must run BEFORE dispatch, not after
 
 
 def test_motor_execute_research_mumega_dispatches_when_gate_allows(monkeypatch):
-    # river is shared/colony (not in the roster → no home tenant) → gate
-    # passes → mumega research still routes to mupot via the guarded
-    # "squad-core" target, exactly like before the fix.
+    # kasra is shared/colony (project="" in the roster → no home tenant) →
+    # gate passes on the real acting agent → mumega research still routes to
+    # mupot via the guarded "squad-core" target, exactly like before the fix.
     _patch_dispatch(monkeypatch)
     _patch_roster(monkeypatch)
     called = {}
@@ -296,11 +303,32 @@ def test_motor_execute_research_mumega_dispatches_when_gate_allows(monkeypatch):
 
 
 def test_motor_execute_research_non_mumega_still_gates_and_dispatches_mirror(monkeypatch):
-    # Non-mumega research path is unchanged by the fix: gate on "river", then
-    # Mirror dispatch, no mupot call.
+    # Non-mumega research path is unchanged by the fix: gate on the real
+    # acting agent (kasra, shared → no home tenant), then Mirror dispatch,
+    # no mupot call.
     posts = _patch_dispatch(monkeypatch)
     monkeypatch.setattr(brain, "_mupot_dispatch_task", lambda *a, **k: pytest.fail("mupot must not be called for non-mumega research"))
     res = brain.motor_execute(_action("research", "kasra", goal="goal_gaf", details="look into Z"))
     assert res["success"] is True
     assert len(posts) == 1
     assert posts[0][0] == f"{brain.MIRROR_URL}/tasks"
+
+
+def test_motor_execute_blocks_research_non_mumega_cross_tenant(monkeypatch):
+    # New (sos-205-b5307dd7): the real-subject gate must also fire on the
+    # non-mumega dispatch path, not just mumega — digid dispatched for a
+    # DIFFERENT tenant's goal must be blocked before any Mirror POST.
+    # Project deliberately has NO PROJECT_LEADS entry so `agent` is not
+    # rerouted before the gate runs (gaf/dentalnearyou/etc. would silently
+    # swap "digid" for their own lead, which is a routing property, not part
+    # of what this test is checking).
+    posts = _patch_dispatch(monkeypatch)
+    roster = {"agents": _ROSTER["agents"] + [
+        {"name": "digid", "project": "digid", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    _patch_roster(monkeypatch, payload=roster)
+    monkeypatch.setattr(brain, "_mupot_dispatch_task", lambda *a, **k: pytest.fail("mupot must not be called for this project"))
+    res = brain.motor_execute(_action("research", "digid", goal="goal_unknown-tenant", details="look into W"))
+    assert res["success"] is False
+    assert "Capability scope violation" in res["result"]
+    assert posts == []

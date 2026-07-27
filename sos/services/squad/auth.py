@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hmac
 import hashlib
 import os
@@ -13,6 +14,7 @@ from typing import Callable
 
 import anyio
 import bcrypt
+import requests
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -169,11 +171,31 @@ _TOKEN_CACHE_NEGATIVE_MAX = 192
 # single-cap constant name; both pools are individually bounded above.
 _TOKEN_CACHE_MAX = _TOKEN_CACHE_POSITIVE_MAX + _TOKEN_CACHE_NEGATIVE_MAX
 
+# Single-flight in-flight map (BLOCK-1b — sos-205-b5307dd7 re-gate). Keyed
+# identically to the cache pools. Concurrent replays of the SAME cold token
+# used to each run their own full-table bcrypt scan (measured: 8 concurrent
+# lookups of one token -> 8 scans, vs 1 scan when sequential) because the
+# cache-miss check and the scan were not atomic with respect to each other.
+# The first caller for a cache_key registers a Future here (under
+# _TOKEN_CACHE_LOCK, so registration is atomic with the miss check) and does
+# the scan; every other caller for the same key waits on that Future instead
+# of scanning again. Evicted as soon as the leader resolves it.
+_TOKEN_CACHE_INFLIGHT: dict[str, "concurrent.futures.Future[dict | None]"] = {}
 
-def _token_cache_key(token: str) -> str:
+
+def _token_cache_key(token: str, db: SquadDB) -> str:
     # Domain-separated (WARN-3): must never collide with the legacy stored
     # hash format (bare sha256(token)) used by _verify_token's legacy path.
-    return hashlib.sha256(b"squad-authcache-v1:" + token.encode("utf-8")).hexdigest()
+    # WARN-1 (sos-205-b5307dd7 re-gate): scoped to `db` too — the cache used
+    # to be keyed on the token alone, so two distinct SquadDB instances
+    # (e.g. a future per-tenant DB split) could share cache entries and a
+    # token valid only in DB A would authenticate against DB B without ever
+    # touching it. `_lookup_token(token, db)` and `revoke_api_key(tenant,
+    # db=...)` both already advertise a per-db contract; this makes the
+    # cache honor it instead of ignoring the db parameter.
+    return hashlib.sha256(
+        b"squad-authcache-v1:" + str(db.db_path).encode("utf-8") + b":" + token.encode("utf-8")
+    ).hexdigest()
 
 
 def _token_cache_get(key: str) -> tuple[bool, dict | None]:
@@ -229,20 +251,21 @@ def _token_cache_clear() -> None:
         _TOKEN_CACHE_NEGATIVE.clear()
 
 
-def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
-    if token == SYSTEM_TOKEN:
-        return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
-    cache_key = _token_cache_key(token)
-    hit, snapshot = _token_cache_get(cache_key)
-    if hit:
-        if snapshot is None:
-            return None
-        return AuthContext(
-            token=token,
-            identity=_identity_from_snapshot(snapshot),
-            tenant_id=snapshot["tenant_id"],
-            is_system=False,
-        )
+def _context_from_snapshot(token: str, snapshot: dict | None) -> AuthContext | None:
+    if snapshot is None:
+        return None
+    return AuthContext(
+        token=token,
+        identity=_identity_from_snapshot(snapshot),
+        tenant_id=snapshot["tenant_id"],
+        is_system=False,
+    )
+
+
+def _scan_and_cache(token: str, db: SquadDB, cache_key: str) -> dict | None:
+    """The actual full-table bcrypt scan. Only ever called by the single-flight
+    leader in _lookup_token — never call this directly from a second thread
+    for the same cache_key."""
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT token_hash, tenant_id, identity_type, created_at FROM api_keys"
@@ -269,12 +292,64 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
         "identity_type": matched["identity_type"],
     }
     _token_cache_put(cache_key, snapshot)
-    return AuthContext(
-        token=token,
-        identity=_identity_from_snapshot(snapshot),
-        tenant_id=snapshot["tenant_id"],
-        is_system=False,
-    )
+    return snapshot
+
+
+def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
+    if token == SYSTEM_TOKEN:
+        return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
+    cache_key = _token_cache_key(token, db)
+    hit, snapshot = _token_cache_get(cache_key)
+    if hit:
+        return _context_from_snapshot(token, snapshot)
+
+    # Single-flight (BLOCK-1b): register-or-join under the SAME lock that
+    # guards the cache pools, so there is no window between the miss check
+    # above and the Future registration where a second caller could slip in
+    # and start its own scan.
+    with _TOKEN_CACHE_LOCK:
+        future = _TOKEN_CACHE_INFLIGHT.get(cache_key)
+        if future is None:
+            future = concurrent.futures.Future()
+            _TOKEN_CACHE_INFLIGHT[cache_key] = future
+            is_leader = True
+        else:
+            is_leader = False
+
+    if not is_leader:
+        # A scan for this exact cache_key is already running — wait for it
+        # instead of running a second one. Propagates the leader's exception
+        # (e.g. a DB error) to every follower too.
+        snapshot = future.result()
+        return _context_from_snapshot(token, snapshot)
+
+    try:
+        snapshot = _scan_and_cache(token, db, cache_key)
+    except BaseException as exc:
+        with _TOKEN_CACHE_LOCK:
+            _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+        future.set_exception(exc)
+        raise
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+    future.set_result(snapshot)
+    return _context_from_snapshot(token, snapshot)
+
+
+async def lookup_token(token: str, db: SquadDB) -> AuthContext | None:
+    """Async, event-loop-safe entry point for token lookup — the ONLY place
+    that should offload _lookup_token's scan to a worker thread.
+
+    BLOCK-1 fix (sos-205-b5307dd7 re-gate): the a7c2fc44 fix offloaded the
+    scan only inside require_capability's dependency; 34 other app.py route
+    handlers called the synchronous _lookup_token directly, so the scan ran
+    ON the event loop for the entire RBAC/CRM/referrals surface. Measured:
+    27,956ms of dead event loop (heartbeat scheduled exactly once) for a
+    single unpatched replay. Every caller — require_capability included —
+    now goes through this one function, so there is exactly one offload
+    point to keep correct, not one-per-caller.
+    """
+    return await anyio.to_thread.run_sync(_lookup_token, token, db)
 
 
 def revoke_api_key(tenant_id: str, db: SquadDB | None = None) -> int:
@@ -358,13 +433,11 @@ def require_capability(resource: str, operation: str, db: SquadDB | None = None)
                 reason="missing_authorization",
             )
             raise HTTPException(status_code=401, detail="missing_authorization")
-        # BLOCK-1 fix (sos-205-a7c2fc44 adversarial gate): _lookup_token's
-        # full-table bcrypt scan (~5s+ with a handful of rows) ran directly on
-        # the event loop, so unique-token spray pegged the whole service, not
-        # just this request. Offload to a worker thread; the cache itself
-        # (_TOKEN_CACHE_LOCK) is what keeps this safe now that it runs
-        # cross-thread instead of on a single synchronous event loop.
-        auth = await anyio.to_thread.run_sync(_lookup_token, token, database)
+        # BLOCK-1 fix (sos-205-a7c2fc44 adversarial gate, generalized in
+        # sos-205-b5307dd7): the offload lives in lookup_token() now — this
+        # dependency is just one of its many callers (app.py's 34 direct
+        # call sites go through the same function), not a special case.
+        auth = await lookup_token(token, database)
         if not auth:
             await _emit_squad_policy(
                 agent="anonymous",
@@ -467,8 +540,34 @@ def create_api_key(
         _token_cache_clear()
     # A brand-new token may sit in the negative cache from a pre-mint probe;
     # clear so it authenticates immediately.
-    _token_cache_forget(_token_cache_key(token))
+    _token_cache_forget(_token_cache_key(token, database))
     return token, created_at
+
+
+def _revoke_via_service(tenant_id: str, squad_url: str, system_token: str) -> bool:
+    """POST /auth/revoke on the LIVE running service so its in-process cache
+    is actually cleared — the CLI's own cache is a separate, always-empty
+    process and clearing it (what the old code did) clears nothing real.
+
+    Returns True only on a genuine 200 from the service. False on any
+    failure (no token configured, connection refused, timeout, non-200) —
+    the caller must never report a cleared cache on False (BLOCK-2 fix,
+    sos-205-b5307dd7 re-gate: the old CLI printed cache_cleared=true
+    unconditionally, which was a false receipt — it asserted a property
+    about the SERVING process while only ever touching its own).
+    """
+    if not system_token:
+        return False
+    try:
+        resp = requests.post(
+            f"{squad_url.rstrip('/')}/auth/revoke",
+            json={"tenant_id": tenant_id},
+            headers={"Authorization": f"Bearer {system_token}"},
+            timeout=5,
+        )
+    except requests.RequestException:
+        return False
+    return resp.status_code == 200
 
 
 def _cli() -> int:
@@ -505,7 +604,25 @@ def _cli() -> int:
         deleted = revoke_api_key(args.tenant)
         print(f"tenant_id={args.tenant}")
         print(f"revoked_rows={deleted}")
-        print("cache_cleared=true")
+        # BLOCK-2 fix (sos-205-b5307dd7 re-gate): revoke_api_key() above only
+        # clears the CLI's OWN in-process cache, which is always empty — the
+        # CLI is a separate process from the running uvicorn service and has
+        # no way to reach the service's _TOKEN_CACHE_POSITIVE/_NEGATIVE
+        # directly. Printing cache_cleared=true unconditionally (the old
+        # behaviour) was a false receipt: a revoked-but-cached token kept
+        # authenticating against the live service for up to the positive TTL
+        # (measured: 30s). Try the service's own /auth/revoke route first —
+        # that runs in-process on the server and can actually clear it. Only
+        # fall back to "we deleted the DB rows but can't prove the cache is
+        # clear" when the service is unreachable.
+        squad_url = os.getenv("SQUAD_URL", "http://localhost:8060")
+        if _revoke_via_service(args.tenant, squad_url, SYSTEM_TOKEN):
+            print("cache_cleared=service")
+        else:
+            print(
+                "cache_cleared=LOCAL-PROCESS-ONLY — running service still holds "
+                "cached entries up to 30s TTL; hit POST /auth/revoke or restart"
+            )
         return 0
     return 1
 
