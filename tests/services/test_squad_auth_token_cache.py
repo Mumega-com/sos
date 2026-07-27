@@ -404,6 +404,35 @@ def test_empty_system_token_does_not_match_anything(db: CountingSquadDB, monkeyp
     assert auth._lookup_token("", db) is None
 
 
+# ── BLOCK-A: non-ASCII bearer must not raise (sos-205-790a2a63 gate-4) ─────
+# `hmac.compare_digest` on `str` arguments raises `TypeError` for any
+# codepoint above 127 -- `==` (what P0-A replaced) never raised, so the
+# constant-time fix quietly added an unauthenticated crash path (500, not a
+# bypass -- fails closed, but still a P1). httpx/starlette's TestClient
+# REFUSES to encode a non-ASCII header client-side (UnicodeEncodeError
+# before the request is even sent), so this is structurally invisible to any
+# TestClient-based HTTP test -- CI stays green while a raw socket against a
+# real uvicorn (HTTP header bytes are ISO-8859-1 on the wire; starlette
+# decodes them as latin-1) gets a 500. Driving `_lookup_token` directly is
+# the only way this test suite can exercise that byte space at all.
+
+
+def test_lookup_token_non_ascii_bearer_does_not_raise(db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "the-real-system-token")
+    # café-token: 'é' is U+00E9, codepoint > 127 -- the exact shape gate-4
+    # proved crashes `hmac.compare_digest(token, SYSTEM_TOKEN)` pre-fix.
+    assert auth._lookup_token("café-token", db) is None
+    # A lone high byte (0xC3) decoded as latin-1 -- how starlette decodes a
+    # real raw-socket header value gate-4 sent against live uvicorn.
+    assert auth._lookup_token("\xc3", db) is None
+    # The non-ASCII codepoint can legally land on EITHER side of the
+    # compare -- also prove a non-ASCII SYSTEM_TOKEN doesn't raise, and that
+    # bytes-encoding didn't accidentally break a genuine (if unusual) match.
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "tökén")
+    assert auth._lookup_token("wrong-token", db) is None
+    assert auth._lookup_token("tökén", db) is not None
+
+
 _ROLE_DDL = """
     CREATE TABLE roles (
         id          TEXT PRIMARY KEY,

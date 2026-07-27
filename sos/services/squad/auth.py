@@ -334,7 +334,39 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
     # hmac.compare_digest in 8+ other places, incl. sos/kernel/auth.py:179's
     # identical `env_val and hmac.compare_digest(...)` shape; this line was
     # the one place that still used `==`).
-    if SYSTEM_TOKEN and hmac.compare_digest(token, SYSTEM_TOKEN):
+    #
+    # BLOCK-A fix (sos-205-790a2a63 gate-4): the P0-A fix above swapped `==`
+    # for `hmac.compare_digest(token, SYSTEM_TOKEN)` on two `str` arguments.
+    # `hmac.compare_digest` RAISES `TypeError` when either `str` argument
+    # contains a codepoint above 127 ("comparing strings with non-ASCII
+    # characters is not supported") — `==` never raised. So the constant-time
+    # fix quietly added an unauthenticated crash path: ANY bearer token
+    # containing a single non-ASCII byte (umlaut, Cyrillic, a lone 0x80-0xFF
+    # byte, even a zero-width character) turns into an uncaught 500 here,
+    # before any DB work, on every one of the 36 `lookup_token` call sites —
+    # cheaper for an attacker to trigger than a normal miss (no bcrypt scan)
+    # and impossible to throttle by scan cost.
+    #
+    # httpx/starlette's TestClient REFUSES to encode a non-ASCII header
+    # client-side (UnicodeEncodeError before the request is even sent), so
+    # this is structurally invisible to any TestClient-based test — the CI
+    # suite stays green while a raw socket against a real uvicorn gets a 500.
+    # HTTP header values are ISO-8859-1 on the wire and starlette decodes them
+    # as latin-1, so this is trivially reachable in production.
+    #
+    # Fix: compare BYTES, not `str`. `hmac.compare_digest` has no ASCII
+    # restriction on `bytes` — encoding both sides to UTF-8 first removes the
+    # crash path entirely while keeping the comparison constant-time. Same
+    # treatment applied to `sos/kernel/auth.py:179`'s identical
+    # `env_val and hmac.compare_digest(env_val, raw_token)` shape (also a
+    # `str`/`str` compare on a wire-supplied value). The two OTHER
+    # `compare_digest` sites in this repo (`sos/kernel/auth.py:232`,
+    # `sos/services/squad/auth.py:88`) compare hex digest strings on BOTH
+    # sides — `hashlib.*.hexdigest()` output is always ASCII regardless of
+    # input, so those cannot raise and were left alone. `app.py:2164`
+    # (`_hmac.compare_digest(presented, expected)`) already encodes both
+    # sides to bytes via `.encode()`, so it was never affected either.
+    if SYSTEM_TOKEN and hmac.compare_digest(token.encode("utf-8"), SYSTEM_TOKEN.encode("utf-8")):
         return AuthContext(token=token, identity=SYSTEM_IDENTITY, tenant_id=None, is_system=True)
     cache_key = _token_cache_key(token, db)
     hit, snapshot = _token_cache_get(cache_key)
@@ -403,8 +435,9 @@ async def lookup_token(token: str, db: SquadDB) -> AuthContext | None:
     return await anyio.to_thread.run_sync(_lookup_token, token, db)
 
 
-def revoke_api_key(tenant_id: str, db: SquadDB | None = None) -> int:
-    """Revoke every api_key row for ``tenant_id`` and invalidate the cache.
+def revoke_api_key(tenant_id: str, db: SquadDB | None = None, *, flush_cache: bool = True) -> int:
+    """Revoke every api_key row for ``tenant_id`` and (by default) invalidate
+    the cache.
 
     BLOCK-2 fix (sos-205-a7c2fc44 adversarial gate): the service had no
     revocation path at all — a deleted row could still authenticate for up to
@@ -415,6 +448,13 @@ def revoke_api_key(tenant_id: str, db: SquadDB | None = None) -> int:
     to the revoked tenant. A whole-cache clear is correct and cheap at this
     scale (<=256 entries; the next request just repopulates its own entry).
 
+    P2-G fix (sos-205-790a2a63 gate-4): ``flush_cache`` splits "delete the DB
+    rows" from "clear the process-wide cache" so a caller doing its own
+    throttled flush (see app.py's ``/auth/revoke`` route) can guarantee the
+    DELETE always runs while only the (expensive, DoS-able) whole-cache clear
+    is ever rate-limited. Defaults to ``True`` so every existing caller (the
+    CLI, tests) keeps today's behaviour unchanged.
+
     Returns the number of rows deleted.
     """
     database = db or SquadDB()
@@ -424,7 +464,8 @@ def revoke_api_key(tenant_id: str, db: SquadDB | None = None) -> int:
             (tenant_id,),
         )
         deleted = cursor.rowcount if cursor.rowcount is not None else 0
-    _token_cache_clear()
+    if flush_cache:
+        _token_cache_clear()
     return deleted
 
 

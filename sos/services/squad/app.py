@@ -42,6 +42,8 @@ from sos.services.squad.auth import (
     lookup_token,
     require_capability,
     revoke_api_key as _revoke_api_key,
+    _token_cache_clear,
+    _TOKEN_CACHE_POSITIVE_TTL_S,
 )
 from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
@@ -353,8 +355,23 @@ def _require_system_bearer(authorization: Optional[str]) -> None:
 # per-tenant cache invalidation via an indexed token-fingerprint column
 # (tracked: Mumega-com/sos#206), which would let a revoke drop exactly the
 # revoked tenant's entries instead of the whole cache.
+#
+# P2-G fix (sos-205-790a2a63 gate-4): this guard used to be a single GLOBAL
+# timestamp checked BEFORE the DB delete — so a 429 for tenant B's revoke,
+# fired purely because tenant A revoked 3s earlier, aborted the ENTIRE
+# request and left tenant B's compromised key rows fully present in
+# `api_keys` (confirmed live: "'second-tenant' token STILL VALID after its
+# 429'd revoke: True"). A security control whose failure mode is "the revoke
+# silently did not happen" is worse than no rate limit at all. Two changes:
+# (1) the clock is now PER TENANT (a dict, not one float) so throttling one
+# tenant's cache flush can never look like it aborted a different tenant's
+# revoke; (2) the DB delete (see the route below) now runs UNCONDITIONALLY,
+# before the throttle decision — only the expensive whole-process cache
+# flush is ever rate-limited, and a throttled flush returns an honest
+# `cache_flushed: false` + `retry_after` + TTL warning, never a bare 429
+# that could be mistaken for "nothing happened."
 _REVOKE_MIN_INTERVAL_S = 5.0
-_LAST_REVOKE_FLUSH_TS = 0.0
+_LAST_REVOKE_FLUSH_TS: dict[str, float] = {}
 
 
 class AuthVerifyRequest(BaseModel):
@@ -394,8 +411,8 @@ async def auth_revoke(
     payload: AuthRevokeRequest,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    """Revoke every api_key row for a tenant AND clear THIS process's token
-    cache. System-bearer gated.
+    """Revoke every api_key row for a tenant AND (subject to a per-tenant
+    throttle) clear THIS process's token cache. System-bearer gated.
 
     BLOCK-2 fix (sos-205-b5307dd7 re-gate): ``sos.services.squad.auth``'s CLI
     ``revoke`` subcommand runs in a separate OS process from the uvicorn
@@ -406,16 +423,43 @@ async def auth_revoke(
     it is the only path that can make revocation actually immediate. The CLI
     now calls this route first and only falls back to a local-only DB delete
     (with an honest, non-``true`` receipt) when it can't reach it.
+
+    P2-G fix (sos-205-790a2a63 gate-4): the DB delete now ALWAYS runs first —
+    a revoked key must never stay valid because a cache flush got throttled.
+    Only the whole-process cache clear is rate-limited, per tenant (see the
+    constants' docstring above), and never returns a bare 429 for it: a
+    throttled flush is still a 200 with ``cache_flushed: false``, a
+    ``retry_after`` seconds, and an explicit TTL warning — an honest receipt,
+    not a silent skip.
     """
     _require_system_bearer(authorization)
-    global _LAST_REVOKE_FLUSH_TS
+    tenant_id = payload.tenant_id
+
+    # The delete must always happen, independent of the flush throttle below.
+    deleted = _revoke_api_key(tenant_id, SquadDB(), flush_cache=False)
+
     now = time.monotonic()
-    if now - _LAST_REVOKE_FLUSH_TS < _REVOKE_MIN_INTERVAL_S:
-        # P2-C rider — see the constants' docstring above.
-        raise HTTPException(status_code=429, detail="revoke_rate_limited")
-    _LAST_REVOKE_FLUSH_TS = now
-    deleted = _revoke_api_key(payload.tenant_id, SquadDB())
-    return {"tenant_id": payload.tenant_id, "revoked_rows": deleted, "cache_cleared": True}
+    last = _LAST_REVOKE_FLUSH_TS.get(tenant_id, 0.0)
+    elapsed = now - last
+    if elapsed < _REVOKE_MIN_INTERVAL_S:
+        retry_after = round(_REVOKE_MIN_INTERVAL_S - elapsed, 3)
+        return {
+            "tenant_id": tenant_id,
+            "revoked_rows": deleted,
+            "cache_flushed": False,
+            "retry_after": retry_after,
+            "warning": (
+                f"cache flush rate-limited ({_REVOKE_MIN_INTERVAL_S}s min "
+                f"interval per tenant); DB rows for this tenant are deleted, "
+                f"but entries already cached in THIS process may continue to "
+                f"authenticate for up to {_TOKEN_CACHE_POSITIVE_TTL_S}s (the "
+                f"positive-cache TTL). Retry after {retry_after}s to force a "
+                f"flush, or wait out the TTL."
+            ),
+        }
+    _LAST_REVOKE_FLUSH_TS[tenant_id] = now
+    _token_cache_clear()
+    return {"tenant_id": tenant_id, "revoked_rows": deleted, "cache_flushed": True}
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -2273,6 +2317,12 @@ async def assign_role(
     body: _AssignBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
+    # BLOCK-B fix (sos-205-790a2a63 gate-4): this was the 6th RBAC route on
+    # this surface — the P0-B fix (sos-205-47f5f8c2) scoped five siblings but
+    # missed this one, so any tenant's valid api key could plant a role
+    # assignment into ANOTHER tenant's role (and, because revoke_assignment
+    # IS scoped, could not even undo it). Bind `auth` and scope by
+    # `auth.tenant_scope`, same pattern as the five siblings.
     auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
@@ -2280,6 +2330,7 @@ async def assign_role(
     try:
         return _role_svc.assign_role(
             role_id, body.assignee_id,
+            tenant_id=auth.tenant_scope,
             assignee_type=body.assignee_type,
             assigned_by=body.assigned_by,
             caller_id=caller_id,

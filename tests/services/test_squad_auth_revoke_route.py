@@ -41,14 +41,16 @@ _DDL = """
 def _fresh_cache():
     auth._token_cache_clear()
     auth._TOKEN_CACHE_INFLIGHT.clear()
-    # P2-C rider: the revoke rate-limit guard is process-global state, same
-    # shape as the token cache — reset it around every test in this file so
-    # test order/timing can never leak a 429 into an unrelated test.
-    app_module._LAST_REVOKE_FLUSH_TS = 0.0
+    # P2-C/P2-G rider: the revoke rate-limit guard is process-global state,
+    # same shape as the token cache — reset it around every test in this
+    # file so test order/timing can never leak a throttle into an unrelated
+    # test. P2-G (sos-205-790a2a63 gate-4) made this a per-tenant dict
+    # instead of one global float.
+    app_module._LAST_REVOKE_FLUSH_TS = {}
     yield
     auth._token_cache_clear()
     auth._TOKEN_CACHE_INFLIGHT.clear()
-    app_module._LAST_REVOKE_FLUSH_TS = 0.0
+    app_module._LAST_REVOKE_FLUSH_TS = {}
 
 
 # ── POST /auth/revoke route ──────────────────────────────────────────────
@@ -100,7 +102,7 @@ def test_auth_revoke_route_deletes_rows_and_clears_service_process_cache(
     assert resp.json() == {
         "tenant_id": "fired-contractor",
         "revoked_rows": 1,
-        "cache_cleared": True,
+        "cache_flushed": True,
     }
 
     # This is the property the old CLI-only fix could never deliver: the
@@ -171,7 +173,8 @@ def test_cli_revoke_prints_honest_local_receipt_when_service_unreachable(
     assert "cache_cleared=LOCAL-PROCESS-ONLY" in out
 
 
-# ── P2-C: revoke rate limit (sos-205-47f5f8c2 gate-3) ────────────────────
+# ── P2-C/P2-G: revoke cache-flush throttle (sos-205-47f5f8c2 gate-3,
+# hardened sos-205-790a2a63 gate-4) ───────────────────────────────────────
 # revoke_api_key() clears the WHOLE in-process token cache (both pools, all
 # tenants) on every call. The gate-3 verdict measured a single ~6ms revoke
 # forcing ~7757x cost onto every other live client's next lookup, and
@@ -179,6 +182,13 @@ def test_cli_revoke_prints_honest_local_receipt_when_service_unreachable(
 # lose that race and degrade to its static fallback during the same window.
 # This is a blunt min-interval guard, not the durable fix (per-tenant cache
 # invalidation via an indexed fingerprint column — sos#206).
+#
+# gate-4 P2-G found the ORIGINAL throttle was a single global timestamp
+# checked BEFORE the DB delete: a 429 for tenant B's revoke — caused purely
+# by tenant A revoking 3s earlier — aborted the whole request and left
+# tenant B's key rows fully present. Fixed: the delete always runs; only the
+# cache flush is throttled, per tenant; a throttled flush is a 200 with
+# `cache_flushed: false`, never a bare 429.
 
 
 def _revoke_rate_limit_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, dict[str, str]]:
@@ -191,14 +201,85 @@ def _revoke_rate_limit_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     return TestClient(app_module.app), {"Authorization": "Bearer sys-tok-test"}
 
 
-def test_auth_revoke_route_second_rapid_call_is_rate_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_auth_revoke_route_second_rapid_call_flush_throttled_not_429(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     client, headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
 
     first = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
     assert first.status_code == 200
+    assert first.json()["cache_flushed"] is True
 
     second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
-    assert second.status_code == 429
+    assert second.status_code == 200  # P2-G: never a bare 429
+    body = second.json()
+    assert body["cache_flushed"] is False
+    assert body["retry_after"] > 0
+    assert "warning" in body
+    assert "TTL" in body["warning"]
+
+
+def test_auth_revoke_route_delete_always_runs_even_when_flush_throttled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The DB delete must happen on EVERY call, independent of the flush
+    throttle — a revoked tenant's key rows must never survive a throttled
+    call. Mint two keys for the same tenant so the second revoke call still
+    has a row to delete and its `revoked_rows` count proves the DELETE ran."""
+    db_path = tmp_path / "revoke_delete_always.db"
+    database = SquadDB(db_path=db_path)
+    with database.connect() as conn:
+        conn.execute(_DDL)
+    monkeypatch.setattr(app_module, "_SYSTEM_BEARERS", {"sys-tok-test"})
+    monkeypatch.setattr(app_module, "SquadDB", lambda: database)
+    client = TestClient(app_module.app)
+    headers = {"Authorization": "Bearer sys-tok-test"}
+
+    auth.create_api_key("acme", "agent", db=database)
+    first = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["revoked_rows"] == 1
+
+    auth.create_api_key("acme", "agent", db=database)  # a fresh row to prove the 2nd delete ran
+    second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["cache_flushed"] is False  # throttled...
+    assert second.json()["revoked_rows"] == 1  # ...but the delete still ran
+
+    with database.connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM api_keys WHERE tenant_id = ?", ("acme",)
+        ).fetchone()
+    assert remaining["n"] == 0
+
+
+def test_auth_revoke_route_throttle_is_per_tenant_not_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """gate-4 P2-G: a 429/throttle for tenant A's flush must never abort or
+    look like it aborted a DIFFERENT tenant's revoke."""
+    db_path = tmp_path / "revoke_per_tenant.db"
+    database = SquadDB(db_path=db_path)
+    with database.connect() as conn:
+        conn.execute(_DDL)
+    monkeypatch.setattr(app_module, "_SYSTEM_BEARERS", {"sys-tok-test"})
+    monkeypatch.setattr(app_module, "SquadDB", lambda: database)
+    client = TestClient(app_module.app)
+    headers = {"Authorization": "Bearer sys-tok-test"}
+
+    auth.create_api_key("tenant-a", "agent", db=database)
+    auth.create_api_key("tenant-b", "agent", db=database)
+
+    resp_a = client.post("/auth/revoke", json={"tenant_id": "tenant-a"}, headers=headers)
+    assert resp_a.status_code == 200
+    assert resp_a.json()["cache_flushed"] is True
+
+    # tenant-b revokes immediately after — its OWN flush clock has never
+    # fired, so it must not be throttled by tenant-a's recent flush.
+    resp_b = client.post("/auth/revoke", json={"tenant_id": "tenant-b"}, headers=headers)
+    assert resp_b.status_code == 200
+    assert resp_b.json()["cache_flushed"] is True
+    assert resp_b.json()["revoked_rows"] == 1
+
+    with database.connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM api_keys WHERE tenant_id = ?", ("tenant-b",)
+        ).fetchone()
+    assert remaining["n"] == 0
 
 
 def test_auth_revoke_route_allows_again_after_interval_elapses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -212,11 +293,12 @@ def test_auth_revoke_route_allows_again_after_interval_elapses(tmp_path: Path, m
 
     second = client.post("/auth/revoke", json={"tenant_id": "acme"}, headers=headers)
     assert second.status_code == 200
+    assert second.json()["cache_flushed"] is True
 
 
 def test_auth_revoke_route_rate_limit_does_not_bypass_bearer_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The rate-limit guard must not become a way to probe auth: an
-    unauthenticated/wrong-bearer call still gets 401/403, never 429 —
+    """The throttle guard must not become a way to probe auth: an
+    unauthenticated/wrong-bearer call still gets 401/403 —
     _require_system_bearer runs first."""
     client, _headers = _revoke_rate_limit_fixture(tmp_path, monkeypatch)
 

@@ -52,7 +52,7 @@ class RoleService:
                 if "UNIQUE" in str(exc):
                     raise RoleDuplicateError(f"Role '{name}' already exists in project '{project_id}'") from exc
                 raise
-        return self._get_role_row(role_id)
+        return self._get_role_row(role_id, tenant_id=tenant_id)
 
     def list_roles(self, project_id: str, *, tenant_id: str = "default") -> list[dict]:
         with self.db.connect() as conn:
@@ -62,10 +62,10 @@ class RoleService:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_role(self, role_id: str, *, tenant_id: str | None = None) -> dict:
+    def get_role(self, role_id: str, *, tenant_id: str | None) -> dict:
         return self._get_role_row(role_id, tenant_id=tenant_id)
 
-    def _get_role_row(self, role_id: str, *, tenant_id: str | None = None) -> dict:
+    def _get_role_row(self, role_id: str, *, tenant_id: str | None) -> dict:
         """Fetch a role row by id.
 
         P0-B fix (sos-205-47f5f8c2 gate-3): `tenant_id=None` means
@@ -77,6 +77,18 @@ class RoleService:
         the SAME RoleNotFoundError as a role that doesn't exist at all — the
         route must not let a caller distinguish "not found" from "not
         yours".
+
+        P2-F fix (sos-205-790a2a63 gate-4): `tenant_id` no longer defaults to
+        `None`. A `str | None = None` default made "I forgot to scope this
+        call" and "I deliberately want every tenant" the SAME call shape —
+        and two call sites (BLOCK-B's `assign_role`, P2-E's
+        `get_token_roles`) forgot it IN THE SAME COMMIT that added the
+        kwarg. `None` is still a legal value — it is the explicit,
+        documented system-tier spelling above — but every caller must now
+        STATE it. Omitting the keyword is a `TypeError` at call time (or an
+        import-time break for any caller that got missed), not a silent
+        cross-tenant read. Same change applied to every sibling method below
+        that takes `tenant_id`.
         """
         with self.db.connect() as conn:
             if tenant_id is None:
@@ -96,7 +108,7 @@ class RoleService:
     # Permissions
     # ------------------------------------------------------------------
 
-    def add_permission(self, role_id: str, permission: str, *, tenant_id: str | None = None) -> dict:
+    def add_permission(self, role_id: str, permission: str, *, tenant_id: str | None) -> dict:
         self._get_role_row(role_id, tenant_id=tenant_id)  # raises if missing or foreign-tenant
         with self.db.connect() as conn:
             conn.execute(
@@ -105,7 +117,7 @@ class RoleService:
             )
         return {"role_id": role_id, "permission": permission}
 
-    def remove_permission(self, role_id: str, permission: str, *, tenant_id: str | None = None) -> None:
+    def remove_permission(self, role_id: str, permission: str, *, tenant_id: str | None) -> None:
         self._get_role_row(role_id, tenant_id=tenant_id)  # raises if missing or foreign-tenant
         with self.db.connect() as conn:
             conn.execute(
@@ -139,7 +151,7 @@ class RoleService:
             ).fetchone()
         return row["max_rank"] if row and row["max_rank"] is not None else 0
 
-    def check_can_assign(self, caller_id: str, target_role_id: str) -> None:
+    def check_can_assign(self, caller_id: str, target_role_id: str, *, tenant_id: str | None) -> None:
         """Raise RolePrivilegeError if caller cannot assign target_role_id.
 
         Rule: caller's max rank must be >= target role's rank.
@@ -149,10 +161,17 @@ class RoleService:
         not a backdoor. Without it, seeding the first principal would require an
         existing principal to assign them (infinite regress). The system bearer is
         never issued to end-users; it is held only by the service runtime.
+
+        BLOCK-B fix (sos-205-790a2a63 gate-4): this used to call
+        `self._get_role_row(target_role_id)` with NO `tenant_id`, which
+        defaulted to the fail-open `None` = unrestricted lookup — the actual
+        cross-tenant hole (a foreign tenant could look up, and then assign,
+        another tenant's role_id). `tenant_id` is now required and forwarded
+        straight through, same scoping as every sibling lookup.
         """
         if caller_id.startswith("system:") or caller_id == "system":
             return
-        target_role = self._get_role_row(target_role_id)
+        target_role = self._get_role_row(target_role_id, tenant_id=tenant_id)
         target_rank: int = target_role.get("rank", 0)
         if target_rank == 0:
             return  # unranked role — no restriction
@@ -172,14 +191,27 @@ class RoleService:
         role_id: str,
         assignee_id: str,
         *,
+        tenant_id: str | None,
         assignee_type: str = "agent",
         assigned_by: str,
         caller_id: Optional[str] = None,
     ) -> dict:
-        """Assign role_id to assignee_id. If caller_id is provided, rank check is enforced."""
+        """Assign role_id to assignee_id. If caller_id is provided, rank check is enforced.
+
+        BLOCK-B fix (sos-205-790a2a63 gate-4): this was the 6th RBAC route on
+        this surface and the only one the P0-B fix (sos-205-47f5f8c2) missed
+        — it called `self._get_role_row(role_id)` with no `tenant_id`, which
+        defaulted to unrestricted, so ANY tenant's valid api key could plant
+        a role_assignment row into ANOTHER tenant's role (and the target
+        tenant's own `revoke_assignment`/`add_permission` calls ARE scoped,
+        so the planted row was also attacker-unremovable by anyone but the
+        victim tenant or system). `tenant_id` is now required and forwarded
+        to both the existence check below and `check_can_assign`'s internal
+        lookup, identical to the five siblings.
+        """
         if caller_id:
-            self.check_can_assign(caller_id, role_id)
-        self._get_role_row(role_id)
+            self.check_can_assign(caller_id, role_id, tenant_id=tenant_id)
+        self._get_role_row(role_id, tenant_id=tenant_id)  # raises if missing or foreign-tenant
         assigned_at = now_iso()
         with self.db.connect() as conn:
             conn.execute(
@@ -198,7 +230,7 @@ class RoleService:
             "assigned_by": assigned_by,
         }
 
-    def revoke_assignment(self, role_id: str, assignee_id: str, *, tenant_id: str | None = None) -> None:
+    def revoke_assignment(self, role_id: str, assignee_id: str, *, tenant_id: str | None) -> None:
         self._get_role_row(role_id, tenant_id=tenant_id)  # raises if missing or foreign-tenant
         with self.db.connect() as conn:
             conn.execute(
@@ -206,7 +238,7 @@ class RoleService:
                 (role_id, assignee_id),
             )
 
-    def list_assignments(self, role_id: str, *, tenant_id: str | None = None) -> list[dict]:
+    def list_assignments(self, role_id: str, *, tenant_id: str | None) -> list[dict]:
         self._get_role_row(role_id, tenant_id=tenant_id)  # raises if missing or foreign-tenant
         with self.db.connect() as conn:
             rows = conn.execute(
@@ -215,7 +247,7 @@ class RoleService:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_agent_roles(self, assignee_id: str, *, tenant_id: str | None = None) -> list[dict]:
+    def get_agent_roles(self, assignee_id: str, *, tenant_id: str | None) -> list[dict]:
         """All roles held by an agent across all projects.
 
         P0-B fix (sos-205-47f5f8c2 gate-3): `tenant_id=None` (system-tier
@@ -250,5 +282,12 @@ class RoleService:
         return [dict(r) for r in rows]
 
     def get_token_roles(self, tenant_id: str) -> list[dict]:
-        """All roles assigned to the identity matching tenant_id (for /me/roles)."""
-        return self.get_agent_roles(tenant_id)
+        """All roles assigned to the identity matching tenant_id (for /me/roles).
+
+        P2-E fix (sos-205-790a2a63 gate-4): this called `get_agent_roles`
+        (assignee_id) WITHOUT the new `tenant_id` kwarg, which fell through
+        to the fail-open `None` default and returned every tenant's matching
+        role rows — /me/roles for tenant B disclosed tenant A's role. Now
+        forwarded explicitly, scoping the lookup to the caller's own tenant.
+        """
+        return self.get_agent_roles(tenant_id, tenant_id=tenant_id)

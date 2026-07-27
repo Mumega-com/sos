@@ -85,7 +85,10 @@ def two_tenants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     role_svc = RoleService(db=database)
     role = role_svc.create_role("proj-a", "admins", tenant_id="tenant-a")
-    role_svc.assign_role(role["id"], "kasra-test", assignee_type="agent", assigned_by="test")
+    role_svc.assign_role(
+        role["id"], "kasra-test",
+        tenant_id="tenant-a", assignee_type="agent", assigned_by="test",
+    )
 
     yield {
         "client": TestClient(app_module.app),
@@ -249,6 +252,90 @@ def test_get_agent_roles_owner_sees_role(two_tenants):
     assert t["role_id"] in role_ids
 
 
+# ── assign_role — BLOCK-B (sos-205-790a2a63 gate-4) ───────────────────────
+# The 6th RBAC route on this surface. The P0-B fix (sos-205-47f5f8c2) scoped
+# the five siblings but missed this one: `assign_role` called
+# `self._get_role_row(role_id)` with no `tenant_id`, defaulting to the
+# fail-open unrestricted lookup, so ANY tenant's valid api key could plant a
+# role_assignment row into ANOTHER tenant's role — and, because
+# revoke_role_assignment IS scoped, the victim tenant (or system) was the
+# only one who could remove it.
+
+
+def test_assign_role_foreign_tenant_blocked(two_tenants):
+    t = two_tenants
+    resp = t["client"].post(
+        f"/roles/{t['role_id']}/assignments",
+        json={"assignee_id": "attacker-planted", "assigned_by": "tenant-b"},
+        headers=_bearer(t["token_b"]),
+    )
+    assert resp.status_code in (403, 404)
+    with t["database"].connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM role_assignments WHERE role_id = ? AND assignee_id = ?",
+            (t["role_id"], "attacker-planted"),
+        ).fetchone()
+    assert row is None  # NOT planted by the foreign caller
+
+
+def test_assign_role_owner_ok(two_tenants):
+    t = two_tenants
+    resp = t["client"].post(
+        f"/roles/{t['role_id']}/assignments",
+        json={"assignee_id": "new-teammate", "assigned_by": "tenant-a"},
+        headers=_bearer(t["token_a"]),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["assignee_id"] == "new-teammate"
+    with t["database"].connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM role_assignments WHERE role_id = ? AND assignee_id = ?",
+            (t["role_id"], "new-teammate"),
+        ).fetchone()
+    assert row is not None
+
+
+# ── /me/roles — P2-E (sos-205-790a2a63 gate-4) ────────────────────────────
+# `get_token_roles` called `get_agent_roles(tenant_id)` (positional —
+# `tenant_id` filled the `assignee_id` slot) with NO `tenant_id=` kwarg,
+# defaulting to unrestricted. A role_assignment row whose `assignee_id`
+# equals another tenant's identity — exactly what an attacker could plant
+# through the unfixed BLOCK-B hole — surfaced through that OTHER tenant's
+# own /me/roles. Simulated here by inserting the row directly, independent
+# of whether BLOCK-B itself is fixed, so this test locks P2-E on its own.
+
+
+def test_me_roles_does_not_disclose_cross_tenant_planted_assignment(two_tenants):
+    t = two_tenants
+    with t["database"].connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO role_assignments (role_id, assignee_id, assignee_type, assigned_at, assigned_by)
+            VALUES (?, ?, 'agent', '2026-01-01T00:00:00Z', 'attacker')
+            """,
+            (t["role_id"], "tenant-b"),
+        )
+    resp = t["client"].get("/me/roles", headers=_bearer(t["token_b"]))
+    assert resp.status_code == 200
+    assert resp.json()["roles"] == []  # tenant-a's role must not surface for tenant-b
+
+
+def test_me_roles_owner_sees_own_assignment(two_tenants):
+    t = two_tenants
+    with t["database"].connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO role_assignments (role_id, assignee_id, assignee_type, assigned_at, assigned_by)
+            VALUES (?, ?, 'agent', '2026-01-01T00:00:00Z', 'test')
+            """,
+            (t["role_id"], "tenant-a"),
+        )
+    resp = t["client"].get("/me/roles", headers=_bearer(t["token_a"]))
+    assert resp.status_code == 200
+    role_ids = [r["id"] for r in resp.json()["roles"]]
+    assert t["role_id"] in role_ids
+
+
 # ── system tier keeps cross-tenant access ─────────────────────────────────
 
 
@@ -270,3 +357,14 @@ def test_system_bearer_bypasses_tenant_scope(two_tenants, monkeypatch: pytest.Mo
     assert resp.status_code == 200
     role_ids = [r["id"] for r in resp.json()["roles"]]
     assert t["role_id"] in role_ids
+
+
+def test_system_bearer_can_assign_across_tenants(two_tenants, monkeypatch: pytest.MonkeyPatch):
+    t = two_tenants
+    monkeypatch.setattr(auth, "SYSTEM_TOKEN", "sys-tok-test")
+    resp = t["client"].post(
+        f"/roles/{t['role_id']}/assignments",
+        json={"assignee_id": "system-planted", "assigned_by": "system"},
+        headers=_bearer("sys-tok-test"),
+    )
+    assert resp.status_code == 200

@@ -176,7 +176,14 @@ def _check_env_tokens(raw_token: str) -> AuthContext | None:
     """Return an AuthContext if *raw_token* matches any configured env-var token."""
     for env_var, is_admin, scopes in _ENV_TOKENS:
         env_val = os.environ.get(env_var, "")
-        if env_val and hmac.compare_digest(env_val, raw_token):
+        # BLOCK-A fix (sos-205-790a2a63 gate-4): `hmac.compare_digest` raises
+        # `TypeError` on `str` arguments containing a non-ASCII codepoint;
+        # `raw_token` comes straight off the wire (a bearer header), so any
+        # non-ASCII byte in a presented token turned this into an
+        # unauthenticated 500 instead of a 401. Compare bytes — no ASCII
+        # restriction — same fix as sos/services/squad/auth.py:337 (see that
+        # comment for the full TestClient-blindspot rationale).
+        if env_val and hmac.compare_digest(env_val.encode("utf-8"), raw_token.encode("utf-8")):
             return AuthContext(
                 agent=None,
                 project=None,

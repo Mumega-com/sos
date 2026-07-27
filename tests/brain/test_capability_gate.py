@@ -373,6 +373,57 @@ def test_normalize_agent_subject_homoglyph_does_not_crash_and_does_not_match():
     assert brain._normalize_agent_subject("dıgıd") == "dıgıd"
 
 
+# ── WARN-I / LOW-J: symmetric roster normalization (sos-205-790a2a63 gate-4)
+# The lookup side (`_normalize_agent_subject`) normalized NFKC + zero-width +
+# casefold, but the roster SIDES did not: `_AGENT_HOME_CACHE` was built with
+# a bare `.strip().lower()`, and `_AGENT_SESSION` (the actual dispatch
+# whitelist `_agent_available` enforces) was compared against with plain `in`
+# on un-normalized literals. Normalizing only the lookup side is worse than
+# normalizing neither: it makes non-normal roster ENTRIES unreachable (LOW-J
+# — resolves to home=None, i.e. ungated) while ALSO silently widening the
+# exact-match whitelist to accept mutated spellings (WARN-I). Fix: run BOTH
+# sides through the SAME `_normalize_agent_subject` pipeline. The widening is
+# now deliberate and documented, not an accident.
+
+
+def test_agent_home_tenant_roster_key_reachable_when_registry_name_has_zero_width(monkeypatch):
+    # LOW-J: a roster row whose `name` is not already NFKC-normal (here, a
+    # zero-width space embedded in the registered name) used to build an
+    # UNREACHABLE map key — a lookup for the plain, canonical spelling
+    # resolved home=None (ungated colony agent), the wrong direction for a
+    # tenant-bound name.
+    roster = {"agents": [
+        {"name": "so​l", "project": "therealmofpatterns", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    _patch_roster(monkeypatch, payload=roster)
+    assert brain._agent_home_tenant("sol") == "therealmofpatterns"
+
+
+def test_agent_home_tenant_roster_key_fullwidth_reachable(monkeypatch):
+    roster = {"agents": [
+        {"name": "ｓｏｌ", "project": "therealmofpatterns", "role": "SPECIALIST", "type": "OPENCLAW"},
+    ]}
+    _patch_roster(monkeypatch, payload=roster)
+    assert brain._agent_home_tenant("sol") == "therealmofpatterns"
+
+
+def test_agent_available_accepts_case_and_zero_width_mutations_of_roster_entry():
+    # 'system' has an empty tmux-session requirement (session == ""), so
+    # this exercises the roster-membership check in isolation without a live
+    # tmux dependency. 'SYSTEM'/fullwidth/zero-width-padded spellings are now
+    # a DELIBERATE, documented accept (WARN-I) — the same identity as
+    # 'system', not a different one silently let through.
+    assert brain._agent_available("system") is True
+    assert brain._agent_available("SYSTEM") is True
+    assert brain._agent_available("system​") is True  # zero-width space
+    assert brain._agent_available("ｓｙｓｔｅｍ") is True  # fullwidth
+
+
+def test_agent_available_rejects_unknown_agent():
+    assert brain._agent_available("nobody") is False
+    assert brain._agent_available("") is False
+
+
 def test_motor_execute_rejects_non_str_agent_with_calm_skip(monkeypatch):
     # Unhashable values (list/dict) used to reach `agent not in
     # _AGENT_SESSION` (a dict membership test) and raise an uncaught

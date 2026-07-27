@@ -206,7 +206,12 @@ def _normalize_agent_subject(agent: object) -> str | None:
     normalized = unicodedata.normalize("NFKC", agent)
     for ch in _ZERO_WIDTH_CHARS:
         normalized = normalized.replace(ch, "")
-    normalized = normalized.strip().lower()
+    # WARN-I/LOW-J fix (sos-205-790a2a63 gate-4): casefold(), not lower() —
+    # this is the ONE normalization pipeline; see below for where it is now
+    # ALSO applied to the roster keys it gets compared against (both
+    # `_AGENT_HOME_CACHE` and `_AGENT_SESSION`), so no widening happens on
+    # only one side of a comparison.
+    normalized = normalized.strip().casefold()
     return normalized or None
 
 
@@ -230,11 +235,23 @@ def _agent_home_tenant(agent: str) -> str | None:
             r.raise_for_status()
             payload = r.json()
             rows = payload.get("agents", payload) if isinstance(payload, dict) else payload
-            mapping = {
-                str(row.get("name", "")).strip().lower(): str(row.get("project", "") or "").strip().lower()
-                for row in rows
-                if str(row.get("name", "")).strip()
-            }
+            # LOW-J fix (sos-205-790a2a63 gate-4): the roster KEY used to be
+            # built with a bare `.strip().lower()` while the LOOKUP side
+            # (`_normalize_agent_subject`, called just below) ran NFKC +
+            # zero-width-strip + casefold. Normalizing only one side of a
+            # comparison is worse than normalizing neither: a roster entry
+            # whose registered name is not already NFKC-normal (fullwidth,
+            # zero-width-padded, etc.) became UNREACHABLE in this map,
+            # resolved to `home=None`, and was treated as an ungated colony
+            # agent — the opposite of default-deny. Route the roster key
+            # through the SAME `_normalize_agent_subject` function used for
+            # the lookup key so both sides always agree.
+            mapping = {}
+            for row in rows:
+                name = _normalize_agent_subject(row.get("name", ""))
+                if not name:
+                    continue
+                mapping[name] = str(row.get("project", "") or "").strip().casefold()
             if mapping:
                 _AGENT_HOME_CACHE = mapping
                 _AGENT_HOME_CACHE_TS = now
@@ -613,18 +630,51 @@ _AGENT_SESSION: dict[str, str] = {
     "system": "",
 }
 
+# WARN-I fix (sos-205-790a2a63 gate-4): motor_execute normalizes `agent` via
+# `_normalize_agent_subject` (NFKC + zero-width-strip + casefold) BEFORE
+# `_agent_available` sees it, but `_AGENT_SESSION`'s keys above are plain
+# literals — an asymmetric comparison, same defect class as LOW-J. There are
+# two honest fixes for a one-sided comparison: normalize neither side, or
+# normalize both. We choose BOTH, deliberately, and document it here rather
+# than let it be an accident of whatever mutation the model's JSON happens
+# to contain: run the roster's own keys through the SAME
+# `_normalize_agent_subject` pipeline the presented subject already goes
+# through. Effect: 'KASRA', fullwidth 'ｋａｓｒａ', and a zero-width-padded
+# 'kasra​' all resolve to the same roster entry as 'kasra' — a
+# DELIBERATE widening, not a silent one. No privilege gain today
+# (_AGENT_SESSION only holds 'kasra'/'system', neither tenant-bound) — but
+# this is the correct posture for the day a tenant-bound agent joins this
+# roster, when the unknown-subject gate (P2-H, not yet closed — see
+# `_normalize_agent_subject`'s docstring) is the only thing standing between
+# a mutated spelling and dispatch.
+_AGENT_SESSION_NORMALIZED: dict[str, str] = {
+    key: value
+    for raw_key, value in _AGENT_SESSION.items()
+    for key in (_normalize_agent_subject(raw_key),)
+    if key is not None
+}
+
 
 def _agent_available(agent: str) -> bool:
     """Return True if the agent is on the active roster and reachable.
 
-    Default-deny: an agent not in _AGENT_SESSION is NOT dispatchable,
-    regardless of what the model proposes. A failed tmux probe also counts
-    as unavailable — assuming available on error re-opens the ghost loop.
+    Default-deny: an agent not in the normalized _AGENT_SESSION roster is
+    NOT dispatchable, regardless of what the model proposes. A failed tmux
+    probe also counts as unavailable — assuming available on error re-opens
+    the ghost loop.
+
+    WARN-I fix (sos-205-790a2a63 gate-4): checks `_AGENT_SESSION_NORMALIZED`
+    (roster keys run through `_normalize_agent_subject`) rather than raw
+    `_AGENT_SESSION`, and normalizes `agent` itself too — so this stays
+    correct even if a future caller invokes it directly with an unnormalized
+    subject, not only through motor_execute's existing normalize-then-check
+    call order.
     """
     import subprocess
-    if agent not in _AGENT_SESSION:
+    normalized_agent = _normalize_agent_subject(agent)
+    if normalized_agent is None or normalized_agent not in _AGENT_SESSION_NORMALIZED:
         return False
-    session = _AGENT_SESSION[agent]
+    session = _AGENT_SESSION_NORMALIZED[normalized_agent]
     if not session:
         return True  # system — no session requirement
     try:
@@ -732,7 +782,10 @@ def motor_execute(action: dict) -> dict:
 
     # Agent availability check — skip if the target agent has no running session
     if not _agent_available(agent):
-        if agent not in _AGENT_SESSION:
+        # WARN-I fix: check the same normalized roster _agent_available just
+        # checked, not the raw dict — `agent` here is already normalized
+        # (see above), so this stays consistent with the actual gate result.
+        if agent not in _AGENT_SESSION_NORMALIZED:
             logger.info(f"Agent '{agent}' not on active roster — skipping task: {action_title[:60]}")
             # Deliberate, not an error: paused agents are expected to be absent.
             # Phrasing avoids "error"/"no tmux session" so the next brain cycle
