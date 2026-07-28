@@ -534,3 +534,144 @@ def test_follower_timeout_evicts_and_raises(db: CountingSquadDB, monkeypatch: py
 
     release_leader.set()
     leader_thread.join(timeout=5)
+
+
+# ── F1: revoke must beat an in-flight scan ───────────────────────────────
+# sos-205-769a2651, Cursor Grok 4.5 diverse-correctness gate.
+#
+# Five prior adversarial gates chased "a revoked credential must stop
+# authenticating" through RECEIPTS — is the CLI honest, is the status code
+# right, does the DELETE always run. None examined the property under
+# CONCURRENCY. _token_cache_clear() emptied both pools but did not coordinate
+# with a scan that had already read its rows: the leader finished bcrypt and
+# republished a pre-revoke snapshot INTO the freshly-flushed cache. The flush
+# was honest and the property was still false.
+
+
+def test_revoke_during_inflight_scan_does_not_republish_stale_positive(
+    db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch
+):
+    """The gate's stated minimum bar: with a revoke landing between the scan's
+    row-read and its cache write, no positive entry may survive and
+    _lookup_token must return None while the DB is empty."""
+    _insert_key(db, "tok-victim", tenant_id="t1")
+
+    real_put = auth._token_cache_put
+    rows_read = threading.Event()
+    revoke_done = threading.Event()
+    leader_error: list[BaseException] = []
+
+    def _slow_put(key, snapshot, *args, **kwargs):
+        # The scan has finished reading + bcrypt-matching and is about to
+        # commit. In production this gap is the tail of a multi-second scan.
+        rows_read.set()
+        revoke_done.wait(timeout=10)
+        return real_put(key, snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(auth, "_token_cache_put", _slow_put)
+
+    def _leader() -> None:
+        try:
+            auth._lookup_token("tok-victim", db)
+        except BaseException as exc:  # noqa: BLE001 - surfaced as a failure below
+            leader_error.append(exc)
+
+    leader_thread = threading.Thread(target=_leader)
+    leader_thread.start()
+    assert rows_read.wait(timeout=10), "scan never reached its cache write"
+
+    # Operator revokes mid-scan.
+    deleted = auth.revoke_api_key("t1", db, flush_cache=True)
+    revoke_done.set()
+    leader_thread.join(timeout=15)
+
+    assert not leader_error, f"leader crashed, test proves nothing: {leader_error!r}"
+    assert deleted == 1
+
+    monkeypatch.setattr(auth, "_token_cache_put", real_put)
+    key = auth._token_cache_key("tok-victim", db)
+    assert key not in auth._TOKEN_CACHE_POSITIVE, (
+        "the in-flight scan republished a pre-revoke snapshot into the "
+        "just-flushed cache — the revoked token authenticates from cache"
+    )
+    with db.connect() as conn:
+        remaining = conn.execute("SELECT COUNT(*) AS n FROM api_keys").fetchone()
+    assert remaining["n"] == 0
+    assert auth._lookup_token("tok-victim", db) is None
+
+
+def test_token_cache_put_refuses_a_write_from_a_superseded_epoch(db: CountingSquadDB):
+    """Unit-level lock on the mechanism: a put carrying a stale generation is
+    dropped and reports False, so callers can tell they lost the race."""
+    key = auth._token_cache_key("tok-epoch", db)
+    epoch = auth._token_cache_epoch()
+
+    auth._token_cache_clear()  # someone revokes; generation moves on
+
+    stored = auth._token_cache_put(key, {"tenant_id": "t1", "identity_type": "agent"}, epoch=epoch)
+    assert stored is False
+    assert key not in auth._TOKEN_CACHE_POSITIVE
+
+    # A put carrying the CURRENT epoch still lands — the check is not a
+    # blanket refusal.
+    assert auth._token_cache_put(
+        key, {"tenant_id": "t1", "identity_type": "agent"}, epoch=auth._token_cache_epoch()
+    ) is True
+    assert key in auth._TOKEN_CACHE_POSITIVE
+
+
+def test_lookup_fails_closed_when_cache_cleared_mid_scan(
+    db: CountingSquadDB, monkeypatch: pytest.MonkeyPatch
+):
+    """The leader's own answer is stale too, not just the cache write — it must
+    not authenticate the caller off rows read before the revoke."""
+    _insert_key(db, "tok-closed", tenant_id="t1")
+
+    real_scan = auth._scan_and_cache
+
+    def _scan_then_revoke(token: str, database: SquadDB, cache_key: str):
+        snapshot, fresh = real_scan(token, database, cache_key)
+        return snapshot, fresh
+
+    # Clear the cache from inside the scan, after the rows are read.
+    real_put = auth._token_cache_put
+
+    def _clear_then_put(key, snapshot, *args, **kwargs):
+        auth._token_cache_clear()
+        return real_put(key, snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(auth, "_scan_and_cache", _scan_then_revoke)
+    monkeypatch.setattr(auth, "_token_cache_put", _clear_then_put)
+
+    assert auth._lookup_token("tok-closed", db) is None, (
+        "a scan whose rows predate a cache clear must fail closed, not hand "
+        "back an AuthContext built from the pre-revoke world"
+    )
+
+
+# ── F5: the leader must not evict its successor's Future ─────────────────
+
+
+def test_leader_finish_does_not_evict_a_successor_future(db: CountingSquadDB):
+    """After a follower times out and evicts a stalled leader, a NEW leader
+    registers under the same key. The original leader finishing must not pop
+    the successor's registration — that silently breaks single-flight exactly
+    under the stall conditions the timeout exists to handle."""
+    key = auth._token_cache_key("tok-successor", db)
+
+    stalled_leader_future: concurrent.futures.Future = concurrent.futures.Future()
+    successor_future: concurrent.futures.Future = concurrent.futures.Future()
+
+    # Successor is the registered in-flight scan for this key.
+    auth._TOKEN_CACHE_INFLIGHT[key] = successor_future
+
+    # The original (evicted) leader now finishes and releases.
+    auth._inflight_release(key, stalled_leader_future)
+
+    assert auth._TOKEN_CACHE_INFLIGHT.get(key) is successor_future, (
+        "the finishing leader popped its successor's Future"
+    )
+
+    # And the rightful owner can still deregister itself.
+    auth._inflight_release(key, successor_future)
+    assert key not in auth._TOKEN_CACHE_INFLIGHT

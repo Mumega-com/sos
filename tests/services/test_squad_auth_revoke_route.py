@@ -44,13 +44,15 @@ def _fresh_cache():
     # P2-C/P2-G rider: the revoke rate-limit guard is process-global state,
     # same shape as the token cache — reset it around every test in this
     # file so test order/timing can never leak a throttle into an unrelated
-    # test. P2-G (sos-205-790a2a63 gate-4) made this a per-tenant dict
-    # instead of one global float.
-    app_module._LAST_REVOKE_FLUSH_TS = {}
+    # test. P2-G (sos-205-790a2a63 gate-4) made this a per-tenant dict; F2
+    # (sos-205-769a2651 diverse-correctness gate) put it back to one float,
+    # because the resource being throttled — the whole-process cache flush —
+    # was never per-tenant, so a per-tenant key made the limit unbindable.
+    app_module._LAST_REVOKE_FLUSH_TS = 0.0
     yield
     auth._token_cache_clear()
     auth._TOKEN_CACHE_INFLIGHT.clear()
-    app_module._LAST_REVOKE_FLUSH_TS = {}
+    app_module._LAST_REVOKE_FLUSH_TS = 0.0
 
 
 # ── POST /auth/revoke route ──────────────────────────────────────────────
@@ -370,9 +372,24 @@ def test_auth_revoke_route_delete_always_runs_even_when_flush_throttled(tmp_path
     assert remaining["n"] == 0
 
 
-def test_auth_revoke_route_throttle_is_per_tenant_not_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """gate-4 P2-G: a 429/throttle for tenant A's flush must never abort or
-    look like it aborted a DIFFERENT tenant's revoke."""
+def test_auth_revoke_route_throttled_flush_never_aborts_another_tenants_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """gate-4 P2-G: a throttled flush for tenant A must never abort or look
+    like it aborted a DIFFERENT tenant's revoke.
+
+    This test previously asserted that tenant B's flush ran unthrottled right
+    after tenant A's — i.e. it pinned the PER-TENANT CLOCK rather than the
+    property the clock was chosen to deliver. F2 (sos-205-769a2651 diverse
+    correctness gate) showed that mechanism was itself the defect: the flush is
+    process-wide, so keying its limit by tenant meant varying `tenant_id` gave
+    unlimited whole-cache flushes (20/20 measured against a 5s interval).
+
+    The durable property is DELETE-ALWAYS, not clock granularity. Tenant B may
+    now legitimately see `cache_flushed: false` when A just consumed the global
+    slot — what must never happen is B's rows surviving, or B getting an abort
+    it could mistake for "nothing happened."
+    """
     db_path = tmp_path / "revoke_per_tenant.db"
     database = SquadDB(db_path=db_path)
     with database.connect() as conn:
@@ -389,12 +406,21 @@ def test_auth_revoke_route_throttle_is_per_tenant_not_global(tmp_path: Path, mon
     assert resp_a.status_code == 200
     assert resp_a.json()["cache_flushed"] is True
 
-    # tenant-b revokes immediately after — its OWN flush clock has never
-    # fired, so it must not be throttled by tenant-a's recent flush.
+    # tenant-b revokes immediately after. Its flush is expected to be
+    # throttled now (one global slot, just consumed by tenant-a) — that is
+    # correct behaviour, not a regression. What matters is that the throttle
+    # touches ONLY the flush.
     resp_b = client.post("/auth/revoke", json={"tenant_id": "tenant-b"}, headers=headers)
-    assert resp_b.status_code == 200
-    assert resp_b.json()["cache_flushed"] is True
-    assert resp_b.json()["revoked_rows"] == 1
+    assert resp_b.status_code == 200, "a throttled flush must never surface as an abort"
+    body_b = resp_b.json()
+    assert body_b["cache_flushed"] is False, (
+        "one global flush slot: tenant-a just consumed it, so tenant-b's flush "
+        "is throttled and must say so honestly"
+    )
+    assert body_b["retry_after"] > 0
+    assert "positive-cache TTL" in body_b["warning"]
+    # The delete is NOT throttled — this is the P2-G property that must hold.
+    assert body_b["revoked_rows"] == 1
 
     with database.connect() as conn:
         remaining = conn.execute(
@@ -430,3 +456,50 @@ def test_auth_revoke_route_rate_limit_does_not_bypass_bearer_check(tmp_path: Pat
         "/auth/revoke", json={"tenant_id": "acme"}, headers={"Authorization": "Bearer wrong"}
     )
     assert resp.status_code == 403
+
+
+def test_auth_revoke_flush_throttle_binds_across_varying_tenant_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """F2 (sos-205-769a2651, Cursor Grok 4.5 diverse-correctness gate).
+
+    The throttled resource — _token_cache_clear() — is process-wide. When the
+    clock was keyed by tenant_id, varying that field made every request a
+    "first" request: 20/20 whole-cache flushes landed in one instant against a
+    nominal 5s interval, and `payload.tenant_id` need not even name a real
+    tenant. That defeated the amplification argument the throttle was added to
+    answer.
+
+    Locks the invariant that the limit binds regardless of what tenant_id says.
+    """
+    db_path = tmp_path / "revoke_amplify.db"
+    database = SquadDB(db_path=db_path)
+    with database.connect() as conn:
+        conn.execute(_DDL)
+    monkeypatch.setattr(app_module, "_SYSTEM_BEARERS", {"sys-tok-test"})
+    monkeypatch.setattr(app_module, "SquadDB", lambda: database)
+    client = TestClient(app_module.app)
+    headers = {"Authorization": "Bearer sys-tok-test"}
+
+    flushes = 0
+    real_clear = auth._token_cache_clear
+
+    def _counting_clear() -> None:
+        nonlocal flushes
+        flushes += 1
+        real_clear()
+
+    monkeypatch.setattr(app_module, "_token_cache_clear", _counting_clear)
+
+    # 20 back-to-back revokes, every one naming a DIFFERENT (and nonexistent)
+    # tenant — the exact shape that bypassed the per-tenant clock.
+    for i in range(20):
+        resp = client.post(
+            "/auth/revoke", json={"tenant_id": f"ghost-tenant-{i}"}, headers=headers
+        )
+        assert resp.status_code == 200
+
+    assert flushes == 1, (
+        f"expected the global flush slot to admit exactly 1 flush in this "
+        f"window, got {flushes} — varying tenant_id still amplifies"
+    )

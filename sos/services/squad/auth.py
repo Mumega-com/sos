@@ -183,6 +183,21 @@ _TOKEN_CACHE_NEGATIVE_TTL_S = 60.0
 _TOKEN_CACHE_POSITIVE_MAX = 64
 _TOKEN_CACHE_NEGATIVE_MAX = 192
 
+# Cache generation, bumped on every whole-cache clear. Guarded by
+# _TOKEN_CACHE_LOCK like the pools themselves.
+#
+# F1 (sos-205-769a2651, Cursor Grok 4.5 diverse-correctness gate): clearing
+# the pools is not enough, because a scan that has ALREADY read its rows can
+# still be running. It finishes bcrypt, calls _token_cache_put, and republishes
+# a snapshot of the pre-revoke world into the just-emptied cache. Measured: DB
+# rows for the tenant = 0, flush reported success, and the revoked token still
+# authenticated. The flush was honest and the property was still false — the
+# window is the width of a full bcrypt table scan (seconds).
+#
+# The generation makes the staleness detectable: a scan snapshots the epoch
+# before touching the DB, and any write carrying a superseded epoch is refused.
+_TOKEN_CACHE_EPOCH = 0
+
 # Backward-compat alias for external/test code that still refers to the old
 # single-cap constant name; both pools are individually bounded above.
 _TOKEN_CACHE_MAX = _TOKEN_CACHE_POSITIVE_MAX + _TOKEN_CACHE_NEGATIVE_MAX
@@ -238,13 +253,39 @@ def _token_cache_get(key: str) -> tuple[bool, dict | None]:
         return False, None
 
 
-def _token_cache_put(key: str, snapshot: dict | None) -> None:
+def _token_cache_epoch() -> int:
+    """Current cache generation. Callers snapshot this BEFORE reading rows
+    from the DB and hand it back to _token_cache_put, which refuses to write
+    a result computed against a generation that has since been invalidated
+    (F1, sos-205-769a2651 diverse-correctness gate)."""
+    with _TOKEN_CACHE_LOCK:
+        return _TOKEN_CACHE_EPOCH
+
+
+def _token_cache_put(key: str, snapshot: dict | None, epoch: int | None = None) -> bool:
+    """Write a scan result into the cache. Returns True if it was stored,
+    False if it was DROPPED as stale.
+
+    ``epoch`` is the generation observed before the DB rows behind
+    ``snapshot`` were read. If the cache has been cleared since (a revoke or
+    rotation landed mid-scan), the snapshot describes a world that no longer
+    exists and must not be persisted — otherwise a revoked credential gets
+    re-published into a freshly-flushed cache and authenticates for the rest
+    of the positive TTL. Passing ``None`` skips the check (callers that hold
+    no meaningful generation).
+
+    The comparison happens INSIDE _TOKEN_CACHE_LOCK, together with the write.
+    Checking the epoch outside the lock would reintroduce the same race one
+    level up.
+    """
     is_positive = snapshot is not None
     ttl = _TOKEN_CACHE_POSITIVE_TTL_S if is_positive else _TOKEN_CACHE_NEGATIVE_TTL_S
     pool = _TOKEN_CACHE_POSITIVE if is_positive else _TOKEN_CACHE_NEGATIVE
     other_pool = _TOKEN_CACHE_NEGATIVE if is_positive else _TOKEN_CACHE_POSITIVE
     cap = _TOKEN_CACHE_POSITIVE_MAX if is_positive else _TOKEN_CACHE_NEGATIVE_MAX
     with _TOKEN_CACHE_LOCK:
+        if epoch is not None and epoch != _TOKEN_CACHE_EPOCH:
+            return False
         # A key can only ever be positive or negative at once — drop it from
         # the other pool first (e.g. a token that was negative-cached and has
         # just verified).
@@ -253,6 +294,7 @@ def _token_cache_put(key: str, snapshot: dict | None) -> None:
             oldest = min(pool, key=lambda k: pool[k][0])
             pool.pop(oldest, None)
         pool[key] = (time.monotonic() + ttl, snapshot)
+        return True
 
 
 def _token_cache_forget(key: str) -> None:
@@ -270,10 +312,17 @@ def _token_cache_clear() -> None:
     cache entry for a revoked token — a whole-cache clear is the only sound
     option at this scale (<=256 entries total, cheap to rebuild on the next
     lookup).
+
+    Also bumps _TOKEN_CACHE_EPOCH so that any scan currently in flight — one
+    that read its rows BEFORE this clear — cannot republish its now-stale
+    result after we return (F1). Emptying the pools alone left a window as wide
+    as a full bcrypt scan in which a revoked credential got re-cached.
     """
+    global _TOKEN_CACHE_EPOCH
     with _TOKEN_CACHE_LOCK:
         _TOKEN_CACHE_POSITIVE.clear()
         _TOKEN_CACHE_NEGATIVE.clear()
+        _TOKEN_CACHE_EPOCH += 1
 
 
 def _context_from_snapshot(token: str, snapshot: dict | None) -> AuthContext | None:
@@ -287,10 +336,42 @@ def _context_from_snapshot(token: str, snapshot: dict | None) -> AuthContext | N
     )
 
 
-def _scan_and_cache(token: str, db: SquadDB, cache_key: str) -> dict | None:
+def _inflight_release(
+    cache_key: str, future: "concurrent.futures.Future[dict | None]"
+) -> None:
+    """Deregister ``future`` as the in-flight scan for ``cache_key`` — but ONLY
+    if it is still the registered one.
+
+    F5 (sos-205-769a2651 diverse-correctness gate): the leader used to pop
+    unconditionally. After a follower timed out and evicted a stalled leader
+    (see LOW-1 handling below), a NEW leader registers its own Future under the
+    same key. When the original leader finally finished, its unconditional pop
+    removed the *successor's* registration, so every subsequent caller became a
+    fresh leader and BLOCK-1b's single-flight guarantee quietly stopped holding
+    — precisely under the stall conditions that motivated the timeout. Identity
+    check, same shape the follower timeout path already used.
+    """
+    with _TOKEN_CACHE_LOCK:
+        if _TOKEN_CACHE_INFLIGHT.get(cache_key) is future:
+            _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+
+
+def _scan_and_cache(
+    token: str, db: SquadDB, cache_key: str
+) -> tuple[dict | None, bool]:
     """The actual full-table bcrypt scan. Only ever called by the single-flight
     leader in _lookup_token — never call this directly from a second thread
-    for the same cache_key."""
+    for the same cache_key.
+
+    Returns ``(snapshot, fresh)``. ``fresh`` is False when the cache was
+    cleared while this scan was running: the rows behind ``snapshot`` were read
+    before a revoke/rotation landed, so the result is a description of a world
+    that no longer exists. It is neither cached nor trusted — see F1 in
+    _TOKEN_CACHE_EPOCH and the fail-closed handling in _lookup_token.
+    """
+    # Snapshot the generation BEFORE reading any rows. Everything after this
+    # point is computed against the state as of `epoch`.
+    epoch = _token_cache_epoch()
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT token_hash, tenant_id, identity_type, created_at FROM api_keys"
@@ -310,14 +391,14 @@ def _scan_and_cache(token: str, db: SquadDB, cache_key: str) -> dict | None:
                 (hash_token(token), legacy_hash),
             )
     if not matched:
-        _token_cache_put(cache_key, None)
-        return None
+        fresh = _token_cache_put(cache_key, None, epoch=epoch)
+        return None, fresh
     snapshot = {
         "tenant_id": matched["tenant_id"],
         "identity_type": matched["identity_type"],
     }
-    _token_cache_put(cache_key, snapshot)
-    return snapshot
+    fresh = _token_cache_put(cache_key, snapshot, epoch=epoch)
+    return snapshot, fresh
 
 
 def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
@@ -400,21 +481,30 @@ def _lookup_token(token: str, db: SquadDB) -> AuthContext | None:
             # `future` when/if it finishes, just to nobody waiting on it any
             # more. Re-raised, not swallowed: this fails closed (the caller
             # sees an error, never a synthesized auth result).
-            with _TOKEN_CACHE_LOCK:
-                if _TOKEN_CACHE_INFLIGHT.get(cache_key) is future:
-                    _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+            _inflight_release(cache_key, future)
             raise
         return _context_from_snapshot(token, snapshot)
 
     try:
-        snapshot = _scan_and_cache(token, db, cache_key)
+        snapshot, fresh = _scan_and_cache(token, db, cache_key)
     except BaseException as exc:
-        with _TOKEN_CACHE_LOCK:
-            _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+        _inflight_release(cache_key, future)
         future.set_exception(exc)
         raise
-    with _TOKEN_CACHE_LOCK:
-        _TOKEN_CACHE_INFLIGHT.pop(cache_key, None)
+    if not fresh:
+        # F1: the cache was cleared while this scan was running, so `snapshot`
+        # was computed from rows read BEFORE a revoke/rotation landed. It has
+        # already been refused entry to the cache; it must not be trusted for
+        # THIS request either, nor handed to the followers waiting on the
+        # Future — they would each get the same zombie result.
+        #
+        # Fail closed rather than re-scanning: the caller sees an auth miss and
+        # retries, and the retry runs a fresh scan against post-revoke rows. A
+        # live credential costs one spurious 401 inside the revoke window; a
+        # revoked one stops working immediately, which is the property the
+        # whole revoke path exists to provide.
+        snapshot = None
+    _inflight_release(cache_key, future)
     future.set_result(snapshot)
     return _context_from_snapshot(token, snapshot)
 

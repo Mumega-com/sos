@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import threading
 import time
 from dataclasses import asdict
 from typing import Any, Optional
@@ -370,8 +371,27 @@ def _require_system_bearer(authorization: Optional[str]) -> None:
 # flush is ever rate-limited, and a throttled flush returns an honest
 # `cache_flushed: false` + `retry_after` + TTL warning, never a bare 429
 # that could be mistaken for "nothing happened."
+#
+# F2 fix (sos-205-769a2651, Cursor Grok 4.5 diverse-correctness gate): change
+# (1) above was wrong in a way change (2) hid. Making the clock per-tenant
+# fixed the cross-tenant abort, but the THROTTLED RESOURCE is process-global —
+# `_token_cache_clear()` empties every tenant's entries no matter whose revoke
+# triggered it. Keying a global resource by tenant means the limit does not
+# bind: vary `tenant_id` (which need not even exist) and every request is a
+# first request. Measured 20/20 whole-cache flushes in one instant against a
+# nominal 5s interval, defeating the ~7757x amplification argument the throttle
+# was added to answer. The unbounded dict was the memory face of the same
+# key-does-not-match-resource mismatch (gate-5 LOW-N).
+#
+# So: back to ONE clock, because there is ONE thing being rate-limited — but
+# keeping change (2), which is what actually made the P2-G failure safe. The
+# delete still runs unconditionally per tenant and is never throttled; only the
+# shared flush is, and a throttled flush still reports itself honestly. Per
+# tenant invalidation (sos#206) would let both the resource and the key be
+# per-tenant, at which point this becomes a per-tenant clock again.
 _REVOKE_MIN_INTERVAL_S = 5.0
-_LAST_REVOKE_FLUSH_TS: dict[str, float] = {}
+_LAST_REVOKE_FLUSH_TS = 0.0
+_REVOKE_FLUSH_LOCK = threading.Lock()
 
 
 class AuthVerifyRequest(BaseModel):
@@ -438,10 +458,18 @@ async def auth_revoke(
     # The delete must always happen, independent of the flush throttle below.
     deleted = _revoke_api_key(tenant_id, SquadDB(), flush_cache=False)
 
-    now = time.monotonic()
-    last = _LAST_REVOKE_FLUSH_TS.get(tenant_id, 0.0)
-    elapsed = now - last
-    if elapsed < _REVOKE_MIN_INTERVAL_S:
+    # Claim the flush slot and stamp the clock in ONE critical section. Reading
+    # the timestamp, deciding, then writing it would let two concurrent revokes
+    # both observe the same stale `last` and both flush — the check would bound
+    # nothing under exactly the concurrent load it exists to bound.
+    global _LAST_REVOKE_FLUSH_TS
+    with _REVOKE_FLUSH_LOCK:
+        now = time.monotonic()
+        elapsed = now - _LAST_REVOKE_FLUSH_TS
+        may_flush = elapsed >= _REVOKE_MIN_INTERVAL_S
+        if may_flush:
+            _LAST_REVOKE_FLUSH_TS = now
+    if not may_flush:
         retry_after = round(_REVOKE_MIN_INTERVAL_S - elapsed, 3)
         return {
             "tenant_id": tenant_id,
@@ -450,14 +478,15 @@ async def auth_revoke(
             "retry_after": retry_after,
             "warning": (
                 f"cache flush rate-limited ({_REVOKE_MIN_INTERVAL_S}s min "
-                f"interval per tenant); DB rows for this tenant are deleted, "
-                f"but entries already cached in THIS process may continue to "
-                f"authenticate for up to {_TOKEN_CACHE_POSITIVE_TTL_S}s (the "
-                f"positive-cache TTL). Retry after {retry_after}s to force a "
-                f"flush, or wait out the TTL."
+                f"interval; the flush is process-wide, so the limit is too — "
+                f"another tenant's revoke may have consumed the slot). DB rows "
+                f"for this tenant are deleted, but entries already cached in "
+                f"THIS process may continue to authenticate for up to "
+                f"{_TOKEN_CACHE_POSITIVE_TTL_S}s (the positive-cache TTL). "
+                f"Retry after {retry_after}s to force a flush, or wait out the "
+                f"TTL."
             ),
         }
-    _LAST_REVOKE_FLUSH_TS[tenant_id] = now
     _token_cache_clear()
     return {"tenant_id": tenant_id, "revoked_rows": deleted, "cache_flushed": True}
 
