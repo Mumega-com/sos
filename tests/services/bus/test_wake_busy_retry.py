@@ -1,14 +1,13 @@
 """#594 — wake-daemon must actually defer when tmux is busy (Cursor mid-run).
 
-The log line said "queuing" but returned False with no Redis write and no retry.
-These tests lock the property: busy → deferred entry with a future score; due
-entries are re-attempted; aged-out / over-attempted entries are dropped.
+Also locks Kasra gate properties from sos#211 BLOCK: idle panes that already
+received a bus wake must classify idle; busy markers must not match
+WORKING DIR / idle token chrome; busy chrome is last-line only.
 """
 
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import pytest
@@ -19,12 +18,19 @@ from sos.services.bus import delivery
 class FakeRedis:
     def __init__(self) -> None:
         self.zset: dict[str, float] = {}
-        self.hashes: dict[str, dict[str, str]] = {}
 
     def zadd(self, key: str, mapping: dict[str, float]) -> int:
         assert key == delivery.DEFERRED_WAKE_ZSET
         self.zset.update(mapping)
         return len(mapping)
+
+    def zrange(self, key: str, start: int, end: int) -> list[str]:
+        assert key == delivery.DEFERRED_WAKE_ZSET
+        ordered = sorted(self.zset.items(), key=lambda item: item[1])
+        members = [member for member, _ in ordered]
+        if end == -1:
+            return members[start:]
+        return members[start : end + 1]
 
     def zrangebyscore(
         self, key: str, min_score: Any, max_score: Any, start: int = 0, num: int = 100
@@ -56,15 +62,71 @@ class FakeRedis:
         return self.zset.get(member)
 
 
-def test_cursor_busy_chrome_forces_busy_even_if_gt_in_scrollback() -> None:
-    pane = "some old > line\n Running… 12.3k tokens · ctrl+c to stop"
-    assert delivery.pane_looks_busy(pane) is True
-    assert delivery.pane_at_prompt(pane) is False
+# --- Kasra live / synthetic fixtures (sos#211 BLOCK comment) ---
+
+FIXTURE_IDLE_AFTER_BUS_WAKE = """\
+some prior agent output
+> WORKING DIR: /home/mumega
+> GIT BRANCH: master
+> 
+"""
+
+FIXTURE_IDLE_CLAUDE_TOKEN_STATUS = """\
+previous turn done
+❯ 
+  12.3k tokens
+"""
+
+FIXTURE_GENUINELY_RUNNING = """\
+old prompt > still in scrollback
+WORKING DIR: /home/mumega
+ Running… 12.3k tokens · ctrl+c to stop
+"""
+
+FIXTURE_PLAIN_IDLE_PROMPT = """\
+previous output
+❯ 
+"""
+
+FIXTURE_IDLE_LOOM_WAKE_TEMPLATE = """\
+> WORKING DIR: /home/mumega
+> GIT BRANCH: master
+> 
+"""
 
 
-def test_claude_prompt_is_idle() -> None:
-    pane = "previous output\n❯ "
-    assert delivery.pane_looks_busy(pane) is False
+def test_idle_after_bus_wake_classifies_idle() -> None:
+    """Property: prior bus-wake chrome must not permanently poison idle panes."""
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_AFTER_BUS_WAKE) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_AFTER_BUS_WAKE) is False
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_LOOM_WAKE_TEMPLATE) is True
+
+
+def test_idle_claude_with_token_status_classifies_idle() -> None:
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_CLAUDE_TOKEN_STATUS) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_CLAUDE_TOKEN_STATUS) is False
+
+
+def test_genuinely_running_classifies_busy() -> None:
+    assert delivery.pane_looks_busy(FIXTURE_GENUINELY_RUNNING) is True
+    assert delivery.pane_at_prompt(FIXTURE_GENUINELY_RUNNING) is False
+    assert delivery.pane_has_cursor_busy_chrome(FIXTURE_GENUINELY_RUNNING) is True
+
+
+def test_plain_idle_prompt_classifies_idle() -> None:
+    assert delivery.pane_at_prompt(FIXTURE_PLAIN_IDLE_PROMPT) is True
+    assert delivery.pane_looks_busy(FIXTURE_PLAIN_IDLE_PROMPT) is False
+
+
+def test_working_dir_substring_is_not_busy_chrome() -> None:
+    assert delivery.pane_has_cursor_busy_chrome("> WORKING DIR: /home/mumega") is False
+    assert "working" not in delivery._CURSOR_BUSY_MARKERS
+    assert " tokens" not in delivery._CURSOR_BUSY_MARKERS
+
+
+def test_busy_chrome_ignores_historical_running_in_scrollback() -> None:
+    pane = "Running… ctrl+c to stop\n❯ "
+    assert delivery.pane_has_cursor_busy_chrome(pane) is False
     assert delivery.pane_at_prompt(pane) is True
 
 
@@ -86,6 +148,31 @@ def test_enqueue_schedules_future_score() -> None:
     assert payload["attempts"] == 0
 
 
+def test_enqueue_dedupes_same_agent_message() -> None:
+    r: Any = FakeRedis()
+    now = 1_700_000_000.0
+    delivery.enqueue_deferred_wake(
+        r,
+        agent="athena",
+        message="[agent:kasra] hello",
+        now=now,
+        attempts=0,
+        enqueued_at=now,
+    )
+    delivery.enqueue_deferred_wake(
+        r,
+        agent="athena",
+        message="[agent:kasra] hello",
+        now=now + 5,
+        attempts=0,
+        enqueued_at=now + 5,
+    )
+    assert len(r.zset) == 1
+    payload = json.loads(next(iter(r.zset)))
+    assert payload["enqueued_at"] == now
+    assert payload["attempts"] == 0
+
+
 def test_process_deferred_retries_due_and_requeues_on_busy() -> None:
     r: Any = FakeRedis()
     now = 1_700_000_000.0
@@ -97,7 +184,6 @@ def test_process_deferred_retries_due_and_requeues_on_busy() -> None:
         attempts=0,
         enqueued_at=now - 1,
     )
-    # Force score into the past so it is due.
     r.zset[member] = now - 1
 
     calls: list[tuple[str, str]] = []
@@ -109,13 +195,33 @@ def test_process_deferred_retries_due_and_requeues_on_busy() -> None:
     delivered = delivery.process_deferred_wakes(r, now=now, wake_fn=fake_wake)
     assert delivered == 0
     assert calls == [("athena", "[agent:kasra] hello")]
-    # Original member removed; new member with attempts=1 present.
     assert member not in r.zset
     assert len(r.zset) == 1
     remaining = next(iter(r.zset))
     payload = json.loads(remaining)
     assert payload["attempts"] == 1
     assert r.zset[remaining] == pytest.approx(now + delivery.busy_retry_delay_seconds(1))
+
+
+def test_process_deferred_requeues_blocked() -> None:
+    r: Any = FakeRedis()
+    now = 1_700_000_000.0
+    member = delivery.enqueue_deferred_wake(
+        r,
+        agent="athena",
+        message="[agent:kasra] hello",
+        now=now - 1,
+        attempts=1,
+        enqueued_at=now - 1,
+    )
+    r.zset[member] = now - 1
+    delivered = delivery.process_deferred_wakes(
+        r, now=now, wake_fn=lambda *a, **k: "blocked"
+    )
+    assert delivered == 0
+    assert len(r.zset) == 1
+    payload = json.loads(next(iter(r.zset)))
+    assert payload["attempts"] == 2
 
 
 def test_process_deferred_drops_after_max_attempts() -> None:

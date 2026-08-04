@@ -101,13 +101,13 @@ DEFERRED_WAKE_MAX_DELAY_SECONDS = 120.0
 DEFERRED_POLL_TIMEOUT_SECONDS = 1.0
 
 _PROMPT_MARKERS = ("> ", "❯", "›", "$ ", "waiting", "you:", "* ", "type your")
+# Busy markers must be safe as substrings of the *last non-empty line only*.
+# Never use "working" (matches wake template "WORKING DIR:") or " tokens"
+# (matches idle Claude Code status chrome) — Kasra gate BLOCK on sos#211.
 _CURSOR_BUSY_MARKERS = (
     "running…",
     "running...",
-    " tokens",
     "ctrl+c to stop",
-    "generating",
-    "working",
 )
 _APPROVAL_MODAL_MARKERS = (
     "would you like to run the following command?",
@@ -128,27 +128,51 @@ def busy_retry_delay_seconds(attempts: int) -> float:
     return min(delay, DEFERRED_WAKE_MAX_DELAY_SECONDS)
 
 
-def pane_has_cursor_busy_chrome(last_text: str) -> bool:
-    """True when Cursor/IDE chrome shows an in-flight run (not a safe wake target)."""
-    text = last_text.lower()
+def last_nonempty_line(pane_text: str) -> str:
+    """Status/prompt chrome lives on the latest line; scrollback is not a signal."""
+    for line in reversed(pane_text.splitlines()):
+        if line.strip():
+            return line
+    return ""
+
+
+def pane_has_cursor_busy_chrome(pane_text: str) -> bool:
+    """True when the latest line shows an in-flight run (not a safe wake target)."""
+    text = last_nonempty_line(pane_text).lower()
     return any(marker in text for marker in _CURSOR_BUSY_MARKERS)
 
 
-def pane_has_approval_modal(last_text: str) -> bool:
-    text = last_text.lower()
+def pane_has_approval_modal(pane_text: str) -> bool:
+    """Approval modals span multiple lines — scan a short trailing window."""
+    lines = pane_text.strip().splitlines()[-15:]
+    text = "\n".join(lines).lower()
     return any(marker in text for marker in _APPROVAL_MODAL_MARKERS)
 
 
-def pane_at_prompt(last_text: str) -> bool:
-    """Idle prompt ready for bus injection. Busy chrome wins over stray '>' in scrollback."""
-    if pane_has_cursor_busy_chrome(last_text):
+def pane_at_prompt(pane_text: str) -> bool:
+    """Idle prompt ready for bus injection.
+
+    Busy chrome is decided only on the last non-empty line (so scrollback cannot
+    permanently poison). Prompt markers scan a short trailing window because
+    Claude Code / Cursor often render the prompt above a status line.
+    """
+    if pane_has_cursor_busy_chrome(pane_text):
         return False
-    text = last_text.lower()
+    lines = [line for line in pane_text.splitlines() if line.strip()][-5:]
+    text = "\n".join(lines).lower()
     return any(marker in text for marker in _PROMPT_MARKERS)
 
 
-def pane_looks_busy(last_text: str) -> bool:
-    return not pane_at_prompt(last_text)
+def pane_looks_busy(pane_text: str) -> bool:
+    return not pane_at_prompt(pane_text)
+
+
+def _deferred_member_matches(member: str, agent: str, message: str) -> bool:
+    try:
+        payload = json.loads(member)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return payload.get("agent") == agent and payload.get("message") == message
 
 
 def enqueue_deferred_wake(
@@ -160,25 +184,37 @@ def enqueue_deferred_wake(
     attempts: int,
     enqueued_at: float | None,
 ) -> str:
-    """Schedule a wake retry in Redis. Returns the zset member JSON."""
-    if enqueued_at is None:
-        enqueued_at = now
+    """Schedule a wake retry in Redis. Dedupes same (agent, message). Returns member JSON."""
+    retained_enqueued_at = now if enqueued_at is None else enqueued_at
+    retained_attempts = attempts
+    for existing in r.zrange(DEFERRED_WAKE_ZSET, 0, -1):
+        if not _deferred_member_matches(existing, agent, message):
+            continue
+        try:
+            prior = json.loads(existing)
+            retained_enqueued_at = min(
+                retained_enqueued_at, float(prior.get("enqueued_at", retained_enqueued_at))
+            )
+            retained_attempts = max(retained_attempts, int(prior.get("attempts", 0)))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        r.zrem(DEFERRED_WAKE_ZSET, existing)
     member = json.dumps(
         {
             "agent": agent,
             "message": message,
-            "attempts": attempts,
-            "enqueued_at": enqueued_at,
+            "attempts": retained_attempts,
+            "enqueued_at": retained_enqueued_at,
         },
         sort_keys=True,
     )
-    score = now + busy_retry_delay_seconds(attempts)
+    score = now + busy_retry_delay_seconds(retained_attempts)
     r.zadd(DEFERRED_WAKE_ZSET, {member: score})
     logger.info(
         "Deferred wake for %s attempts=%s due_in=%.1fs",
         agent,
-        attempts,
-        busy_retry_delay_seconds(attempts),
+        retained_attempts,
+        busy_retry_delay_seconds(retained_attempts),
     )
     return member
 
@@ -225,7 +261,8 @@ def process_deferred_wakes(
         if result in (True, "sent"):
             delivered += 1
             continue
-        if result in (False, "busy"):
+        # busy + blocked are transient; requeue. missing/error are terminal for this entry.
+        if result in (False, "busy", "blocked"):
             enqueue_deferred_wake(
                 r,
                 agent=agent,
@@ -322,9 +359,9 @@ def _wake_tmux_sudo(
             ["sudo", "-u", linux_user, "tmux", "-S", sock_path, "capture-pane", "-t", session, "-p"],
             capture_output=True, text=True, timeout=5,
         )
-        last_text = " ".join(check.stdout.strip().split("\n")[-10:])
+        pane_text = check.stdout
 
-        if pane_has_approval_modal(last_text):
+        if pane_has_approval_modal(pane_text):
             logger.info(
                 "tmux:%s (sudo:%s) blocked by approval modal — leaving inbox for %s",
                 session,
@@ -333,7 +370,7 @@ def _wake_tmux_sudo(
             )
             return "blocked"
 
-        if pane_looks_busy(last_text):
+        if pane_looks_busy(pane_text):
             logger.info(
                 "tmux:%s (sudo:%s) busy — deferring wake for %s",
                 session,
@@ -394,15 +431,13 @@ def wake_tmux(
             ["tmux"] + sock_args + ["capture-pane", "-t", session, "-p"],
             capture_output=True, text=True, timeout=5,
         )
-        # Look at the last 10 lines — TUIs (Claude Code, Codex) render prompt
-        # above trailing status chrome (e.g. "bypass permissions", "1 MCP server
-        # needs auth"), so a 3-line window misses the ❯ prompt itself.
-        last_lines = check.stdout.strip().split("\n")[-10:]
-        last_text = " ".join(last_lines)
+        # Classify from raw pane text: busy/prompt use last non-empty line;
+        # approval modals scan a short trailing multi-line window.
+        pane_text = check.stdout
 
         # Codex approval modals are interactive, but they are not safe wake targets:
         # a bus-injected Enter would approve or cancel unrelated work.
-        if pane_has_approval_modal(last_text):
+        if pane_has_approval_modal(pane_text):
             logger.info(
                 "tmux:%s blocked by approval modal — leaving message in inbox for %s",
                 session,
@@ -410,7 +445,7 @@ def wake_tmux(
             )
             return "blocked"
 
-        if pane_looks_busy(last_text):
+        if pane_looks_busy(pane_text):
             logger.info(
                 "tmux:%s busy (not at prompt / mid-run chrome) — deferring wake for %s",
                 session,
@@ -575,7 +610,10 @@ def main():
     try:
         # get_message + timeout (not listen()) so deferred busy retries run while idle.
         while running:
-            process_deferred_wakes(r, now=time.time(), wake_fn=wake_tmux)
+            try:
+                process_deferred_wakes(r, now=time.time(), wake_fn=wake_tmux)
+            except redis.RedisError as exc:
+                logger.warning("Deferred wake poll failed (continuing): %s", exc)
             msg = pubsub.get_message(timeout=DEFERRED_POLL_TIMEOUT_SECONDS)
             if msg is None:
                 continue
