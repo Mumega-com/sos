@@ -105,6 +105,11 @@ DEFERRED_POLL_TIMEOUT_SECONDS = 1.0
 # commits', '❯ deploy the thing'). Do not include '*' — a lone asterisk is a
 # plausible bullet/diff marker in scrollback (Kasra HOLD on sos#211 / 076f853c).
 _PROMPT_GLYPHS = (">", "❯", "›", "$")
+# Wake-template echo lines we control. startswith would otherwise treat
+# '> WORKING DIR:' as at-prompt (expensive false positive). Exclude by known
+# string instead of narrowing the trailing window (Kasra: 3-line window broke
+# kasra pane — four chrome lines sit below the prompt).
+_WAKE_TEMPLATE_ECHO = ("working dir:", "git branch:", "bus message:")
 # Substring markers for phrases / Cursor idle chrome (scan trailing window).
 _PROMPT_SUBSTRING_MARKERS = (
     "waiting",
@@ -164,16 +169,19 @@ def pane_at_prompt(pane_text: str) -> bool:
     """Idle prompt ready for bus injection.
 
     Busy chrome is decided only on the last non-empty line (so scrollback cannot
-    permanently poison). Prompt glyphs use startswith on a short trailing
-    window (last 3 non-empty lines): a live prompt sits at or adjacent to the
-    bottom, and a wider window would treat wake-template '> WORKING DIR:' lines
-    as at-prompt false positives (the expensive wrong direction).
+    permanently poison). Prompt glyphs use startswith on the last 5 non-empty
+    lines (Claude Code can render four chrome lines below the prompt). Wake
+    template echoes are excluded by known string — we control those lines, so
+    they must not reach the glyph decision (false dilemma of wide-vs-narrow).
     """
     if pane_has_cursor_busy_chrome(pane_text):
         return False
-    lines = [line for line in pane_text.splitlines() if line.strip()][-3:]
+    lines = [line for line in pane_text.splitlines() if line.strip()][-5:]
     for line in lines:
         stripped = line.strip()
+        lowered = stripped.lower()
+        if any(echo in lowered for echo in _WAKE_TEMPLATE_ECHO):
+            continue
         if any(stripped.startswith(glyph) for glyph in _PROMPT_GLYPHS):
             return True
     text = "\n".join(lines).lower()

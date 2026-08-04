@@ -123,6 +123,24 @@ previous turn done
 ❯ deploy the thing
 """
 
+# Kasra 0085c827 re-block: wake chrome only — after echo exclude, no prompt left.
+# Pins the original self-poisoning direction (must stay busy, not at-prompt).
+FIXTURE_WAKE_CHROME_ONLY = """\
+> WORKING DIR: /home/mumega
+> GIT BRANCH: master
+> BUS MESSAGE: [agent:kasra] ping
+"""
+
+# Kasra 0085c827 re-block: prompt under four chrome lines (live kasra pane).
+# last-3 misses ❯; last-5 catches it. Would have caught the 3-line window miss.
+FIXTURE_PROMPT_UNDER_4_CHROME_LINES = """\
+previous turn done
+❯ 
+──────────────────────────
+  [CAVEMAN]
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+"""
+
 
 def test_idle_after_bus_wake_classifies_idle() -> None:
     """Property: prior bus-wake chrome must not permanently poison idle panes."""
@@ -168,8 +186,46 @@ def test_prompt_with_typed_text_classifies_idle() -> None:
     assert delivery.pane_looks_busy(FIXTURE_IDLE_TYPED_PROMPT) is False
 
 
+def test_wake_chrome_only_classifies_busy() -> None:
+    """Echo exclude must not invent an at-prompt from template lines alone."""
+    assert delivery.pane_at_prompt(FIXTURE_WAKE_CHROME_ONLY) is False
+    assert delivery.pane_looks_busy(FIXTURE_WAKE_CHROME_ONLY) is True
+
+
+def test_prompt_under_4_chrome_lines_classifies_idle() -> None:
+    """Kasra live shape: four chrome lines below ❯ — last-3 was too narrow."""
+    assert delivery.pane_at_prompt(FIXTURE_PROMPT_UNDER_4_CHROME_LINES) is True
+    assert delivery.pane_looks_busy(FIXTURE_PROMPT_UNDER_4_CHROME_LINES) is False
+
+
+def test_seven_directional_cases_pin_both_ways() -> None:
+    """Kasra-verified directional set (sos#211 / 0085c827 re-block)."""
+    at_prompt = (
+        FIXTURE_PROMPT_UNDER_4_CHROME_LINES,
+        FIXTURE_IDLE_CODEX_PROMPT_PLACEHOLDER,
+        FIXTURE_IDLE_TYPED_PROMPT,
+        FIXTURE_IDLE_AFTER_BUS_WAKE,
+        FIXTURE_IDLE_CLAUDE_TOKEN_STATUS,
+    )
+    busy = (
+        FIXTURE_WAKE_CHROME_ONLY,
+        FIXTURE_GENUINELY_RUNNING,
+    )
+    for pane in at_prompt:
+        assert delivery.pane_at_prompt(pane) is True, pane
+        assert delivery.pane_looks_busy(pane) is False, pane
+    for pane in busy:
+        assert delivery.pane_looks_busy(pane) is True, pane
+        assert delivery.pane_at_prompt(pane) is False, pane
+
+
 def test_prompt_glyph_set_excludes_asterisk() -> None:
     assert "*" not in delivery._PROMPT_GLYPHS
+    assert delivery._WAKE_TEMPLATE_ECHO == (
+        "working dir:",
+        "git branch:",
+        "bus message:",
+    )
 
 
 def test_working_dir_substring_is_not_busy_chrome() -> None:
