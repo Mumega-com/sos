@@ -111,6 +111,18 @@ FIXTURE_IDLE_CURSOR_ATHENA = """\
   /mnt/HC_Volume_104325311/mumega.com/agents/athena · fix/wire-docs-nav
 """
 
+# Kasra HOLD (076f853c regression): Codex prompt + placeholder on same line.
+FIXTURE_IDLE_CODEX_PROMPT_PLACEHOLDER = """\
+previous turn done
+› Summarize recent commits
+"""
+
+# Kasra HOLD: prompt glyph + typed text on same line.
+FIXTURE_IDLE_TYPED_PROMPT = """\
+previous turn done
+❯ deploy the thing
+"""
+
 
 def test_idle_after_bus_wake_classifies_idle() -> None:
     """Property: prior bus-wake chrome must not permanently poison idle panes."""
@@ -143,6 +155,21 @@ def test_genuinely_running_classifies_busy() -> None:
 def test_plain_idle_prompt_classifies_idle() -> None:
     assert delivery.pane_at_prompt(FIXTURE_PLAIN_IDLE_PROMPT) is True
     assert delivery.pane_looks_busy(FIXTURE_PLAIN_IDLE_PROMPT) is False
+
+
+def test_codex_prompt_with_placeholder_classifies_idle() -> None:
+    """076f853c equality match missed '› Summarize recent commits'."""
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_CODEX_PROMPT_PLACEHOLDER) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_CODEX_PROMPT_PLACEHOLDER) is False
+
+
+def test_prompt_with_typed_text_classifies_idle() -> None:
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_TYPED_PROMPT) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_TYPED_PROMPT) is False
+
+
+def test_prompt_glyph_set_excludes_asterisk() -> None:
+    assert "*" not in delivery._PROMPT_GLYPHS
 
 
 def test_working_dir_substring_is_not_busy_chrome() -> None:

@@ -100,9 +100,11 @@ DEFERRED_WAKE_BASE_DELAY_SECONDS = 15.0
 DEFERRED_WAKE_MAX_DELAY_SECONDS = 120.0
 DEFERRED_POLL_TIMEOUT_SECONDS = 1.0
 
-# Bare prompts: stripped whole-line match. Trailing-space markers like "> " miss
-# Claude Code empty prompts that render as bare '>' (Kasra live river capture).
-_BARE_PROMPT_LINES = (">", "❯", "›", "$", "*")
+# Prompt glyphs: stripped startswith match. Equality misses Codex/Claude prompts
+# that carry placeholder or typed text on the same line ('› Summarize recent
+# commits', '❯ deploy the thing'). Do not include '*' — a lone asterisk is a
+# plausible bullet/diff marker in scrollback (Kasra HOLD on sos#211 / 076f853c).
+_PROMPT_GLYPHS = (">", "❯", "›", "$")
 # Substring markers for phrases / Cursor idle chrome (scan trailing window).
 _PROMPT_SUBSTRING_MARKERS = (
     "waiting",
@@ -162,14 +164,17 @@ def pane_at_prompt(pane_text: str) -> bool:
     """Idle prompt ready for bus injection.
 
     Busy chrome is decided only on the last non-empty line (so scrollback cannot
-    permanently poison). Prompt markers scan a short trailing window because
-    Claude Code / Cursor often render the prompt above a status line.
+    permanently poison). Prompt glyphs use startswith on a short trailing
+    window (last 3 non-empty lines): a live prompt sits at or adjacent to the
+    bottom, and a wider window would treat wake-template '> WORKING DIR:' lines
+    as at-prompt false positives (the expensive wrong direction).
     """
     if pane_has_cursor_busy_chrome(pane_text):
         return False
-    lines = [line for line in pane_text.splitlines() if line.strip()][-5:]
+    lines = [line for line in pane_text.splitlines() if line.strip()][-3:]
     for line in lines:
-        if line.strip() in _BARE_PROMPT_LINES:
+        stripped = line.strip()
+        if any(stripped.startswith(glyph) for glyph in _PROMPT_GLYPHS):
             return True
     text = "\n".join(lines).lower()
     return any(marker in text for marker in _PROMPT_SUBSTRING_MARKERS)
