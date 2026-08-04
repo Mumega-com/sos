@@ -94,12 +94,39 @@ FIXTURE_IDLE_LOOM_WAKE_TEMPLATE = """\
 > 
 """
 
+# Kasra live river — bare '>' with no trailing space (BLOCK CLEARED follow-up).
+FIXTURE_IDLE_RIVER_BARE_GT = """\
+  Standing by. River holds coherence.
+──────────────────────────────────────────────────
+>
+──────────────────────────────────────────────────
+? for shortcuts
+"""
+
+# Kasra live athena — Cursor idle UI, no Claude prompt markers.
+FIXTURE_IDLE_CURSOR_ATHENA = """\
+  Holding here unless you want a next door.
+  → Add a follow-up
+  Cursor Grok 4.5 High Fast · 27.1% · 10 files edited            Run Everything
+  /mnt/HC_Volume_104325311/mumega.com/agents/athena · fix/wire-docs-nav
+"""
+
 
 def test_idle_after_bus_wake_classifies_idle() -> None:
     """Property: prior bus-wake chrome must not permanently poison idle panes."""
     assert delivery.pane_at_prompt(FIXTURE_IDLE_AFTER_BUS_WAKE) is True
     assert delivery.pane_looks_busy(FIXTURE_IDLE_AFTER_BUS_WAKE) is False
     assert delivery.pane_at_prompt(FIXTURE_IDLE_LOOM_WAKE_TEMPLATE) is True
+
+
+def test_idle_river_bare_gt_prompt_classifies_idle() -> None:
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_RIVER_BARE_GT) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_RIVER_BARE_GT) is False
+
+
+def test_idle_cursor_athena_classifies_idle() -> None:
+    assert delivery.pane_at_prompt(FIXTURE_IDLE_CURSOR_ATHENA) is True
+    assert delivery.pane_looks_busy(FIXTURE_IDLE_CURSOR_ATHENA) is False
 
 
 def test_idle_claude_with_token_status_classifies_idle() -> None:

@@ -100,7 +100,16 @@ DEFERRED_WAKE_BASE_DELAY_SECONDS = 15.0
 DEFERRED_WAKE_MAX_DELAY_SECONDS = 120.0
 DEFERRED_POLL_TIMEOUT_SECONDS = 1.0
 
-_PROMPT_MARKERS = ("> ", "❯", "›", "$ ", "waiting", "you:", "* ", "type your")
+# Bare prompts: stripped whole-line match. Trailing-space markers like "> " miss
+# Claude Code empty prompts that render as bare '>' (Kasra live river capture).
+_BARE_PROMPT_LINES = (">", "❯", "›", "$", "*")
+# Substring markers for phrases / Cursor idle chrome (scan trailing window).
+_PROMPT_SUBSTRING_MARKERS = (
+    "waiting",
+    "you:",
+    "type your",
+    "→ add a follow-up",  # Cursor idle input box (athena pane)
+)
 # Busy markers must be safe as substrings of the *last non-empty line only*.
 # Never use "working" (matches wake template "WORKING DIR:") or " tokens"
 # (matches idle Claude Code status chrome) — Kasra gate BLOCK on sos#211.
@@ -159,8 +168,11 @@ def pane_at_prompt(pane_text: str) -> bool:
     if pane_has_cursor_busy_chrome(pane_text):
         return False
     lines = [line for line in pane_text.splitlines() if line.strip()][-5:]
+    for line in lines:
+        if line.strip() in _BARE_PROMPT_LINES:
+            return True
     text = "\n".join(lines).lower()
-    return any(marker in text for marker in _PROMPT_MARKERS)
+    return any(marker in text for marker in _PROMPT_SUBSTRING_MARKERS)
 
 
 def pane_looks_busy(pane_text: str) -> bool:
