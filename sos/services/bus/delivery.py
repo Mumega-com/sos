@@ -20,6 +20,7 @@ import os
 import signal
 import subprocess
 import time
+from typing import Any, Callable
 
 import redis
 
@@ -90,8 +91,218 @@ CROSS_USER_AGENTS = {
 COOLDOWN_SECONDS = 5
 _last_wake = {}
 
+# #594 — real deferred retry when pane is busy (Cursor mid-run / not at prompt).
+# Prior code logged "queuing message" but only returned False — no Redis write, no retry.
+DEFERRED_WAKE_ZSET = "sos:wake:deferred"
+DEFERRED_WAKE_MAX_ATTEMPTS = 20
+DEFERRED_WAKE_MAX_AGE_SECONDS = 15 * 60
+DEFERRED_WAKE_BASE_DELAY_SECONDS = 15.0
+DEFERRED_WAKE_MAX_DELAY_SECONDS = 120.0
+DEFERRED_POLL_TIMEOUT_SECONDS = 1.0
+
+# Prompt glyphs: stripped startswith match. Equality misses Codex/Claude prompts
+# that carry placeholder or typed text on the same line ('› Summarize recent
+# commits', '❯ deploy the thing'). Do not include '*' — a lone asterisk is a
+# plausible bullet/diff marker in scrollback (Kasra HOLD on sos#211 / 076f853c).
+_PROMPT_GLYPHS = (">", "❯", "›", "$")
+# Wake-template echo lines we control. startswith would otherwise treat
+# '> WORKING DIR:' as at-prompt (expensive false positive). Exclude by known
+# string instead of narrowing the trailing window (Kasra: 3-line window broke
+# kasra pane — four chrome lines sit below the prompt).
+_WAKE_TEMPLATE_ECHO = ("working dir:", "git branch:", "bus message:")
+# Substring markers for phrases / Cursor idle chrome (scan trailing window).
+_PROMPT_SUBSTRING_MARKERS = (
+    "waiting",
+    "you:",
+    "type your",
+    "→ add a follow-up",  # Cursor idle input box (athena pane)
+)
+# Busy markers must be safe as substrings of the *last non-empty line only*.
+# Never use "working" (matches wake template "WORKING DIR:") or " tokens"
+# (matches idle Claude Code status chrome) — Kasra gate BLOCK on sos#211.
+_CURSOR_BUSY_MARKERS = (
+    "running…",
+    "running...",
+    "ctrl+c to stop",
+)
+_APPROVAL_MODAL_MARKERS = (
+    "would you like to run the following command?",
+    "press enter to confirm or esc to cancel",
+    "yes, proceed",
+    "don't ask again",
+)
+
 
 SHARED_TMUX_DIR = "/tmp/sos-tmux"
+
+
+def busy_retry_delay_seconds(attempts: int) -> float:
+    """Exponential backoff for busy panes, capped."""
+    if attempts < 0:
+        raise ValueError("attempts must be >= 0")
+    delay = DEFERRED_WAKE_BASE_DELAY_SECONDS * (2 ** attempts)
+    return min(delay, DEFERRED_WAKE_MAX_DELAY_SECONDS)
+
+
+def last_nonempty_line(pane_text: str) -> str:
+    """Status/prompt chrome lives on the latest line; scrollback is not a signal."""
+    for line in reversed(pane_text.splitlines()):
+        if line.strip():
+            return line
+    return ""
+
+
+def pane_has_cursor_busy_chrome(pane_text: str) -> bool:
+    """True when the latest line shows an in-flight run (not a safe wake target)."""
+    text = last_nonempty_line(pane_text).lower()
+    return any(marker in text for marker in _CURSOR_BUSY_MARKERS)
+
+
+def pane_has_approval_modal(pane_text: str) -> bool:
+    """Approval modals span multiple lines — scan a short trailing window."""
+    lines = pane_text.strip().splitlines()[-15:]
+    text = "\n".join(lines).lower()
+    return any(marker in text for marker in _APPROVAL_MODAL_MARKERS)
+
+
+def pane_at_prompt(pane_text: str) -> bool:
+    """Idle prompt ready for bus injection.
+
+    Busy chrome is decided only on the last non-empty line (so scrollback cannot
+    permanently poison). Prompt glyphs use startswith on the last 5 non-empty
+    lines (Claude Code can render four chrome lines below the prompt). Wake
+    template echoes are excluded by known string — we control those lines, so
+    they must not reach the glyph decision (false dilemma of wide-vs-narrow).
+    """
+    if pane_has_cursor_busy_chrome(pane_text):
+        return False
+    lines = [line for line in pane_text.splitlines() if line.strip()][-5:]
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if any(echo in lowered for echo in _WAKE_TEMPLATE_ECHO):
+            continue
+        if any(stripped.startswith(glyph) for glyph in _PROMPT_GLYPHS):
+            return True
+    text = "\n".join(lines).lower()
+    return any(marker in text for marker in _PROMPT_SUBSTRING_MARKERS)
+
+
+def pane_looks_busy(pane_text: str) -> bool:
+    return not pane_at_prompt(pane_text)
+
+
+def _deferred_member_matches(member: str, agent: str, message: str) -> bool:
+    try:
+        payload = json.loads(member)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return payload.get("agent") == agent and payload.get("message") == message
+
+
+def enqueue_deferred_wake(
+    r: redis.Redis,
+    *,
+    agent: str,
+    message: str,
+    now: float,
+    attempts: int,
+    enqueued_at: float | None,
+) -> str:
+    """Schedule a wake retry in Redis. Dedupes same (agent, message). Returns member JSON."""
+    retained_enqueued_at = now if enqueued_at is None else enqueued_at
+    retained_attempts = attempts
+    for existing in r.zrange(DEFERRED_WAKE_ZSET, 0, -1):
+        if not _deferred_member_matches(existing, agent, message):
+            continue
+        try:
+            prior = json.loads(existing)
+            retained_enqueued_at = min(
+                retained_enqueued_at, float(prior.get("enqueued_at", retained_enqueued_at))
+            )
+            retained_attempts = max(retained_attempts, int(prior.get("attempts", 0)))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        r.zrem(DEFERRED_WAKE_ZSET, existing)
+    member = json.dumps(
+        {
+            "agent": agent,
+            "message": message,
+            "attempts": retained_attempts,
+            "enqueued_at": retained_enqueued_at,
+        },
+        sort_keys=True,
+    )
+    score = now + busy_retry_delay_seconds(retained_attempts)
+    r.zadd(DEFERRED_WAKE_ZSET, {member: score})
+    logger.info(
+        "Deferred wake for %s attempts=%s due_in=%.1fs",
+        agent,
+        retained_attempts,
+        busy_retry_delay_seconds(retained_attempts),
+    )
+    return member
+
+
+def process_deferred_wakes(
+    r: redis.Redis,
+    *,
+    now: float,
+    wake_fn: Callable[..., Any],
+) -> int:
+    """Re-attempt due deferred wakes. Returns count successfully delivered."""
+    due = r.zrangebyscore(DEFERRED_WAKE_ZSET, "-inf", now, start=0, num=50)
+    delivered = 0
+    for member in due:
+        r.zrem(DEFERRED_WAKE_ZSET, member)
+        try:
+            payload = json.loads(member)
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning("Dropping malformed deferred wake member: %s", exc)
+            continue
+        agent = payload.get("agent")
+        message = payload.get("message")
+        attempts = int(payload.get("attempts", 0))
+        enqueued_at = float(payload.get("enqueued_at", now))
+        if not isinstance(agent, str) or not isinstance(message, str):
+            logger.warning("Dropping deferred wake with invalid agent/message")
+            continue
+        if now - enqueued_at > DEFERRED_WAKE_MAX_AGE_SECONDS:
+            logger.warning(
+                "Dropping deferred wake for %s — aged out after %.0fs",
+                agent,
+                now - enqueued_at,
+            )
+            continue
+        if attempts >= DEFERRED_WAKE_MAX_ATTEMPTS:
+            logger.warning(
+                "Dropping deferred wake for %s — max attempts (%s)",
+                agent,
+                DEFERRED_WAKE_MAX_ATTEMPTS,
+            )
+            continue
+        # Pass redis_client=None so a busy result does not double-enqueue inside wake_tmux.
+        result = wake_fn(agent, message, redis_client=None)
+        if result in (True, "sent"):
+            delivered += 1
+            continue
+        # busy + blocked are transient; requeue. missing/error are terminal for this entry.
+        if result in (False, "busy", "blocked"):
+            enqueue_deferred_wake(
+                r,
+                agent=agent,
+                message=message,
+                now=now,
+                attempts=attempts + 1,
+                enqueued_at=enqueued_at,
+            )
+            continue
+        logger.info(
+            "Deferred wake for %s ended with status=%s (not requeued)",
+            agent,
+            result,
+        )
+    return delivered
 
 
 def get_tmux_sessions():
@@ -131,12 +342,41 @@ def _get_tmux_socket(session: str) -> list[str]:
     return []
 
 
-def _wake_tmux_sudo(agent: str, session: str, message: str, linux_user: str) -> bool:
+def _defer_if_possible(
+    redis_client: redis.Redis | None,
+    agent: str,
+    message: str,
+) -> str:
+    """Enqueue a busy wake when Redis is available; otherwise report busy only."""
+    if redis_client is None:
+        logger.info(
+            "tmux busy for %s — no redis client on this call; caller must defer",
+            agent,
+        )
+        return "busy"
+    enqueue_deferred_wake(
+        redis_client,
+        agent=agent,
+        message=message,
+        now=time.time(),
+        attempts=0,
+        enqueued_at=None,
+    )
+    return "busy"
+
+
+def _wake_tmux_sudo(
+    agent: str,
+    session: str,
+    message: str,
+    linux_user: str,
+    redis_client: redis.Redis | None,
+) -> str:
     """Wake a tmux agent running as a different Linux user via sudo."""
     sock_path = os.path.join(SHARED_TMUX_DIR, session)
     if not os.path.exists(sock_path):
         logger.warning(f"tmux socket not found for {agent} at {sock_path}")
-        return False
+        return "missing"
 
     try:
         # Check if at prompt
@@ -144,12 +384,25 @@ def _wake_tmux_sudo(agent: str, session: str, message: str, linux_user: str) -> 
             ["sudo", "-u", linux_user, "tmux", "-S", sock_path, "capture-pane", "-t", session, "-p"],
             capture_output=True, text=True, timeout=5,
         )
-        last_text = " ".join(check.stdout.strip().split("\n")[-3:]).lower()
-        at_prompt = any(c in last_text for c in ["> ", "❯", "›", "$ ", "waiting", "you:"])
+        pane_text = check.stdout
 
-        if not at_prompt:
-            logger.info(f"tmux:{session} (sudo:{linux_user}) busy — queuing for {agent}")
-            return False
+        if pane_has_approval_modal(pane_text):
+            logger.info(
+                "tmux:%s (sudo:%s) blocked by approval modal — leaving inbox for %s",
+                session,
+                linux_user,
+                agent,
+            )
+            return "blocked"
+
+        if pane_looks_busy(pane_text):
+            logger.info(
+                "tmux:%s (sudo:%s) busy — deferring wake for %s",
+                session,
+                linux_user,
+                agent,
+            )
+            return _defer_if_possible(redis_client, agent, message)
 
         first_line = message.split(chr(10))[0].replace("'", "")
         short_msg = first_line[:200] + "... [check inbox for full msg]" if len(message) > 200 else first_line[:300]
@@ -159,38 +412,42 @@ def _wake_tmux_sudo(agent: str, session: str, message: str, linux_user: str) -> 
             ["sudo", "-u", linux_user, "tmux", "-S", sock_path, "send-keys", "-t", session, "-l", cmd],
             timeout=5,
         )
-        import time
         time.sleep(0.2)
         subprocess.run(
             ["sudo", "-u", linux_user, "tmux", "-S", sock_path, "send-keys", "-t", session, "Enter"],
             timeout=5,
         )
         logger.info(f"Woke tmux:{session} for {agent} via sudo -u {linux_user}")
-        return True
+        return "sent"
     except Exception as exc:
         logger.error(f"sudo tmux wake failed for {agent}: {exc}")
-        return False
+        return "error"
 
 
-def wake_tmux(agent: str, message: str) -> bool:
-    """Send keys to an agent's tmux session (supports shared sockets + cross-user sudo)."""
+def wake_tmux(
+    agent: str,
+    message: str,
+    redis_client: redis.Redis | None,
+) -> str:
+    """Send keys to an agent's tmux session (supports shared sockets + cross-user sudo).
+
+    Returns status: sent | busy | blocked | missing | error.
+    On busy with redis_client set, schedules a real Redis deferred retry (#594).
+    """
     session = TMUX_SESSION_MAP.get(agent, agent)
 
     # Cross-user agents need sudo
     linux_user = CROSS_USER_AGENTS.get(agent)
     if linux_user:
-        return _wake_tmux_sudo(agent, session, message, linux_user)
+        return _wake_tmux_sudo(agent, session, message, linux_user, redis_client)
 
     sessions = get_tmux_sessions()
     if session not in sessions:
         logger.warning(f"tmux session '{session}' not found for {agent}")
-        return False
+        return "missing"
 
     # Find socket (shared or default)
     sock_args = _get_tmux_socket(session)
-
-    # Truncate long messages for tmux display (full message stays in Redis inbox)
-    display = message[:500].replace("'", "'\\''").replace("\n", " ")
 
     try:
         # Check if Claude Code / Gemini CLI is waiting for input (not mid-response)
@@ -199,36 +456,27 @@ def wake_tmux(agent: str, message: str) -> bool:
             ["tmux"] + sock_args + ["capture-pane", "-t", session, "-p"],
             capture_output=True, text=True, timeout=5,
         )
-        # Look at the last 10 lines — TUIs (Claude Code, Codex) render prompt
-        # above trailing status chrome (e.g. "bypass permissions", "1 MCP server
-        # needs auth"), so a 3-line window misses the ❯ prompt itself.
-        last_lines = check.stdout.strip().split("\n")[-10:]
-        last_text = " ".join(last_lines).lower()
+        # Classify from raw pane text: busy/prompt use last non-empty line;
+        # approval modals scan a short trailing multi-line window.
+        pane_text = check.stdout
 
         # Codex approval modals are interactive, but they are not safe wake targets:
         # a bus-injected Enter would approve or cancel unrelated work.
-        blocked_modal = any(
-            marker in last_text
-            for marker in (
-                "would you like to run the following command?",
-                "press enter to confirm or esc to cancel",
-                "yes, proceed",
-                "don't ask again",
+        if pane_has_approval_modal(pane_text):
+            logger.info(
+                "tmux:%s blocked by approval modal — leaving message in inbox for %s",
+                session,
+                agent,
             )
-        )
+            return "blocked"
 
-        # Only send if agent appears to be at a prompt (waiting for input)
-        # Claude Code shows "> " or "❯", Gemini CLI shows "* " or "type your"
-        at_prompt = any(c in last_text for c in ["> ", "❯", "›", "$ ", "waiting", "you:", "* ", "type your"])
-
-        if blocked_modal:
-            logger.info(f"tmux:{session} blocked by approval modal — leaving message in inbox for {agent}")
-            return False
-
-        if not at_prompt:
-            logger.info(f"tmux:{session} busy (not at prompt) — queuing message for {agent}")
-            # Store in Redis for the agent to pick up when ready
-            return False
+        if pane_looks_busy(pane_text):
+            logger.info(
+                "tmux:%s busy (not at prompt / mid-run chrome) — deferring wake for %s",
+                session,
+                agent,
+            )
+            return _defer_if_possible(redis_client, agent, message)
 
         # Send message as input — tmux send-keys with literal flag
         # Use -l to send literal text (avoids key binding interpretation)
@@ -247,7 +495,6 @@ def wake_tmux(agent: str, message: str) -> bool:
         # Small delay then submit — ensures text is in the input buffer first
         # Gemini CLI TUI requires C-m (carriage return) not Enter (newline)
         # 0.5s gives Claude Code time to finish rendering before Enter fires
-        import time
         time.sleep(0.5)
         submit_key = "C-m" if agent in ("river", "gemini") else "Enter"
         subprocess.run(
@@ -255,10 +502,10 @@ def wake_tmux(agent: str, message: str) -> bool:
             timeout=5,
         )
         logger.info(f"Woke tmux:{session} for {agent} (sent to prompt)")
-        return True
+        return "sent"
     except Exception as e:
         logger.error(f"tmux wake failed for {agent}: {e}")
-        return False
+        return "error"
 
 
 def wake_openclaw(agent: str, message: str, r: redis.Redis) -> bool:
@@ -328,11 +575,11 @@ def handle_wake(agent: str, message: str, r: redis.Redis):
     routing = dynamic.get(agent, AGENT_ROUTING.get(agent, "tmux"))
 
     if routing == "tmux":
-        wake_tmux(agent, message)
+        wake_tmux(agent, message, redis_client=r)
     elif routing == "openclaw":
         wake_openclaw(agent, message, r)
     elif routing == "both":
-        wake_tmux(agent, message)
+        wake_tmux(agent, message, redis_client=r)
         wake_openclaw(agent, message, r)
     elif routing in ("none", "mcp", "daemon"):
         logger.debug("Routing '%s' for %s is inbox-only; wake skipped", routing, agent)
@@ -380,12 +627,21 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    logger.info("Listening for wake signals...")
+    logger.info(
+        "Listening for wake signals (deferred busy-retry poll every %.1fs)...",
+        DEFERRED_POLL_TIMEOUT_SECONDS,
+    )
 
     try:
-        for msg in pubsub.listen():
-            if not running:
-                break
+        # get_message + timeout (not listen()) so deferred busy retries run while idle.
+        while running:
+            try:
+                process_deferred_wakes(r, now=time.time(), wake_fn=wake_tmux)
+            except redis.RedisError as exc:
+                logger.warning("Deferred wake poll failed (continuing): %s", exc)
+            msg = pubsub.get_message(timeout=DEFERRED_POLL_TIMEOUT_SECONDS)
+            if msg is None:
+                continue
             if msg["type"] not in ("message", "pmessage"):
                 continue
 

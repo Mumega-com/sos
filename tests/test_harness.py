@@ -73,7 +73,7 @@ class TestAgentRegistry:
         from sos.kernel.agent_registry import get_wake_routing
         routing = get_wake_routing()
         assert routing["kasra"] == "tmux"
-        assert routing["athena"] == "openclaw"
+        assert routing["athena"] == "tmux"
         assert routing["worker"] == "openclaw"
 
     def test_skill_match(self):
