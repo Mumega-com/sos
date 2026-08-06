@@ -114,6 +114,25 @@ class ActionAgent:
         Creates task in Squad Service and sends DELEGATE via bus.
         The agent picks it up via task poller or bus wake.
         """
+        # A recycled seat must not become a silent task grave. Removing an agent
+        # from AGENT_ROUTING stops delivery; if something still ASSIGNS to it, the
+        # task is created, assigned, and never delivered — strictly worse than the
+        # noise the removal fixed, because at least the noise left a trace.
+        #
+        # Concrete: sol/mizan/gemma/dandan/worker were recycled 2026-08-06 while
+        # this file still dispatched blog + business work to sol and mizan. This
+        # guard is deliberately general rather than a per-callsite edit, so the
+        # NEXT recycle cannot strand work either.
+        from sos.services.bus.delivery import AGENT_ROUTING
+        if agent not in AGENT_ROUTING:
+            logger.error(
+                "analytics-act: refusing to dispatch %r to %r — that agent is not in "
+                "AGENT_ROUTING, so the task would be created and never delivered. "
+                "Either re-add the seat or point this dispatch at a live agent.",
+                title, agent,
+            )
+            raise ValueError(f"analytics-act: agent {agent!r} is not routable")
+
         from sos.kernel.coordination import Coordinator
         coord = Coordinator()
         task_id = coord.delegate(
