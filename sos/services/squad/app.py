@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import json
 import os
+import threading
 import time
 from dataclasses import asdict
 from typing import Any, Optional
@@ -36,8 +37,15 @@ from sos.contracts.squad import (
     TrustTier,
 )
 from fastapi import Header
-from sos.services.squad.auth import AuthContext, create_api_key as _create_api_key, require_capability
-from sos.services.squad.auth import _lookup_token as _squad_lookup_token
+from sos.services.squad.auth import (
+    AuthContext,
+    create_api_key as _create_api_key,
+    lookup_token,
+    require_capability,
+    revoke_api_key as _revoke_api_key,
+    _token_cache_clear,
+    _TOKEN_CACHE_POSITIVE_TTL_S,
+)
 from sos.services.squad.service import SquadDB, LeagueService
 from sos.services.squad import PipelineService, SquadService, SquadSkillService, SquadStateService, SquadTaskService
 from sos.services.squad.tasks import ClaimTokenMismatchError, InsufficientFundsError, NotAllDoneError
@@ -334,6 +342,58 @@ def _require_system_bearer(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="system_bearer_required")
 
 
+# P2-C rider (sos-205-47f5f8c2 gate-3): revoke_api_key() clears the ENTIRE
+# in-process token cache (both pools, every tenant) on every call — there is
+# no per-tenant invalidation because raw tokens are never stored (see
+# revoke_api_key's docstring in auth.py). Measured: a single ~6ms revoke call
+# forces every OTHER live client's next lookup back to a full bcrypt table
+# scan (~7757x cost amplification observed), and one observed side effect was
+# the brain's colony capability-gate roster fetch (5s hardcoded timeout)
+# racing that cold scan and losing, degrading to its static fallback list.
+# System-bearer gated already, so this is a privileged-caller DoS knob, not
+# an open one — but a min-interval guard costs nothing and bounds it. This is
+# a blunt, honest mitigation, NOT the durable fix: the durable fix is
+# per-tenant cache invalidation via an indexed token-fingerprint column
+# (tracked: Mumega-com/sos#206), which would let a revoke drop exactly the
+# revoked tenant's entries instead of the whole cache.
+#
+# P2-G fix (sos-205-790a2a63 gate-4): this guard used to be a single GLOBAL
+# timestamp checked BEFORE the DB delete — so a 429 for tenant B's revoke,
+# fired purely because tenant A revoked 3s earlier, aborted the ENTIRE
+# request and left tenant B's compromised key rows fully present in
+# `api_keys` (confirmed live: "'second-tenant' token STILL VALID after its
+# 429'd revoke: True"). A security control whose failure mode is "the revoke
+# silently did not happen" is worse than no rate limit at all. Two changes:
+# (1) the clock is now PER TENANT (a dict, not one float) so throttling one
+# tenant's cache flush can never look like it aborted a different tenant's
+# revoke; (2) the DB delete (see the route below) now runs UNCONDITIONALLY,
+# before the throttle decision — only the expensive whole-process cache
+# flush is ever rate-limited, and a throttled flush returns an honest
+# `cache_flushed: false` + `retry_after` + TTL warning, never a bare 429
+# that could be mistaken for "nothing happened."
+#
+# F2 fix (sos-205-769a2651, Cursor Grok 4.5 diverse-correctness gate): change
+# (1) above was wrong in a way change (2) hid. Making the clock per-tenant
+# fixed the cross-tenant abort, but the THROTTLED RESOURCE is process-global —
+# `_token_cache_clear()` empties every tenant's entries no matter whose revoke
+# triggered it. Keying a global resource by tenant means the limit does not
+# bind: vary `tenant_id` (which need not even exist) and every request is a
+# first request. Measured 20/20 whole-cache flushes in one instant against a
+# nominal 5s interval, defeating the ~7757x amplification argument the throttle
+# was added to answer. The unbounded dict was the memory face of the same
+# key-does-not-match-resource mismatch (gate-5 LOW-N).
+#
+# So: back to ONE clock, because there is ONE thing being rate-limited — but
+# keeping change (2), which is what actually made the P2-G failure safe. The
+# delete still runs unconditionally per tenant and is never throttled; only the
+# shared flush is, and a throttled flush still reports itself honestly. Per
+# tenant invalidation (sos#206) would let both the resource and the key be
+# per-tenant, at which point this becomes a per-tenant clock again.
+_REVOKE_MIN_INTERVAL_S = 5.0
+_LAST_REVOKE_FLUSH_TS = 0.0
+_REVOKE_FLUSH_LOCK = threading.Lock()
+
+
 class AuthVerifyRequest(BaseModel):
     token: str
 
@@ -350,7 +410,7 @@ async def auth_verify(
     shape is uniform for clients; SOSClientError is not raised for 401.
     """
     _require_system_bearer(authorization)
-    ctx = _squad_lookup_token(payload.token, SquadDB())
+    ctx = await lookup_token(payload.token, SquadDB())
     if ctx is None:
         return {"ok": False}
     return {
@@ -360,6 +420,75 @@ async def auth_verify(
         "identity_type": ctx.identity.metadata.get("identity_type"),
         "identity_id": ctx.identity.id,
     }
+
+
+class AuthRevokeRequest(BaseModel):
+    tenant_id: str
+
+
+@app.post("/auth/revoke")
+async def auth_revoke(
+    payload: AuthRevokeRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Revoke every api_key row for a tenant AND (subject to a per-tenant
+    throttle) clear THIS process's token cache. System-bearer gated.
+
+    BLOCK-2 fix (sos-205-b5307dd7 re-gate): ``sos.services.squad.auth``'s CLI
+    ``revoke`` subcommand runs in a separate OS process from the uvicorn
+    worker(s) actually serving requests, so it can delete the DB rows but has
+    no way to reach the serving process's in-memory token cache — a revoked
+    token kept authenticating here for up to the positive-cache TTL (30s).
+    This route runs the deletion + cache clear IN this serving process, so
+    it is the only path that can make revocation actually immediate. The CLI
+    now calls this route first and only falls back to a local-only DB delete
+    (with an honest, non-``true`` receipt) when it can't reach it.
+
+    P2-G fix (sos-205-790a2a63 gate-4): the DB delete now ALWAYS runs first —
+    a revoked key must never stay valid because a cache flush got throttled.
+    Only the whole-process cache clear is rate-limited, per tenant (see the
+    constants' docstring above), and never returns a bare 429 for it: a
+    throttled flush is still a 200 with ``cache_flushed: false``, a
+    ``retry_after`` seconds, and an explicit TTL warning — an honest receipt,
+    not a silent skip.
+    """
+    _require_system_bearer(authorization)
+    tenant_id = payload.tenant_id
+
+    # The delete must always happen, independent of the flush throttle below.
+    deleted = _revoke_api_key(tenant_id, SquadDB(), flush_cache=False)
+
+    # Claim the flush slot and stamp the clock in ONE critical section. Reading
+    # the timestamp, deciding, then writing it would let two concurrent revokes
+    # both observe the same stale `last` and both flush — the check would bound
+    # nothing under exactly the concurrent load it exists to bound.
+    global _LAST_REVOKE_FLUSH_TS
+    with _REVOKE_FLUSH_LOCK:
+        now = time.monotonic()
+        elapsed = now - _LAST_REVOKE_FLUSH_TS
+        may_flush = elapsed >= _REVOKE_MIN_INTERVAL_S
+        if may_flush:
+            _LAST_REVOKE_FLUSH_TS = now
+    if not may_flush:
+        retry_after = round(_REVOKE_MIN_INTERVAL_S - elapsed, 3)
+        return {
+            "tenant_id": tenant_id,
+            "revoked_rows": deleted,
+            "cache_flushed": False,
+            "retry_after": retry_after,
+            "warning": (
+                f"cache flush rate-limited ({_REVOKE_MIN_INTERVAL_S}s min "
+                f"interval; the flush is process-wide, so the limit is too — "
+                f"another tenant's revoke may have consumed the slot). DB rows "
+                f"for this tenant are deleted, but entries already cached in "
+                f"THIS process may continue to authenticate for up to "
+                f"{_TOKEN_CACHE_POSITIVE_TTL_S}s (the positive-cache TTL). "
+                f"Retry after {retry_after}s to force a flush, or wait out the "
+                f"TTL."
+            ),
+        }
+    _token_cache_clear()
+    return {"tenant_id": tenant_id, "revoked_rows": deleted, "cache_flushed": True}
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -1302,14 +1431,14 @@ async def _daily_kpi_snapshot() -> None:
 async def _kpi_cron_loop() -> None:
     """Background task: sleep until 00:05 UTC, run snapshot, repeat daily."""
     import math
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
         # Next 00:05 UTC
         target = now.replace(hour=0, minute=5, second=0, microsecond=0)
         if target <= now:
-            target = target.replace(day=target.day + 1)
+            target = target + timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         await _daily_kpi_snapshot()
@@ -1317,7 +1446,7 @@ async def _kpi_cron_loop() -> None:
 
 async def _league_weekly_snapshot_loop() -> None:
     """Background task: every Monday at 01:00 UTC, snapshot league scores."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
@@ -1325,10 +1454,10 @@ async def _league_weekly_snapshot_loop() -> None:
         days_until_monday = (7 - now.weekday()) % 7  # 0 if today is Monday
         target = now.replace(hour=1, minute=0, second=0, microsecond=0)
         if days_until_monday > 0:
-            target = target.replace(day=target.day + days_until_monday)
+            target = target + timedelta(days=days_until_monday)
         elif target <= now:
             # It's Monday but we've already passed 01:00 — skip to next Monday
-            target = target.replace(day=target.day + 7)
+            target = target + timedelta(days=7)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         try:
@@ -1341,14 +1470,14 @@ async def _league_weekly_snapshot_loop() -> None:
 
 async def _league_daily_season_loop() -> None:
     """Background task: every day at 00:01 UTC, ensure an active season exists."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     while True:
         now = datetime.now(timezone.utc)
         # Next 00:01 UTC
         target = now.replace(hour=0, minute=1, second=0, microsecond=0)
         if target <= now:
-            target = target.replace(day=target.day + 1)
+            target = target + timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
         try:
@@ -2145,7 +2274,7 @@ async def create_project_role(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Create a named role for a project. Owner-level auth."""
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     try:
@@ -2163,7 +2292,7 @@ async def list_project_roles(
     project_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     roles = _role_svc.list_roles(project_id, tenant_id=auth.tenant_scope or "default")
@@ -2176,9 +2305,20 @@ async def add_role_permission(
     body: _PermissionBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
+    # P0-B fix (sos-205-47f5f8c2 gate-3): this route used to discard the
+    # AuthContext entirely (`await lookup_token(...) or _raise_401()`) after
+    # proving the caller held SOME valid api key — any tenant's key could
+    # then mutate ANY other tenant's role permissions. Bind `auth` and scope
+    # by `auth.tenant_scope`, same pattern as the sibling create_project_role
+    # / list_project_roles routes above (None for system = cross-tenant by
+    # design; a tenant's own scope otherwise). A foreign-tenant role_id now
+    # 404s exactly like a nonexistent one — the route was never meant to
+    # disclose which is which to a caller who doesn't own it.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
     try:
-        return _role_svc.add_permission(role_id, body.permission)
+        return _role_svc.add_permission(role_id, body.permission, tenant_id=auth.tenant_scope)
     except RoleNotFoundError:
         raise HTTPException(status_code=404, detail="role_not_found")
 
@@ -2189,8 +2329,14 @@ async def remove_role_permission(
     permission: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    _role_svc.remove_permission(role_id, permission)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        _role_svc.remove_permission(role_id, permission, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"deleted": True}
 
 
@@ -2200,13 +2346,20 @@ async def assign_role(
     body: _AssignBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    # BLOCK-B fix (sos-205-790a2a63 gate-4): this was the 6th RBAC route on
+    # this surface — the P0-B fix (sos-205-47f5f8c2) scoped five siblings but
+    # missed this one, so any tenant's valid api key could plant a role
+    # assignment into ANOTHER tenant's role (and, because revoke_assignment
+    # IS scoped, could not even undo it). Bind `auth` and scope by
+    # `auth.tenant_scope`, same pattern as the five siblings.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     caller_id = auth.identity.id if auth.identity else "system"
     try:
         return _role_svc.assign_role(
             role_id, body.assignee_id,
+            tenant_id=auth.tenant_scope,
             assignee_type=body.assignee_type,
             assigned_by=body.assigned_by,
             caller_id=caller_id,
@@ -2223,8 +2376,14 @@ async def revoke_role_assignment(
     assignee_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    _role_svc.revoke_assignment(role_id, assignee_id)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        _role_svc.revoke_assignment(role_id, assignee_id, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"revoked": True}
 
 
@@ -2233,8 +2392,14 @@ async def list_role_assignments(
     role_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    assignments = _role_svc.list_assignments(role_id)
+    # P0-B fix — see add_role_permission above for the full rationale.
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    try:
+        assignments = _role_svc.list_assignments(role_id, tenant_id=auth.tenant_scope)
+    except RoleNotFoundError:
+        raise HTTPException(status_code=404, detail="role_not_found")
     return {"assignments": assignments}
 
 
@@ -2271,8 +2436,15 @@ async def get_agent_roles(
     agent_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    _squad_lookup_token(_parse_bearer(authorization), SquadDB()) or _raise_401()
-    roles = _role_svc.get_agent_roles(agent_id)
+    # P0-B fix — see add_role_permission above for the full rationale. This
+    # route enumerates ALL roles held by agent_id across every project; an
+    # unscoped call let any tenant's key discover which roles ANY agent
+    # holds in ANY tenant. Scoping filters the join to the caller's own
+    # tenant (system unrestricted, per auth.tenant_scope).
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
+    if not auth:
+        _raise_401()
+    roles = _role_svc.get_agent_roles(agent_id, tenant_id=auth.tenant_scope)
     return {"agent_id": agent_id, "roles": roles}
 
 
@@ -2280,7 +2452,7 @@ async def get_agent_roles(
 async def get_my_roles(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         raise HTTPException(status_code=401, detail="invalid_token")
     roles = _role_svc.get_token_roles(auth.tenant_id or "")
@@ -2365,7 +2537,7 @@ async def create_contact(
     body: _ContactCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2387,7 +2559,7 @@ async def list_contacts(
     tier: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contacts = _contacts_svc.list(
@@ -2402,7 +2574,7 @@ async def get_contact_by_email(
     email: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contact = _contacts_svc.get_by_email(_workspace(auth), email)
@@ -2416,7 +2588,7 @@ async def get_contact(
     contact_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2431,7 +2603,7 @@ async def update_contact(
     body: _ContactUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2449,7 +2621,7 @@ async def touch_contact(
     body: _TouchBody,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2463,7 +2635,7 @@ async def delete_contact(
     contact_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2509,7 +2681,7 @@ async def create_partner(
     body: _PartnerCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2529,7 +2701,7 @@ async def list_partners(
     status: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     partners = _partners_svc.list(_workspace(auth), type=type, active_only=active_only, status=status)
@@ -2541,7 +2713,7 @@ async def get_partner(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2556,7 +2728,7 @@ async def update_partner(
     body: _PartnerUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2573,7 +2745,7 @@ async def get_partner_contacts(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     contacts = _partners_svc.get_contacts(partner_id, _workspace(auth))
@@ -2585,7 +2757,7 @@ async def get_partner_opportunities(
     partner_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     opps = _partners_svc.get_opportunities(partner_id, _workspace(auth))
@@ -2631,7 +2803,7 @@ async def create_opportunity(
     body: _OppCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2652,7 +2824,7 @@ async def list_opportunities(
     archived: bool = False,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     opps = _opps_svc.list(
@@ -2666,7 +2838,7 @@ async def list_opportunities(
 async def pipeline_summary(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     return {"pipeline": _opps_svc.pipeline_summary(_workspace(auth))}
@@ -2677,7 +2849,7 @@ async def get_opportunity(
     opp_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2692,7 +2864,7 @@ async def transition_opportunity_stage(
     body: _StageTransition,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2707,7 +2879,7 @@ async def update_opportunity(
     body: _OppUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2746,7 +2918,7 @@ async def create_referral(
     body: _ReferralCreate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2769,7 +2941,7 @@ async def list_referrals(
     target_type: Optional[str] = None,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     refs = _refs_svc.list(
@@ -2785,7 +2957,7 @@ async def referral_network(
     hops: int = Query(default=2, ge=1, le=5),
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     return _refs_svc.network(entity_id, _workspace(auth), hops=hops)
@@ -2797,7 +2969,7 @@ async def update_referral(
     body: _ReferralUpdate,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     try:
@@ -2814,7 +2986,7 @@ async def delete_referral(
     ref_id: str,
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     _refs_svc.delete(ref_id, _workspace(auth), _actor(auth))
@@ -2830,7 +3002,7 @@ async def ghl_sync_contact(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Upsert contact from GHL lead payload. Keyed by email."""
-    auth = _squad_lookup_token(_parse_bearer(authorization), SquadDB())
+    auth = await lookup_token(_parse_bearer(authorization), SquadDB())
     if not auth:
         _raise_401()
     email = payload.get("email") or payload.get("contact", {}).get("email")

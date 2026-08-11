@@ -28,6 +28,7 @@ import sys
 import json
 import time
 import logging
+import unicodedata
 import requests
 from collections import deque
 from datetime import datetime, timezone
@@ -82,6 +83,7 @@ _STALE_TASK_MARKERS = (
 from kernel.config import (
     MIRROR_URL, MIRROR_TOKEN, SQUAD_URL, SOS_ENGINE_URL,
     BRAIN_TENANT_SCOPE, BRAIN_SCOPE_TYPE, BRAIN_TOKEN_BUDGET,
+    MUPOT_MCP_URL, MUPOT_BRAIN_TOKEN,
 )
 # ── MemoryPort — memory I/O routes through this adapter (#267 K1) ──────────
 # All four /store and /search call sites in this file are ported:
@@ -159,6 +161,59 @@ _AGENT_HOME_CACHE: dict[str, str] = {}
 _AGENT_HOME_CACHE_TS: float = 0.0
 _AGENT_HOME_TTL = 300.0  # seconds
 
+# Zero-width / invisible characters `.strip()` does not remove: zero-width
+# space, zero-width non-joiner, zero-width joiner, BOM/zero-width no-break
+# space. Part of the P2-D fix below.
+_ZERO_WIDTH_CHARS = ("​", "‌", "‍", "﻿")
+
+
+def _normalize_agent_subject(agent: object) -> str | None:
+    """Normalize an untrusted `agent` value into a roster lookup key, or
+    None if it isn't one.
+
+    P2-D fix (sos-205-47f5f8c2 gate-3): `agent` originates from the LLM
+    decision JSON (`action.get("agent", ...)`) and used to reach the
+    capability gate through a bare `str(agent).strip().lower()`. That
+    defended against nothing: a zero-width space, a Turkish dotless-i
+    homoglyph, a trailing dot/slash, an embedded space, or a non-str value
+    (None / 0 / a list / a dict) each turned a KNOWN tenant-bound agent name
+    into a roster MISS — and `_agent_home_tenant` treats a miss as "no home
+    tenant = ungated colony agent". Two non-str cases (list, dict) are worse
+    than a silent miss: `_agent_available`'s `agent not in _AGENT_SESSION`
+    check on an unhashable value (list/dict) raises TypeError uncaught,
+    crashing the whole brain cycle before this gate is even reached.
+
+    NFKC + stripped zero-width chars + case-fold closes the mutation class
+    for values that ARE meant to match a roster entry. It does NOT resolve
+    genuine Unicode confusables (e.g. dotless-i is a distinct codepoint, not
+    NFKC-equivalent to 'i') — those still normalize to a string that simply
+    doesn't match anything in the roster, which is the SAME safe outcome an
+    honestly-unknown agent name already gets today (unknown → colony/shared,
+    per `_agent_home_tenant`'s documented contract). This function only
+    upgrades "reachable but silently wrong" to "handled the same way as any
+    other unrecognized string" and rejects non-str/empty input outright
+    instead of coercing it with `str(...)`.
+
+    IMPORTANT: this normalization does NOT make the capability gate the
+    enforcing layer. `_agent_available` (`_AGENT_SESSION`, an exact-match
+    whitelist, default-deny) is what actually decides dispatchability — see
+    motor_execute, which checks it before any gate call. Treating a gate as
+    the enforcer instead of the roster was the exact vacuous-gate mistake
+    already made once on this code path (sos-205-a7c2fc44).
+    """
+    if not isinstance(agent, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", agent)
+    for ch in _ZERO_WIDTH_CHARS:
+        normalized = normalized.replace(ch, "")
+    # WARN-I/LOW-J fix (sos-205-790a2a63 gate-4): casefold(), not lower() —
+    # this is the ONE normalization pipeline; see below for where it is now
+    # ALSO applied to the roster keys it gets compared against (both
+    # `_AGENT_HOME_CACHE` and `_AGENT_SESSION`), so no widening happens on
+    # only one side of a comparison.
+    normalized = normalized.strip().casefold()
+    return normalized or None
+
 
 def _agent_home_tenant(agent: str) -> str | None:
     """Resolve an agent's home tenant (its AgentDef.project) via the squad
@@ -180,11 +235,23 @@ def _agent_home_tenant(agent: str) -> str | None:
             r.raise_for_status()
             payload = r.json()
             rows = payload.get("agents", payload) if isinstance(payload, dict) else payload
-            mapping = {
-                str(row.get("name", "")).strip().lower(): str(row.get("project", "") or "").strip().lower()
-                for row in rows
-                if str(row.get("name", "")).strip()
-            }
+            # LOW-J fix (sos-205-790a2a63 gate-4): the roster KEY used to be
+            # built with a bare `.strip().lower()` while the LOOKUP side
+            # (`_normalize_agent_subject`, called just below) ran NFKC +
+            # zero-width-strip + casefold. Normalizing only one side of a
+            # comparison is worse than normalizing neither: a roster entry
+            # whose registered name is not already NFKC-normal (fullwidth,
+            # zero-width-padded, etc.) became UNREACHABLE in this map,
+            # resolved to `home=None`, and was treated as an ungated colony
+            # agent — the opposite of default-deny. Route the roster key
+            # through the SAME `_normalize_agent_subject` function used for
+            # the lookup key so both sides always agree.
+            mapping = {}
+            for row in rows:
+                name = _normalize_agent_subject(row.get("name", ""))
+                if not name:
+                    continue
+                mapping[name] = str(row.get("project", "") or "").strip().casefold()
             if mapping:
                 _AGENT_HOME_CACHE = mapping
                 _AGENT_HOME_CACHE_TS = now
@@ -193,7 +260,12 @@ def _agent_home_tenant(agent: str) -> str | None:
                 logger.error(f"[capability-gate] agent resolver cold-start failed — failing safe to static tenant-bound set: {exc}")
             else:
                 logger.warning(f"[capability-gate] agent resolver refresh failed — using stale roster: {exc}")
-    key = str(agent).strip().lower()
+    # P2-D fix: normalize (see _normalize_agent_subject). A non-str/empty
+    # subject has no home tenant to report — the caller-side default-deny
+    # roster check is what actually gates dispatch of such a value; this
+    # function's contract is "resolve a home tenant or None", not "decide
+    # dispatchability".
+    key = _normalize_agent_subject(agent) or ""
     if _AGENT_HOME_CACHE:
         home = _AGENT_HOME_CACHE.get(key, "")
     else:
@@ -368,7 +440,7 @@ Respond with EXACTLY this JSON format:
 {{
   "action": "one-line description of what to do",
   "goal_id": "which goal this advances (or 'maintenance')",
-  "agent": "which agent should do it (kasra/athena/sol/dandan/system)",
+  "agent": "which agent should do it (kasra/system)",
   "method": "how to do it (create_task/post_content/send_outreach/fix_code/research)",
   "details": "specific instructions for the executing agent",
   "expected_progress": 0.1,
@@ -549,23 +621,62 @@ def _task_governor_allows() -> bool:
     return True
 
 
-# Agent name → tmux session name (empty string = system/no session needed)
+# Agent name → tmux session name (empty string = system/no session needed).
+# Active roster per Hadi directive 2026-07-27: kasra + system only. Paused
+# agents (athena/river/sol/dandan) are intentionally absent — dispatching to
+# them produced the "no tmux session" self-investigation loop.
 _AGENT_SESSION: dict[str, str] = {
     "kasra": "kasra",
-    "athena": "athena",
-    "river": "river",
-    "sol": "sol",
-    "dandan": "dandan",
     "system": "",
+}
+
+# WARN-I fix (sos-205-790a2a63 gate-4): motor_execute normalizes `agent` via
+# `_normalize_agent_subject` (NFKC + zero-width-strip + casefold) BEFORE
+# `_agent_available` sees it, but `_AGENT_SESSION`'s keys above are plain
+# literals — an asymmetric comparison, same defect class as LOW-J. There are
+# two honest fixes for a one-sided comparison: normalize neither side, or
+# normalize both. We choose BOTH, deliberately, and document it here rather
+# than let it be an accident of whatever mutation the model's JSON happens
+# to contain: run the roster's own keys through the SAME
+# `_normalize_agent_subject` pipeline the presented subject already goes
+# through. Effect: 'KASRA', fullwidth 'ｋａｓｒａ', and a zero-width-padded
+# 'kasra​' all resolve to the same roster entry as 'kasra' — a
+# DELIBERATE widening, not a silent one. No privilege gain today
+# (_AGENT_SESSION only holds 'kasra'/'system', neither tenant-bound) — but
+# this is the correct posture for the day a tenant-bound agent joins this
+# roster, when the unknown-subject gate (P2-H, not yet closed — see
+# `_normalize_agent_subject`'s docstring) is the only thing standing between
+# a mutated spelling and dispatch.
+_AGENT_SESSION_NORMALIZED: dict[str, str] = {
+    key: value
+    for raw_key, value in _AGENT_SESSION.items()
+    for key in (_normalize_agent_subject(raw_key),)
+    if key is not None
 }
 
 
 def _agent_available(agent: str) -> bool:
-    """Return True if the agent has a running tmux session (or needs none)."""
+    """Return True if the agent is on the active roster and reachable.
+
+    Default-deny: an agent not in the normalized _AGENT_SESSION roster is
+    NOT dispatchable, regardless of what the model proposes. A failed tmux
+    probe also counts as unavailable — assuming available on error re-opens
+    the ghost loop.
+
+    WARN-I fix (sos-205-790a2a63 gate-4): checks `_AGENT_SESSION_NORMALIZED`
+    (roster keys run through `_normalize_agent_subject`) rather than raw
+    `_AGENT_SESSION`, and normalizes `agent` itself too — so this stays
+    correct even if a future caller invokes it directly with an unnormalized
+    subject, not only through motor_execute's existing normalize-then-check
+    call order.
+    """
     import subprocess
-    session = _AGENT_SESSION.get(agent, "")
+    normalized_agent = _normalize_agent_subject(agent)
+    if normalized_agent is None or normalized_agent not in _AGENT_SESSION_NORMALIZED:
+        return False
+    session = _AGENT_SESSION_NORMALIZED[normalized_agent]
     if not session:
-        return True  # system / unknown agents — no session requirement
+        return True  # system — no session requirement
     try:
         result = subprocess.run(
             ["tmux", "has-session", "-t", session],
@@ -573,7 +684,57 @@ def _agent_available(agent: str) -> bool:
         )
         return result.returncode == 0
     except Exception:
-        return True  # assume available if we can't check
+        return False
+
+
+def _mupot_dispatch_task(squad_id: str, title: str, description: str, priority: str, labels: list) -> dict:
+    """
+    Create a task on mupot's REAL, live board (agent-bound token, the
+    'sovereign' identity minted 2026-07-22) instead of the legacy SQUAD_URL
+    board that mupot's own operator loop never reads. Deliberately supplies
+    NO assignee -- mupot's own routeUnassignedWork (src/tasks/effort-route.ts)
+    picks the builder from the live, current roster (kasra/cursor/codex/agy/
+    kayhermes), not brain's own free-text guess against a stale hardcoded
+    hint (the #490 root cause). Returns the same {"success","result","task_id"}
+    shape the legacy SQUAD_URL callers already expect, so callers don't change.
+    """
+    if not MUPOT_MCP_URL or not MUPOT_BRAIN_TOKEN:
+        logger.warning("mupot dispatch skipped: MUPOT_MCP_URL/MUPOT_BRAIN_TOKEN not configured")
+        return {"success": False, "result": "mupot not configured", "task_id": None}
+    done_when = f"Task '{title[:80]}' is completed, with a receipt reflecting success or failure."
+    try:
+        r = requests.post(
+            MUPOT_MCP_URL,
+            headers={"Authorization": f"Bearer {MUPOT_BRAIN_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "task_create",
+                    "arguments": {
+                        "squad_id": squad_id,
+                        "title": title,
+                        "body": f"{description}\n\n[brain-generated, priority={priority}, labels={','.join(labels)}]",
+                        "done_when": done_when,
+                    },
+                },
+            },
+            timeout=10,
+        )
+        data = r.json()
+        content = data.get("result", {}).get("content", [{}])
+        text = content[0].get("text", "{}") if content else "{}"
+        payload = json.loads(text)
+        if not payload.get("ok"):
+            logger.error(f"mupot task_create failed: {payload}")
+            return {"success": False, "result": f"mupot task_create failed: {payload}", "task_id": None}
+        task = payload.get("result", {}).get("task", {})
+        task_id = task.get("id", "?")
+        return {"success": True, "result": f"mupot task created: {task_id} (squad={squad_id})", "task_id": task_id}
+    except Exception as e:
+        logger.error(f"mupot dispatch exception: {e}")
+        return {"success": False, "result": f"mupot dispatch failed: {e}", "task_id": None}
 
 
 def motor_execute(action: dict) -> dict:
@@ -584,8 +745,29 @@ def motor_execute(action: dict) -> dict:
     """
     method = action.get("method", "")
     details = action.get("details", "")
-    agent = action.get("agent", "system")
     action_title = action.get("action", "")
+
+    # P2-D fix (sos-205-47f5f8c2 gate-3): `agent` is untrusted LLM-decision
+    # JSON and flows into every `_capability_block`/`_agent_home_tenant` call
+    # below, plus the `_agent_available` roster check. Normalize it HERE,
+    # once, before anything downstream sees it — see
+    # `_normalize_agent_subject` for the full mutation-class rationale. A
+    # non-str/empty subject (None, 0, a list, a dict — none of these are a
+    # legitimate "agent" field) is rejected outright rather than silently
+    # coerced via `str(agent)`: unhashable values (list/dict) used to reach
+    # `_agent_available`'s `agent not in _AGENT_SESSION` dict check and raise
+    # an uncaught TypeError there, crashing the whole cycle. Skipping here
+    # returns the same calm, non-error shape every other "nothing to do this
+    # cycle" branch in this function uses.
+    raw_agent = action.get("agent", "system")
+    agent = _normalize_agent_subject(raw_agent)
+    if agent is None:
+        logger.info(f"Brain proposed a non-string/empty agent subject ({raw_agent!r}) — skipping: {action_title[:60]}")
+        return {
+            "success": True,
+            "skipped": True,
+            "result": "Decision-layer proposed an invalid agent subject; task intentionally not dispatched. This is expected when the model's JSON is malformed — do not investigate.",
+        }
 
     blocked_reason = _blocked_stale_cleanup_reason(action)
     if blocked_reason is not None:
@@ -593,10 +775,22 @@ def motor_execute(action: dict) -> dict:
         return {"success": True, "result": f"Skipped stale brain directive: {blocked_reason}"}
 
     if method not in _SUPPORTED_BRAIN_METHODS:
-        return {"success": False, "result": f"Unsupported brain method: {method}"}
+        # skipped=True + non-error phrasing: a hallucinated method name is a
+        # decision-layer miss, not a system fault. Error-shaped text here fed
+        # "investigate unsupported method" proposals in following cycles.
+        return {"success": True, "skipped": True, "result": f"Method '{method}' is not in the supported set; action intentionally not executed. Pick only from the documented methods — do not investigate."}
 
     # Agent availability check — skip if the target agent has no running session
     if not _agent_available(agent):
+        # WARN-I fix: check the same normalized roster _agent_available just
+        # checked, not the raw dict — `agent` here is already normalized
+        # (see above), so this stays consistent with the actual gate result.
+        if agent not in _AGENT_SESSION_NORMALIZED:
+            logger.info(f"Agent '{agent}' not on active roster — skipping task: {action_title[:60]}")
+            # Deliberate, not an error: paused agents are expected to be absent.
+            # Phrasing avoids "error"/"no tmux session" so the next brain cycle
+            # does not propose investigating its own roster policy.
+            return {"success": True, "result": f"Agent '{agent}' is paused by roster policy; task intentionally not dispatched. This is expected — do not investigate."}
         logger.info(f"Agent '{agent}' has no active session — skipping task: {action_title[:60]}")
         return {"success": True, "result": f"Agent '{agent}' unavailable (no tmux session). Task skipped."}
 
@@ -671,6 +865,8 @@ def motor_execute(action: dict) -> dict:
                 return block
 
             if squad_id:
+                if normalize_project(project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, title, details, "high", labels)
                 # Route through Squad Service — project isolation
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
@@ -732,6 +928,8 @@ def motor_execute(action: dict) -> dict:
             if (block := _capability_block(outreach_assignee, outreach_project)) is not None:
                 return block
             if squad_id:
+                if normalize_project(outreach_project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, f"Outreach: {action.get('action', '')}", details, "medium", outreach_labels)
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
                 r = requests.post(f"{SQUAD_URL}/tasks", json={
@@ -764,6 +962,8 @@ def motor_execute(action: dict) -> dict:
             if (block := _capability_block(code_assignee, project)) is not None:
                 return block
             if squad_id:
+                if normalize_project(project) == "mumega":
+                    return _mupot_dispatch_task(squad_id, f"Fix: {action.get('action', '')}", details, "high", code_labels)
                 import uuid
                 task_id = f"brain-{uuid.uuid4().hex[:8]}"
                 r = requests.post(f"{SQUAD_URL}/tasks", json={
@@ -789,9 +989,38 @@ def motor_execute(action: dict) -> dict:
                 return {"success": True, "result": "Code task created for Kasra"}
 
         elif method == "research":
-            # Create research task for River (shared/colony agent — gate for uniformity)
-            if (block := _capability_block("river", project)) is not None:
+            # BLOCK-4 fix (sos-205-a7c2fc44 adversarial gate): the mumega
+            # early-return used to sit BEFORE this gate and return first, so
+            # for project=="mumega" the colony capability gate
+            # (_assert_agent_in_tenant) was skipped entirely — the only
+            # branch among create_task/send_outreach/fix_code/research that
+            # did. Gate first, unconditionally, before branching on the
+            # dispatch target, matching every other branch.
+            #
+            # Re-gate fix (sos-205-b5307dd7): the gate subject used to be the
+            # hardcoded literal "river". _agent_home_tenant('river') is
+            # always None (river is a shared/colony agent, not in the
+            # tenant-bound roster), so _capability_block("river", project)
+            # could NEVER return DENY at any position in this function — it
+            # was structurally in the right place but gating a subject that
+            # can't fail, i.e. decorative. Gate the real `agent` variable
+            # instead: the entity this dispatch believes is acting (already
+            # resolved through the PROJECT_LEADS reroute above, same as
+            # every other branch's assignee).
+            if (block := _capability_block(agent, project)) is not None:
                 return block
+            if normalize_project(project) == "mumega":
+                # Hardcoding a name as the DISPATCH target (not the gate
+                # subject, fixed above) was the exact #490 root-cause pattern
+                # (a stale roster assumption, not a live check) -- defer to
+                # mupot's own effort-router for WHO does the work. "squad-core"
+                # is research's fixed mumega squad target: LABEL_SQUAD_MAP has
+                # no "research" entry, so the generic `squad_id` resolved
+                # above is always None for this method and is deliberately
+                # not reused here.
+                research_squad_id = "squad-core"
+                return _mupot_dispatch_task(research_squad_id, f"Research: {action.get('action', '')}", details, "medium", ["research", "brain-generated"])
+            # Create research task for River (shared/colony agent — gate for uniformity)
             r = requests.post(f"{MIRROR_URL}/tasks", json={
                 "title": f"Research: {action.get('action', '')}",
                 "agent": "river",
@@ -1040,6 +1269,15 @@ def report_to_discord(action: dict, result: dict):
         f"Status: {status_word}"
         f"{reason_line}"
     )
+
+    # Escalation-only emission (Hadi directive 2026-07-27): kasra is the
+    # repair escalation path, not the brain's activity feed. Routine cycles
+    # (executed housekeeping, dedup/roster/mode-off skips) stay in the journal;
+    # only failures — the repairable class — page out. The kasra bus inbox is
+    # bridged to Hadi's Telegram, so every message here is a phone ping.
+    logger.info(f"brain-cycle {status_word}: {summary[:120]}")
+    if status_word != "failed":
+        return
 
     try:
         from kernel.bus import send as bus_send
