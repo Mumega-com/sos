@@ -110,7 +110,7 @@ AVAILABLE_TOOLS = {
     },
     "escalate_to_tmux": {
         "description": "Send a task to a Claude Code agent in tmux (for heavy work)",
-        "agents": ["kasra", "athena"],
+        "agents": ["kasra"],
     },
 }
 
@@ -646,10 +646,11 @@ def execute_task(task: dict) -> dict:
 
     # Explicit assignment always wins over keyword routing.
     # Known tmux agents get tmux send-keys, everything else gets bus/OpenClaw.
-    TMUX_AGENTS = {"kasra", "mumega", "codex", "spai"}
-    # OpenClaw removed 2026-04-28. Remote agents (worker, gemma, river) route via bus.
-    OPENCLAW_AGENTS = {"athena", "worker", "gemma", "river"}  # dandan, sol removed — no live bus listener, route to kasra via tmux
-    NO_LIVE_EXECUTOR = {"dandan", "sol"}  # bus registrations exist (peers list) but no live session — bus dispatch would stall silently
+    # Only kasra has a live tmux session (verified 2026-08-15: no mumega/codex/spai/athena sessions).
+    TMUX_AGENTS = {"kasra"}
+    # Dead/stale executors re-routed to kasra (the live executor) — same precedent as
+    # dandan/sol (#222): bus dispatch to a peer with no live session stalls silently.
+    NO_LIVE_EXECUTOR = {"dandan", "sol", "mumega", "codex", "spai"}
 
     if has_explicit_agent(task):
         if is_squad_task(task):
@@ -700,8 +701,9 @@ def execute_task(task: dict) -> dict:
         return escalate_to_tmux(task, "kasra")
 
     # === ARCHITECTURE / PLAN / DESIGN ===
+    # athena is daemon-only (no tmux session) — route to kasra as the build owner.
     if any(kw in combined for kw in ["architect", "plan", "design", "decompose", "strategy"]):
-        return escalate_to_tmux(task, "athena")
+        return escalate_to_tmux(task, "kasra")
 
     # === RESEARCH ===
     if any(kw in combined for kw in ["research", "investigate", "analyze", "find out", "search", "look up"]):
@@ -879,7 +881,7 @@ def escalate_to_hermes(task: dict) -> dict:
     task_id = task.get("id", "")
     query = desc or title
 
-    hermes_bin = Path(os.environ.get("HERMES_BIN", Path.home() / ".hermes" / "bin" / "hermes"))
+    hermes_bin = Path(os.environ.get("HERMES_BIN", Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes"))
 
     # ── Primary: Hermes ───────────────────────────────────────────────────────
     if hermes_bin.exists():
