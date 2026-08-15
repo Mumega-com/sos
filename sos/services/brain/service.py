@@ -89,7 +89,7 @@ _BRAIN_EMIT_STREAM = "sos:stream:global:squad:brain"
 _BRAIN_OUTCOME_STREAM = "sos:stream:global:brain:outcomes"
 
 # S062 Track A — human escalation stream when FSD cannot route a task.
-_HUMAN_ESCALATION_STREAM = "sos:stream:project:sos:agent:kasra"
+_HUMAN_ESCALATION_STREAM = "sos:stream:project:sos:agent:river"
 
 # XREADGROUP blocking timeout in milliseconds
 _BLOCK_MS = 1000
@@ -766,7 +766,7 @@ class BrainService:
     async def _escalate_to_human(
         self, task_id: str, project: str, agent_name: str, reason: str, retry_count: int
     ) -> None:
-        """FSD escalation: push a human-readable alert to the kasra bus stream."""
+        """FSD escalation: push a human-readable alert to the river bus stream (River owns the brain)."""
         text = (
             f"[BRAIN] Task `{task_id}` could not be routed after {retry_count} attempts. "
             f"Last agent: {agent_name or 'none'}. Reason: {reason}. "
@@ -779,7 +779,7 @@ class BrainService:
                 {
                     "type": "brain.escalation",
                     "source": "agent:brain",
-                    "target": "agent:kasra",
+                    "target": "agent:river",
                     "payload": json.dumps({"text": text}),
                     "task_id": task_id,
                     "project": project,
