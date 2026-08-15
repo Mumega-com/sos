@@ -1270,18 +1270,18 @@ def report_to_discord(action: dict, result: dict):
         f"{reason_line}"
     )
 
-    # Escalation-only emission (Hadi directive 2026-07-27): kasra is the
-    # repair escalation path, not the brain's activity feed. Routine cycles
-    # (executed housekeeping, dedup/roster/mode-off skips) stay in the journal;
-    # only failures — the repairable class — page out. The kasra bus inbox is
-    # bridged to Hadi's Telegram, so every message here is a phone ping.
+    # Escalation-only emission (Hadi directive 2026-07-27, updated 2026-08-15):
+    # river is now the repair escalation path (brain absorbed to prime), not the
+    # brain's activity feed. Routine cycles stay in the journal; only failures —
+    # the repairable class — page out. River triages before any human ping
+    # (kasra's Telegram bridge remains the Hadi path).
     logger.info(f"brain-cycle {status_word}: {summary[:120]}")
     if status_word != "failed":
         return
 
     try:
         from kernel.bus import send as bus_send
-        if not bus_send(to="kasra", text=msg):
+        if not bus_send(to="river", text=msg):
             # fallback: Discord
             import subprocess
             subprocess.run(
