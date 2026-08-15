@@ -647,8 +647,9 @@ def execute_task(task: dict) -> dict:
     # Explicit assignment always wins over keyword routing.
     # Known tmux agents get tmux send-keys, everything else gets bus/OpenClaw.
     TMUX_AGENTS = {"kasra", "mumega", "codex", "spai"}
-    # OpenClaw removed 2026-04-28. Remote agents (worker, sol, dandan) now route via bus.
-    OPENCLAW_AGENTS = {"athena", "worker", "sol", "gemma", "river"}  # dandan removed — routes to kasra via bus
+    # OpenClaw removed 2026-04-28. Remote agents (worker, gemma, river) route via bus.
+    OPENCLAW_AGENTS = {"athena", "worker", "gemma", "river"}  # dandan, sol removed — no live bus listener, route to kasra via tmux
+    NO_LIVE_EXECUTOR = {"dandan", "sol"}  # bus registrations exist (peers list) but no live session — bus dispatch would stall silently
 
     if has_explicit_agent(task):
         if is_squad_task(task):
@@ -656,8 +657,10 @@ def execute_task(task: dict) -> dict:
 
         if agent in TMUX_AGENTS:
             return escalate_to_tmux(task, agent)
-        elif agent == "dandan":
-            # Dandan's work: outreach + scan. Route to kasra via tmux.
+        elif agent in NO_LIVE_EXECUTOR:
+            # No live executor for this tenant-bound agent. Route to kasra via tmux
+            # rather than dispatching to a dead bus peer (route_to_remote_agent is
+            # fire-and-forget — a dead peer means the task silently stalls, never fails).
             return escalate_to_tmux(task, "kasra")
         else:
             # All other named agents go through bus
