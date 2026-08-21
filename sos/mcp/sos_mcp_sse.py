@@ -1480,7 +1480,14 @@ def _require_same_tenant_agent(auth: MCPAuthContext, requested: str | None) -> s
 _TENANT_AGENT_SUBSTRATE_PEERS: frozenset[str] = frozenset(
     {"loom", "athena", "kasra", "mumega", "river", "mizan", "sol", "hermes", "codex",
      "calliope", "worker", "gemma", "sos-mcp-sse",
-     "hadi-codex", "hadi-codex-cli"}  # mumega members, no minting authority
+     "hadi-codex", "hadi-codex-cli",
+     # Canonical substrate agent UUIDs (SOS #226)
+     "c855f82c-1eeb-409d-94d2-f11e9dd18968",  # kasra canonical UUID
+     "087a816b-ab9f-400f-8d53-f6f97b94a725",  # athena canonical UUID
+     "a9423609-e3bf-4797-8af8-4b9b7aecdf16",  # athena secondary UUID
+     "f23a6c2c-7377-492f-8d69-96c3946a7148",  # river canonical UUID
+     "bec1bb7a-b37e-4594-b018-1f608ae38d47",  # hadi-river UUID
+     "95b5ba06-72a7-4c17-ab4b-c95ed8ff2dd3"}  # dara canonical UUID
 )
 
 
@@ -4435,7 +4442,12 @@ async def handle_tool(
 
         # --- ask ---
         if name == "ask":
-            agent = _require_same_tenant_agent(auth, args.get("agent"))
+            agent = args.get("agent")
+            if not agent:
+                return _text("error: SOS-4001 ask requires 'agent' field")
+            # S027 D-2 L-7: tenant-agent senders cannot ask peers in a
+            # different tenant_slug (substrate coordination peers exempt). SOS #226.
+            _enforce_tenant_agent_rls(auth, agent)
             message = args["message"]
             # OpenClaw direct invocation is retired. Preserve the ask surface as a
             # bus-native async request; callers should read their inbox for replies.
@@ -4451,9 +4463,9 @@ async def handle_tool(
             msg = sendmsg.to_redis_fields()
             msg["tenant_id"] = auth.tenant_id or "sos"
             msg["project"] = effective_project or "sos"
-            sid = redis_client.xadd(stream, msg)
+            sid = await r.xadd(stream, msg)
             try:
-                redis_client.publish(f"sos:wake:{agent}", json.dumps({"text": message, "source": f"agent:{agent_scope}"}))
+                await r.publish(f"sos:wake:{agent}", json.dumps({"text": message, "source": f"agent:{agent_scope}"}))
             except Exception:
                 pass
             return _text(f"Sent async ask to {agent} via SOS bus (stream_id: {sid}). Check inbox for reply.")
