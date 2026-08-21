@@ -194,11 +194,25 @@ def test_missing_agent_kind_on_token_rejected(monkeypatch):
 
 
 def test_substrate_peer_allowlist_includes_canonical_coordinators():
-    """Sanity check: well-known substrate names are in the allowlist."""
-    for name in ("loom", "athena", "kasra", "mizan", "river", "calliope"):
+    """Sanity check: well-known substrate names and canonical UUIDs are in the allowlist (SOS #226)."""
+    for name in (
+        "loom", "athena", "kasra", "mizan", "river", "calliope",
+        "c855f82c-1eeb-409d-94d2-f11e9dd18968",  # kasra canonical UUID
+        "087a816b-ab9f-400f-8d53-f6f97b94a725",  # athena canonical UUID
+        "f23a6c2c-7377-492f-8d69-96c3946a7148",  # river canonical UUID
+    ):
         assert name in _TENANT_AGENT_SUBSTRATE_PEERS, (
             f"{name} should be a substrate coordination peer"
         )
+
+
+def test_tenant_agent_can_target_substrate_peer_by_canonical_uuid(monkeypatch):
+    """tenant-agent sender → kasra canonical UUID is allowed (SOS #226)."""
+    _seed_token_cache(monkeypatch, [])
+    auth = _tenant_agent_ctx(
+        tenant_slug="acme", agent_name="athena-acme", agent_kind="athena"
+    )
+    _enforce_tenant_agent_rls(auth, "c855f82c-1eeb-409d-94d2-f11e9dd18968")
 
 
 def test_substrate_peer_via_real_token_allowed(monkeypatch):
