@@ -45,17 +45,20 @@ AGENT_ROUTING = {
     "gemini":   "tmux",
     "river":    "tmux",  # legacy alias — routes to gemini session
     "codex":    "tmux",
-    "sol":      "openclaw",
     "mumega":   "tmux",
-    "worker":   "openclaw",
-    "dandan":   "openclaw",
     "mumcp":    "tmux",
     # webdev / mumega-web / mumega-com-web: DEPRECATED 2026-04-16 (Hadi: obsolete).
     # Removed from routing so wake-daemon stops poking dead tmux sessions.
+    # RECYCLED 2026-08-06 (Hadi: "we never worked with sol or mizan or gemma").
+    # sol, worker, dandan, gemma, mizan removed. Same treatment as webdev above:
+    # taken OUT of routing rather than set to "none", because task_poller.py
+    # iterates AGENT_ROUTING itself and polls every key before it ever consults
+    # the route — so "none" would have kept the polling and only hidden the wake.
+    # Measured before removal: 167 x HTTP 401 in six hours (36 each for sol,
+    # mizan, gemma, dandan; 23 for worker), every ~10 minutes, forever.
+    # Re-add a line here if any of these seats comes back.
     "dara":     "none",  # Remote agent on Hadi's Mac — inbox only, no tmux wake
     "torivers": "tmux",  # Separate Linux user — wake via sudo tmux send-keys
-    "mizan":    "tmux",     # Resurrected 2026-04-27 on Sonnet via Claude Code (Hadi directive). Business agent.
-    "gemma":    "openclaw",
     "gaf":      "tmux",
     "prefrontal": "tmux",  # Customer agent — separate Linux user
     "trop":     "tmux",    # TROP growth loop agent — Sonnet

@@ -420,6 +420,10 @@ def prefrontal_think(context: str) -> str:
         )
         cache_name = get_cache_name()
 
+        # Roster is computed per cycle, NOT hardcoded — see _dispatchable_agents().
+        roster = _dispatchable_agents()
+        roster_str = "/".join(roster)
+
         decision_prompt = f"""You are the Sovereign Brain of Mumega — an autonomous AI operating system.
 
 Your job: look at the current system state delta, active goals, and objections.
@@ -431,6 +435,10 @@ Rules:
 - Prefer actions with zero or low token cost (use free models when possible)
 - If nothing is urgent, pick maintenance work (content, outreach, memory cleanup)
 - Do NOT create tasks to delete historical quest/test fixtures or prior brain cleanup tasks
+- ONLINE AGENTS RIGHT NOW: {roster_str}. Assign the action to one of THESE ONLY.
+  Any agent not in that list is offline and cannot receive work. Do NOT pick one,
+  and do NOT propose bringing one back online — agent lifecycle is not your job.
+  If the best action needs an offline agent, choose a different action instead.
 - Output ONLY a JSON object, no explanation
 
 CURRENT CYCLE DELTA:
@@ -440,7 +448,7 @@ Respond with EXACTLY this JSON format:
 {{
   "action": "one-line description of what to do",
   "goal_id": "which goal this advances (or 'maintenance')",
-  "agent": "which agent should do it (kasra/system)",
+  "agent": "which agent should do it — MUST be one of: {roster_str}",
   "method": "how to do it (create_task/post_content/send_outreach/fix_code/research)",
   "details": "specific instructions for the executing agent",
   "expected_progress": 0.1,
@@ -492,6 +500,15 @@ Respond with EXACTLY this JSON format:
 
 def fallback_think(context: str) -> str:
     """Fallback: try GitHub Models, then Gemini, then hardcoded safe default."""
+    # Same roster constraint as prefrontal_think. These two prompts named no
+    # roster at all, so fixing only the primary path would have left the phantom
+    # dispatch alive on every fallback cycle — and fallback is exactly what runs
+    # when the token budget is exhausted, i.e. the busy cycles.
+    roster_str = "/".join(_dispatchable_agents())
+    roster_rule = (
+        f" The 'agent' field MUST be one of: {roster_str}. "
+        "Any other agent is offline and cannot receive work."
+    )
     # Try GitHub Models first
     if GITHUB_TOKEN:
         try:
@@ -504,7 +521,7 @@ def fallback_think(context: str) -> str:
                 model="gpt-4o-mini",
                 messages=[{
                     "role": "user",
-                    "content": f"Given this system state, pick ONE concrete action to advance the goals. Respond with JSON only: action, goal_id, agent, method, details, expected_progress, risk.\n\n{context[:3000]}"
+                    "content": f"Given this system state, pick ONE concrete action to advance the goals. Respond with JSON only: action, goal_id, agent, method, details, expected_progress, risk.{roster_rule}\n\n{context[:3000]}"
                 }],
                 max_tokens=300,
             )
@@ -522,7 +539,7 @@ def fallback_think(context: str) -> str:
         )
         response = client.models.generate_content(
             model=BRAIN_MODEL,
-            contents=f"Given this system state, pick ONE concrete action. Respond with JSON only: action, goal_id, agent, method, details, expected_progress (float), risk (float).\n\n{context[:3000]}",
+            contents=f"Given this system state, pick ONE concrete action. Respond with JSON only: action, goal_id, agent, method, details, expected_progress (float), risk (float).{roster_rule}\n\n{context[:3000]}",
         )
         return response.text.strip()
     except Exception as e:
@@ -735,6 +752,28 @@ def _mupot_dispatch_task(squad_id: str, title: str, description: str, priority: 
     except Exception as e:
         logger.error(f"mupot dispatch exception: {e}")
         return {"success": False, "result": f"mupot dispatch failed: {e}", "task_id": None}
+
+
+def _dispatchable_agents() -> list[str]:
+    """Agents that can actually receive work right now.
+
+    Called at DECIDE time and injected into the prompt, so the model is never
+    OFFERED an agent it cannot reach. Before this, the prompt hardcoded the
+    roster ("kasra/athena/sol/dandan/system") and the availability check lived
+    only in motor_execute — so a cycle would perceive, think, decide, emit a
+    receipt and a bus message for 'sol', and only then discard the whole thing
+    as undispatchable. Observed 2026-08-13: six of eight consecutive cycles
+    produced nothing but skip notices, and the brain then began proposing
+    admin_shell actions to resurrect 'sol' — a bug generating work about itself.
+
+    motor_execute keeps its own check as the second door: the model can still
+    name an offline agent, and an agent can die between decide and execute.
+    Both doors call _agent_available, so there is ONE predicate rather than two
+    copies that drift apart — the failure mode where only one copy gets fixed.
+
+    Never empty: 'system' maps to no session and is always dispatchable.
+    """
+    return sorted(a for a in _AGENT_SESSION if _agent_available(a))
 
 
 def motor_execute(action: dict) -> dict:

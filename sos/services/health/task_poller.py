@@ -190,6 +190,31 @@ def fetch_assigned_tasks(agent_id: str) -> list[dict]:
                 payload = payload.get("tasks", [])
             if isinstance(payload, list):
                 tasks.extend(payload)
+        else:
+            # A non-200 used to fall through silently, so "the squad refused me"
+            # and "this agent has no queued work" were the SAME observation from
+            # the poller's side. Measured 2026-08-06: 167 x 401 in six hours,
+            # visible only in the squad service's access log, with the poller
+            # reporting nothing at all. Any agent with real queued work would have
+            # been starved for as long as the credential stayed wrong and nothing
+            # would have said so.
+            #
+            # 401/403 specifically means OUR credential is wrong, not that the
+            # agent is idle — _squad_headers() returns {} when SQUAD_TOKEN is
+            # unset, i.e. no Authorization header at all, which is exactly how
+            # this presented.
+            if resp.status_code in (401, 403):
+                logger.error(
+                    "squad REFUSED the task poll for %s: HTTP %s — this is OUR "
+                    "credential (system token missing or wrong), not an idle agent. "
+                    "Tasks for this agent are NOT being delivered.",
+                    agent_id, resp.status_code,
+                )
+            else:
+                logger.warning(
+                    "task poll for %s returned HTTP %s — treating as no tasks",
+                    agent_id, resp.status_code,
+                )
     except Exception as e:
         logger.warning(f"Failed to fetch tasks for {agent_id}: {e}")
 
