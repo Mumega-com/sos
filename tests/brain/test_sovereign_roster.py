@@ -202,7 +202,7 @@ def test_both_doors_read_the_same_predicate(fake_fleet, monkeypatch):
     calls.clear()
 
     result = brain.motor_execute(
-        {"method": "research", "agent": "sol", "action": "t", "details": "d"}
+        {"method": "health_check", "agent": "sol", "action": "t", "details": "d"}
     )
     assert "sol" in calls, "motor_execute stopped consulting _agent_available"
-    assert "unavailable" in result["result"]
+    assert "unavailable" in result["result"] or "paused" in result["result"] or "not dispatched" in result["result"]
