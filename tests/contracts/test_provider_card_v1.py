@@ -91,6 +91,14 @@ class TestSchemaStructure:
         """schema_version property uses enum ['1']."""
         assert schema["properties"]["schema_version"]["enum"] == ["1"]
 
+    def test_backend_enum_matches_pydantic_literal(self, schema):
+        """Schema backend enum and ProviderCard.backend Literal stay in lockstep."""
+        from typing import get_args
+
+        from sos.providers.matrix import BackendLiteral
+
+        assert schema["properties"]["backend"]["enum"] == list(get_args(BackendLiteral))
+
     def test_schema_id_contains_provider_card(self, schema):
         """$id is set and references provider_card."""
         assert "$id" in schema

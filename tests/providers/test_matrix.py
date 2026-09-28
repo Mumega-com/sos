@@ -66,6 +66,7 @@ def test_provider_card_all_backends():
         "openai-adapter",
         "openai-agents-sdk",
         "gemini-adapter",
+        "vertex-gemini-adapter",
         "langgraph",
         "local",
     ]
