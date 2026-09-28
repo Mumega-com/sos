@@ -49,6 +49,7 @@ BackendLiteral = Literal[
     "openai-adapter",
     "openai-agents-sdk",
     "gemini-adapter",
+    "vertex-gemini-adapter",
     "langgraph",
     "local",
 ]

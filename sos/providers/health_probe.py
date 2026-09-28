@@ -70,6 +70,12 @@ def _resolve_adapter(card: ProviderCard):  # type: ignore[return]
             from sos.adapters.gemini_adapter import GeminiAdapter  # type: ignore[import]
 
             return GeminiAdapter()
+        if card.backend == "vertex-gemini-adapter":
+            from sos.adapters.vertex_gemini_adapter import (  # type: ignore[import]
+                VertexGeminiAdapter,
+            )
+
+            return VertexGeminiAdapter()
         if card.backend == "openai-adapter":
             from sos.adapters.openai_adapter import OpenAIAdapter  # type: ignore[import]
 

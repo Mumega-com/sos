@@ -7,6 +7,11 @@ All notable changes to SOS (Sovereign Operating System) will be documented here.
 ### Added
 
 ### Changed
+- ProviderCard v1 now accepts the `vertex-gemini-adapter` backend (Pydantic
+  `BackendLiteral` and `provider_card_v1.json` enum). The bundled
+  `providers.yaml` already routes `gemini-25-flash` through it, so
+  `load_matrix()` failed on the default matrix; `health_probe` now resolves
+  that backend to `VertexGeminiAdapter`.
 
 ### Removed
 

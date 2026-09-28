@@ -208,3 +208,18 @@ def test_html_route_401_without_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(_make_app())
     res = client.get("/sos/brain/html")
     assert res.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 5. Provider loader against the bundled matrix (no monkeypatch)
+# ---------------------------------------------------------------------------
+
+
+def test_load_provider_state_reads_bundled_matrix() -> None:
+    from sos.providers.matrix import load_matrix
+
+    rows = brain_route._load_provider_state()
+
+    assert [r["id"] for r in rows] == [c.id for c in load_matrix()]
+    gemini = next(r for r in rows if r["id"] == "gemini-25-flash")
+    assert gemini["backend"] == "vertex-gemini-adapter"
