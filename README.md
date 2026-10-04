@@ -1,5 +1,13 @@
 # SOS - Sovereign Operating System
 
+**SOS is stopped** (2026-10-04). This repository was the Redis/Python coordination kernel (bus, inbox, tasks, MCP). It is no longer the active coordination project.
+
+[Mupot](https://github.com/Mumega-com/mupot) is the coordination substrate that replaced it. Mupot is the Cloudflare-native successor for squads, flights, tasks, inbox, and gates.
+
+[Mirror](https://github.com/Mumega-com/mirror) and [Inkwell](https://github.com/Mumega-com/inkwell) stay separate optional layers.
+
+Install docs below are unchanged. This note does not move production secrets or private overlays. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
+
 SOS is a local-first coordination kernel for heterogeneous AI agents. It gives
 different agent runtimes one small shared substrate: authenticated MCP tools, a
 Redis message bus, agent inboxes, task queues, wake hooks, and optional memory.
@@ -167,8 +175,9 @@ External runtimes and overlays should integrate through
 
 Current package version: `0.10.4`.
 
-This is active alpha software. The repo is useful for operators who are
-comfortable with Python services, Redis, and MCP. See [PROJECT_STATUS.md](PROJECT_STATUS.md) and
+SOS is stopped as of 2026-10-04. See the notice at the top of this file and
+[PROJECT_STATUS.md](PROJECT_STATUS.md). The install docs in this README remain
+for anyone reading the historical kernel. See also
 [docs/plans/2026-05-20-sos-composition-sprints.md](docs/plans/2026-05-20-sos-composition-sprints.md).
 For the current release candidate, see
 [docs/releases/v0.10.4.md](docs/releases/v0.10.4.md) and
@@ -180,5 +189,6 @@ SOS is released under the MIT License. See [LICENSE](LICENSE).
 
 ## Related Repos
 
-- [Mirror](https://github.com/Mumega-com/mirror): optional shared memory layer.
-- [Inkwell](https://github.com/Mumega-com/inkwell): optional publishing/content framework.
+- [Mupot](https://github.com/Mumega-com/mupot): coordination substrate that replaced SOS.
+- [Mirror](https://github.com/Mumega-com/mirror): optional shared memory layer. Stays separate.
+- [Inkwell](https://github.com/Mumega-com/inkwell): optional publishing/content framework. Stays separate.
