@@ -1,11 +1,27 @@
 # Project Status
 
-Last updated: 2026-05-20
+Last updated: 2026-10-04
 
-SOS is active alpha software. The public repo is standalone-clean and has a
-local first-run profile for Redis, MCP, bus, and task smoke verification.
+**SOS is stopped.** This repository was the Redis/Python coordination kernel (bus, inbox, tasks, MCP). It is not the active coordination substrate.
 
-## Current Public Baseline
+## Successor
+
+[Mupot](https://github.com/Mumega-com/mupot) is the successor. Mupot is the Cloudflare-native coordination substrate for squads, flights, tasks, inbox, and gates.
+
+[Mirror](https://github.com/Mumega-com/mirror) and [Inkwell](https://github.com/Mumega-com/inkwell) stay separate optional layers.
+
+This status change does not move production secrets, private host overlays, or deployment-only configuration. Those remain outside the public kernel.
+
+## Already recorded elsewhere
+
+- MCPWP's own project goal already says to retire the SOS-bus dependency.
+- Herdr now bridges to Mupot, not SOS. See [herdr-mupot-bridge](https://github.com/Mumega-com/herdr-mupot-bridge).
+
+## Last public baseline
+
+Recorded 2026-05-20, before this stop. Kept as history. It is not a claim that the kernel is still under active development.
+
+The public repo was standalone-clean and had a local first-run profile for Redis, MCP, bus, and task smoke verification.
 
 - Public SOS fresh clone: pytest collection clean, 2744 tests, 0 collection
   errors.
